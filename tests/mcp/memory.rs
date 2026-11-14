@@ -8,8 +8,8 @@ use std::fs;
 use serde_json::json;
 
 use super::common::{
-    cli_mem, eg_cmd, fixture, init_and_list_tools, mem_fixture, notification, result_text, rpc,
-    spawn_with, spawn_with_global,
+    cli_mem, eg_cmd, init_and_list_tools, mem_fixture, notification, result_text, rpc, spawn_with,
+    spawn_with_global, stable_fixture,
 };
 
 #[test]
@@ -440,7 +440,9 @@ fn global_memory_mcp_protocol_parity() {
 
 #[test]
 fn global_usage_mcp_returns_cross_repo_summary() {
-    let repo = fixture("mcp-global-usage");
+    // The journaled root must be durable (outside the OS temp tree): the
+    // global usage summary hides scratch identities.
+    let repo = stable_fixture("mcp-global-usage");
     let global_dir = mem_fixture("mcp-global-usage-eg");
 
     let build = eg_cmd(&repo)

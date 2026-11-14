@@ -113,16 +113,26 @@ fn temp_prefixes() -> &'static [PathBuf] {
 /// repository table. Relative and identityless values are not ephemeral — the
 /// stale and unattributed rules already drop them.
 pub(crate) fn entry_is_ephemeral(entry: &Value) -> bool {
-    let Some(repo) = entry.get("repo").and_then(Value::as_str) else {
-        return false;
-    };
+    match entry.get("repo").and_then(Value::as_str) {
+        Some(repo) => repo_is_ephemeral(repo),
+        None => false,
+    }
+}
+
+/// Ephemeral verdict for one journaled repository root. A linked worktree
+/// folds to its main repository first: a worktree checked out under the temp
+/// tree that belongs to a real repository survives the prune (its scratch
+/// checkout is not a scratch identity), while a scratch main repository stays
+/// ephemeral — its own worktrees fold back under the temp tree with it.
+pub(crate) fn repo_is_ephemeral(repo: &str) -> bool {
     if !judgeable_root(repo) {
         return false;
     }
-    let root = Path::new(repo);
+    let effective = crate::repo::cached_worktree_main_root(Path::new(repo))
+        .unwrap_or_else(|| PathBuf::from(repo));
     temp_prefixes()
         .iter()
-        .any(|prefix| root.starts_with(prefix))
+        .any(|prefix| effective.starts_with(prefix))
 }
 
 /// True when `repo` names an absolute repository directory that still exists
@@ -322,5 +332,62 @@ mod tests {
         assert!(!entry_is_ephemeral(&json!({ "tool": "build" })));
         assert!(!entry_is_ephemeral(&json!({ "repo": ".tmp/verify/repo1" })));
         assert!(!entry_is_ephemeral(&json!({ "repo": "/" })));
+    }
+
+    /// A writable repository root OUTSIDE the OS temp tree: under the
+    /// gitignored `target/` directory. The temp-tree fixture roots used
+    /// everywhere else are exactly the ephemeral prefixes, so a worktree fold
+    /// fixture whose main repository must survive the verdict needs a durable
+    /// location.
+    fn stable_repo_root(name: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("eg-{name}-{}", std::process::id()));
+        remove_tree(&dir);
+        dir
+    }
+
+    #[test]
+    fn worktree_under_tmp_folds_to_main_root() {
+        // Synthetic linked worktree (repo.rs fixture pattern): the main
+        // repository is durable, the worktree checkout sits under the temp
+        // tree. The verdict must judge the MAIN root, not the checkout path.
+        let main = stable_repo_root("liveness-wt-main");
+        make_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        let wt = temp_root("liveness-wt-checkout");
+        let pointer = format!("gitdir: {}/.git/worktrees/wt\n", main.display());
+        write_file(wt.join(".git"), pointer.as_bytes()).unwrap();
+
+        let entry = json!({ "repo": wt.to_string_lossy(), "worktree": true });
+        assert!(
+            !entry_is_ephemeral(&entry),
+            "a worktree of a durable repository is not scratch"
+        );
+
+        // A worktree whose main repository is itself scratch stays ephemeral:
+        // the fold judges the main root, so scratch does not resurrect.
+        let scratch_main = temp_root("liveness-wt-scratch-main");
+        make_dir_all(scratch_main.join(".git/worktrees/wt2")).unwrap();
+        let scratch_wt = temp_root("liveness-wt-scratch-checkout");
+        let pointer = format!("gitdir: {}/.git/worktrees/wt2\n", scratch_main.display());
+        write_file(scratch_wt.join(".git"), pointer.as_bytes()).unwrap();
+        assert!(entry_is_ephemeral(
+            &json!({ "repo": scratch_wt.to_string_lossy(), "worktree": true })
+        ));
+
+        remove_tree(&main);
+        remove_tree(&wt);
+        remove_tree(&scratch_main);
+        remove_tree(&scratch_wt);
+    }
+
+    #[test]
+    fn plain_tmp_repo_entry_stays_ephemeral() {
+        let scratch = temp_root("liveness-plain-scratch");
+        assert!(entry_is_ephemeral(
+            &json!({ "repo": scratch.to_string_lossy(), "worktree": false })
+        ));
+        assert!(entry_is_ephemeral(&json!({ "repo": "/tmp/eg-probe" })));
+        remove_tree(&scratch);
     }
 }

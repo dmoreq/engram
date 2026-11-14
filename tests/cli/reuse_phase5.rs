@@ -150,6 +150,87 @@ fn judge_malformed_output_keeps_static_result_with_note() {
     assert_eq!(stderr.matches("judge unavailable").count(), 1, "{stderr}");
 }
 
+#[cfg(unix)]
+#[test]
+fn reuse_min_confidence_medium_skips_judge_and_keeps_freshness_scope() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = temp_repo("reuse-judge-gate");
+    write(
+        &repo,
+        "a.py",
+        "def normalize(value):\n    return value\n\ndef parse_token_value_data_extra(value):\n    return normalize(value)\n",
+    );
+    write(
+        &repo,
+        "b.py",
+        "def normalize(value):\n    return value\n\ndef parse_token_value(value):\n    return normalize(value)\n",
+    );
+    build(&repo);
+    // An on-disk file the index never saw: freshness must surface it through
+    // the scope walk even when every candidate was filtered before judge.
+    write(&repo, "new_file.py", "def brand_new():\n    return 1\n");
+
+    // Counting stub: the judge runs with a cleared environment, so the count
+    // file path is baked into the script text.
+    let count_file = repo.join("judge-counts");
+    let bin = repo.join("judge.sh");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf 'x\\n' >> '{}'\nprintf '%s\\n' '{{\"decision\":\"duplicate\",\"probability\":0.9}}'\n",
+            count_file.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&bin, perms).unwrap();
+    std::fs::create_dir_all(repo.join("model")).unwrap();
+    std::fs::write(repo.join("model/lazy.json"), "{\"head_layers\":1}\n").unwrap();
+
+    // Low-only pool with --min-confidence medium: zero judge subprocess
+    // spawns, the below-threshold count surfaces, and the scope walk still
+    // reports the unindexed new file.
+    let gated = eg(&repo)
+        .env("EG_JUDGE_BIN", &bin)
+        .env("EG_JUDGE_MODEL", repo.join("model"))
+        .args(["reuse", "--judge", "--min-confidence", "medium"])
+        .output()
+        .unwrap();
+    assert_eq!(gated.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&gated.stdout);
+    assert!(
+        stdout.contains("0 duplication candidate(s) found"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("1 below threshold"), "{stdout}");
+    assert!(stdout.contains("freshness unknown"), "{stdout}");
+    assert!(
+        !count_file.exists(),
+        "judge must not spawn for sub-threshold candidates: {stdout}"
+    );
+
+    // Control: at the default threshold the same stub runs, so the spy works.
+    let control = eg(&repo)
+        .env("EG_JUDGE_BIN", &bin)
+        .env("EG_JUDGE_MODEL", repo.join("model"))
+        .args(["reuse", "--judge"])
+        .output()
+        .unwrap();
+    assert_eq!(control.status.code(), Some(0));
+    let control_stdout = String::from_utf8_lossy(&control.stdout);
+    assert!(
+        control_stdout.contains("1 duplication candidate(s) found"),
+        "{control_stdout}"
+    );
+    let counts = std::fs::read_to_string(&count_file).unwrap();
+    assert!(
+        !counts.trim().is_empty(),
+        "judge stub must run above the threshold"
+    );
+}
+
 #[test]
 fn judge_missing_binary_degrades_with_one_note() {
     let repo = temp_repo("reuse-judge-missing");

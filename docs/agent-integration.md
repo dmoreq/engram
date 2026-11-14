@@ -114,7 +114,7 @@ By default, `eg mcp` exposes 13 high-ROI tools focused on navigation, anti-reinv
 | `reuse` | `paths?`, `limit?`, `deep_callee?`, `min_confidence?`, `propose?`, `callees?`, `explain?`, `show_suppressed?`, `coverage?`, `judge?` | Anti-reinvention scan, pre-write proposal, allowlist visibility, opt-in coverage, and optional judge |
 | `mem_query` | `terms?`, `all?`, `kind?`, `scope?`, `limit?`, `include_superseded?`, `global?`, `ref?`, `since?`, `until?`, `local?`, `explain?`, `legacy?` | Zero-token layered memory search; uses the code index for call-graph expansion when available; Unicode-aware with a legacy fallback |
 | `usage` | `quality?` (default `false`), `global?` | Session telemetry, latency percentiles, and token savings |
-| `mem_write` | `key`, `body`, `kind`, `tags?`, `refs?`, `scope?`, `ttl?`, `supersedes?`, `touch?`, `global?`, `confirm?` | Persist architectural decisions and gotchas; `confirm=true` is required for `reuse-allow/` over MCP |
+| `mem_write` | `key`, `body`, `kind`, `tags?`, `refs?`, `scope?`, `ttl?`, `supersedes?`, `touch?`, `global?`, `confirm?` | Persist architectural decisions and gotchas; `touch=true` re-asserts the invocation's TTL (`expires_at`) instead of the verify anchor; `confirm=true` is required for `reuse-allow/` over MCP |
 
 ### Extended Surface (`--all-tools`)
 Passing `--all-tools` exposes 7 additional memory maintenance tools (20 total): `mem_touch`, `mem_get`, `mem_delete`, `mem_gc`, `mem_export` (JSONL or Markdown, optional `since`/`until`), `mem_import` (reject-on-conflict restore; confined to the project store), and `mem_reindex` (rebuild the derived Unicode index). `mem_export` over MCP does not expose `--scan`; agents that need a scanned backup run the CLI, which reports suspected secrets on stderr without blocking the export.
@@ -128,7 +128,7 @@ Passing `--all-tools` exposes 7 additional memory maintenance tools (20 total): 
 Every MCP tool response appends an execution telemetry footer:
 
 ```text
-⚡ eg: 1.2ms | ~3.8k tokens saved
+⚡ eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
 ```
 
 This footer reflects:

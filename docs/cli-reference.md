@@ -234,7 +234,7 @@ eg mem write <KEY> --body <TEXT> --kind <KIND> [OPTIONS]
 | `--scope <SCOPE>` | `durable` | `durable` (never expires) or `session` (expires after TTL). |
 | `--ttl <SECS>` | `604800` (7 days)| Expiration lifetime in seconds (only valid with `--scope session`). |
 | `--supersedes <KEY>`| None | Mark the specified key as superseded by this note in one atomic transaction. |
-| `--touch` | `false` | Refresh `created_at` (last asserted) on the active revision when the content hash matches; no new revision. |
+| `--touch` | `false` | Refresh `created_at` (last asserted) and re-assert the invocation's TTL (`expires_at`) on the active revision when the content hash matches; no new revision. |
 | `--confirm` | `false` | Required for `reuse-allow/...` writes over MCP; keeps allowlist creation an explicit act. |
 | `--global` | `false` | Persist to global store (`~/.engram/memory.db`) instead of repository (`.engram/memory.db`). |
 
@@ -393,7 +393,7 @@ eg mcp [--all-tools]
 ```
 
 - **Default (Core Surface)**: Exposes 13 high-ROI tools: `build`, `callers`, `callees`, `path`, `context`, `imports`, `impact`, `symbols`, `reuse`, `search`, `usage`, `mem_write`, and `mem_query`.
-- `--all-tools`: Exposes all 17 tools, adding the 4 extended memory management tools: `mem_get`, `mem_delete`, `mem_gc`, and `mem_export`.
+- `--all-tools`: Exposes all 20 tools, adding the 7 extended memory management tools: `mem_touch`, `mem_get`, `mem_delete`, `mem_gc`, `mem_export`, `mem_import`, and `mem_reindex`.
 
 ---
 

@@ -114,10 +114,17 @@ areas.
   it appends an advisory hint suggesting `--supersedes <old>` ($659\text{ \mu s}$ overhead).
   The write always succeeds (exit 0).
 - **Write** — append a revision, update both FTS rows, and commit in one
-  transaction. `--touch` refreshes `created_at` (the last assertion date) when
-  the content hash matches.
+  transaction. `--touch` refreshes `created_at` (the last assertion date) and
+  re-asserts the invocation's TTL (`expires_at`: explicit `--ttl` wins; a
+  session note without `--ttl` gets the 7-day default) when the content hash
+  matches; `anchored_at` is untouched on this path.
 - **Touch** — `eg mem touch <key>` refreshes `anchored_at` (the last
   verification date) after the reader re-audits the anchor, without a revision.
+  Dead keys (superseded or expired) are unreachable by every touch path:
+  `mem touch`, `mem write --touch`, and the dashboard `/api/memory/touch`
+  (which refuses with 404/409 instead of re-anchoring a dead revision);
+  re-writing a dead key appends a revision instead of
+  reporting a duplicate.
 - **Supersede** — `--supersedes <key>` marks the older key's current row and
   records the replacement without deleting history.
 - **GC** — `eg mem gc` purges expired session notes and superseded revisions

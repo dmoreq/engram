@@ -53,6 +53,29 @@ pub(crate) fn temp_repo(name: &str) -> TempRepo {
     TempRepo(Arc::new(TempRepoInner(dir)))
 }
 
+/// A repository root OUTSIDE the OS temp tree, under the gitignored `target/`
+/// directory with its own `.git`: global-surface fixtures whose journaled root
+/// must survive the scratch-identity rules and resolve to the fixture, not the
+/// enclosing checkout. Deletes itself when the last handle drops.
+pub(crate) fn stable_repo(name: &str) -> TempRepo {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "eg-st-{}-{}-{seq}",
+        name,
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let init = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(init.success(), "git init failed for {dir:?}");
+    TempRepo(Arc::new(TempRepoInner(dir)))
+}
+
 pub(crate) fn write(repo: &Path, rel: &str, content: &str) {
     let path = repo.join(rel);
     fs::create_dir_all(path.parent().unwrap()).unwrap();

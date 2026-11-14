@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::corpus::{load_callees, load_symbols, SymbolData};
-use super::guards::is_more_canonical;
+use super::guards::{is_more_canonical, language_family};
 use super::tokens::{build_name_stoplist, build_stoplist, tokenize_name_sig};
 use super::*;
 
@@ -36,10 +36,13 @@ pub(super) fn analyze(conn: &Connection, kinds: &[CoverageKind]) -> Result<Vec<R
     let stopset = build_stoplist(&symbols);
     let name_stopset = build_name_stoplist(&symbols);
     for sym in symbols.values_mut() {
+        // `all_callees` keeps raw clients (coverage never runs D4, but the
+        // same loader feeds `is_raw_client` consumers); `unresolved_callees`
+        // must not: retaining raw clients here would only feed D1L.
         sym.all_callees
             .retain(|c| !stopset.contains(c.as_str()) || is_raw_client(c.as_str()));
         sym.unresolved_callees
-            .retain(|c| !stopset.contains(c.as_str()) || is_raw_client(c.as_str()));
+            .retain(|c| !stopset.contains(c.as_str()));
         sym.resolved_callees
             .retain(|c| !stopset.contains(c.as_str()));
         sym.name_tokens
@@ -88,16 +91,18 @@ fn class_candidates(conn: &Connection) -> Result<Vec<ReuseCandidate>> {
     })?;
     let classes: Vec<_> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut methods: HashMap<(i64, String), HashSet<String>> = HashMap::new();
+    // One prepared statement for every class (re-bound per row): preparing
+    // the method query inside the loop was an N+1 on the class count.
+    let mut method_stmt = conn.prepare(
+        "SELECT name FROM symbols
+         WHERE kind = 'method' AND file_id = ?1 AND qualname LIKE ?2 ESCAPE '\\'",
+    )?;
     for (_, _, qualname, file_id, _, _, _) in &classes {
         // Scope methods to the defining file: two files can produce the same
         // qualname (`a/b.py` and `a.b.py` both map to `a.b`), and a
         // qualname-only query would merge their unrelated method sets.
-        let mut stmt = conn.prepare(
-            "SELECT name FROM symbols
-             WHERE kind = 'method' AND file_id = ?1 AND qualname LIKE ?2 ESCAPE '\\'",
-        )?;
-        let prefix = format!("{}.%", escape_like(qualname));
-        let names = stmt.query_map(rusqlite::params![file_id, prefix], |r| {
+        let prefix = format!("{}.%", crate::db::like_escape(qualname));
+        let names = method_stmt.query_map(rusqlite::params![file_id, prefix], |r| {
             r.get::<_, String>(0)
         })?;
         methods.insert(
@@ -157,32 +162,11 @@ fn class_candidates(conn: &Connection) -> Result<Vec<ReuseCandidate>> {
     Ok(pool)
 }
 
-fn escape_like(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(ch, '\\' | '%' | '_') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 fn is_generic_coverage_name(name: &str) -> bool {
     matches!(
         name,
         "default" | "new" | "call" | "apply" | "then" | "map" | "get" | "set" | "run"
     )
-}
-
-fn language_family(file: &str) -> String {
-    let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext {
-        "py" | "pyi" => "python".to_string(),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => "tsjs".to_string(),
-        "rs" => "rust".to_string(),
-        other => other.to_ascii_lowercase(),
-    }
 }
 
 fn unresolved_candidates(symbols: &HashMap<i64, SymbolData>) -> Result<Vec<ReuseCandidate>> {
@@ -303,4 +287,72 @@ fn test_candidates(
         });
     }
     Ok(pool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../schema/index.sql"))
+            .unwrap();
+        for path in ["a.py", "b.py", "c.py"] {
+            conn.execute(
+                "INSERT INTO files(id, path, size, mtime, content_hash, parse_status, error_nodes)
+                 VALUES (NULL, ?1, 10, 1, 1, 'ok', 0)",
+                [path],
+            )
+            .unwrap();
+        }
+        for (id, name, qualname, file_id, file_path, line_end) in [
+            (1, "fetch", "a.fetch", 1, "a.py", 2),
+            (2, "send_data", "b.send_data", 2, "b.py", 4),
+            (3, "unwrap", "c.unwrap", 3, "c.py", 2),
+        ] {
+            conn.execute(
+                "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end, signature)
+                 VALUES (?1, 'function', ?2, ?3, ?4, ?5, 1, ?6, '')",
+                rusqlite::params![id, name, qualname, file_id, file_path, line_end],
+            )
+            .unwrap();
+        }
+        for (dst_name, site_line) in [("fetch", 2), ("unwrap", 3)] {
+            conn.execute(
+                "INSERT INTO unresolved_calls(file_id, dst_name, kind, site_line)
+                 VALUES (2, ?1, 'call', ?2)",
+                rusqlite::params![dst_name, site_line],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn coverage_raw_client_still_matches_user_defined_symbol() {
+        // review.md I-11.1 attributed D1L raw-client matches to the retain's
+        // `|| is_raw_client` disjunct; that disjunct is unreachable dead code
+        // (build_stoplist never stoplists a raw client, and the static
+        // STOPLIST is disjoint from RAW_CLIENTS), and the same-name match
+        // below is a true positive by design — a user-defined `fetch` wrapper
+        // is exactly what D1L should surface, the same reason D4 keeps raw
+        // clients on `all_callees`. Pin both directions of the retain: a
+        // raw-client-named callee with a same-family defining symbol still
+        // reaches unresolved_candidates, while a stoplisted callee does not.
+        let conn = index_fixture();
+        let pool = analyze(&conn, &[CoverageKind::Unresolved]).unwrap();
+        let matched: Vec<(String, String)> = pool
+            .iter()
+            .filter(|c| c.detector == DetectorId::D1L && c.symbol == "b.send_data")
+            .map(|c| (c.canonical.clone(), c.shared_items.join(",")))
+            .collect();
+        assert!(
+            matched.contains(&("a.fetch".into(), "fetch".into())),
+            "user-defined fetch must stay a D1L match: {matched:?}"
+        );
+        assert!(
+            !matched.iter().any(|(canonical, _)| canonical == "c.unwrap"),
+            "stoplisted callees must be dropped from unresolved_callees: {matched:?}"
+        );
+    }
 }

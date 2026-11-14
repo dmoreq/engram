@@ -21,7 +21,7 @@ fn monitor_tui_render_all_tabs_coverage() {
     )
     .unwrap();
 
-    let mut state = TuiState::new(None, log_path.clone(), None, false);
+    let mut state = TuiState::new(None, log_path.clone(), None, false, false);
     assert_eq!(state.total_repos, 1);
     assert_eq!(state.recent_events.len(), 3);
 
@@ -29,7 +29,7 @@ fn monitor_tui_render_all_tabs_coverage() {
     let global_log =
         std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".engram/usage.log");
     if global_log.is_file() {
-        let mut real_state = TuiState::new(None, global_log, None, false);
+        let mut real_state = TuiState::new(None, global_log, None, false, false);
         real_state.refresh(None);
         for tab in [
             MonitorTab::Graph,
@@ -102,7 +102,7 @@ fn monitor_drops_dead_repo_entries_from_state() {
     );
     std::fs::write(&log_path, format!("{dead}\n{scratch}\n")).unwrap();
 
-    let state = TuiState::new(None, log_path.clone(), None, false);
+    let state = TuiState::new(None, log_path.clone(), None, false, false);
     assert_eq!(state.total_repos, 0);
     assert!(state.recent_events.is_empty());
     let _ = std::fs::remove_dir_all(&temp_dir);

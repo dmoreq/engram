@@ -157,3 +157,34 @@ fn dashboard_rejects_foreign_host_and_sends_security_headers() {
     assert!(resp.contains("frame-ancestors 'none'"), "{resp}");
     handle.join().unwrap();
 }
+
+#[test]
+fn connection_cap_rejects_overflow() {
+    // 64 holder connections open without sending any bytes: their threads
+    // block on the header read, keeping the concurrency counter at the cap.
+    // The 65th connection is refused with 503 without spawning a thread.
+    let repo = temp_repo("dashboard-cap-log");
+    write(&repo, ".engram/usage.log", "");
+    let log_path = repo.join(".engram/usage.log").to_path_buf();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let mut holders = Vec::new();
+    for _ in 0..64 {
+        let client = TcpStream::connect(addr).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        admit_connection(stream, log_path.clone(), None, false);
+        holders.push(client);
+    }
+
+    let mut overflow = TcpStream::connect(addr).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    admit_connection(stream, log_path.clone(), None, false);
+    overflow
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut resp = String::new();
+    overflow.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 503"), "{resp}");
+    drop(holders);
+}

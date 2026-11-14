@@ -228,7 +228,8 @@ pub enum Cmd {
         fail_on: Option<String>,
     },
     /// Project memory: agent-authored notes persisted in .engram/memory.db
-    /// (write/query/get/delete/export/gc). Notes are candidates, never proof.
+    /// (write/query/touch/get/delete/export/import/gc/reindex). Notes are
+    /// candidates, never proof.
     #[command(alias = "memory")]
     Mem {
         #[command(subcommand)]
@@ -308,7 +309,9 @@ pub enum MemAction {
         /// Persist to the cross-project global memory store (~/.engram/memory.db)
         #[arg(long)]
         global: bool,
-        /// Refresh timestamp when content_hash matches an existing current note
+        /// Refresh created_at and re-assert the invocation's TTL (expires_at;
+        /// explicit --ttl wins, else the 7-day session default) when
+        /// content_hash matches an existing current note
         #[arg(long)]
         touch: bool,
         /// Confirm an allowlist write over MCP (`reuse-allow/...`)

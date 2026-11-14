@@ -292,6 +292,18 @@ pub(super) fn analyze_corpus_with(
             });
         }
     }
+    // Confidence gate BEFORE judge and freshness. The production judge only
+    // rejects candidates (it never assigns confidence) and freshness only
+    // demotes to Low, so a sub-threshold candidate can never be promoted
+    // back: running the subprocess judge on it pays for candidates finalize
+    // discards, and a non-empty pool would skip the scope walk that surfaces
+    // unindexed new files. `for_hints()` forces min_confidence Low, so hint
+    // detection is unaffected.
+    let below_threshold = pool
+        .iter()
+        .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
+        .count();
+    pool.retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     let judge_note = judge::apply(
         ctx,
         &mut pool,
@@ -299,7 +311,7 @@ pub(super) fn analyze_corpus_with(
         opts.mode,
         opts.proposal_signature.as_deref(),
     );
-    let total = pool.len();
+    let total = pool.len() + below_threshold;
     let freshness = if opts.freshness_mode == FreshnessMode::Full {
         freshness::evaluate(ctx, scope, &mut pool)?
     } else {
@@ -307,6 +319,7 @@ pub(super) fn analyze_corpus_with(
     };
     let counts = ReuseCounts {
         guarded_out,
+        below_threshold,
         total,
         suppressed,
         ..ReuseCounts::default()

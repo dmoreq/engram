@@ -189,6 +189,36 @@ pub(crate) fn mem_fixture(name: &str) -> TempRepo {
     make_dir(&format!("eg-mcp-mem-{name}"))
 }
 
+/// Same Python fixtures as `fixture`, rooted OUTSIDE the OS temp tree (the
+/// gitignored `target/` dir) with its own `.git`: global-surface fixtures
+/// whose journaled root must survive the scratch-identity rules and resolve
+/// to the fixture, not the enclosing checkout.
+pub(crate) fn stable_fixture(name: &str) -> TempRepo {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("eg-mcp-st-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let init = Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap();
+    assert!(init.success(), "git init failed for {dir:?}");
+    let tail =
+        "def tail_block(v):\n    a = v + 1\n    b = v + 2\n    c = v + 3\n    return a + b + c\n";
+    fs::write(dir.join("utils.py"), format!("def normalize(text):\n    return text.strip()\n\ndef caller():\n    return normalize('a')\n{}", tail)).unwrap();
+    fs::write(
+        dir.join("app.py"),
+        format!(
+            "from utils import normalize\n\ndef run():\n    return normalize('x')\n{}\ndef test_run():\n    return run()\n",
+            tail
+        ),
+    )
+    .unwrap();
+    TempRepo(Arc::new(TempRepoInner(dir)))
+}
+
 pub(crate) fn cli_mem(repo: &Path, args: &[&str]) -> (i32, String, String) {
     let out = eg_cmd(repo).args(["mem"]).args(args).output().unwrap();
     (

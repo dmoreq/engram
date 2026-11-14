@@ -36,6 +36,10 @@ let selectedMemoryId = null;   // store_id:key:rev — survives list rebuilds
 let selectedReuseId = null;    // candidate id (repo:symbol->canonical)
 function memorySelectionId(m) { return (m.store_id || m.store) + ':' + m.key + ':' + m.rev; }
 
+// Worktree rows the user expanded, keyed by repo display label, so SSE
+// re-renders rebuild rows without collapsing the open branches.
+const expandedWorktrees = new Set();
+
 // Collapsed list views. "Recent" means latest activity: created, verified, or
 // recalled. Reuse has no per-candidate timestamp in the payload, so its
 // ranking is call-site usage only; nothing here claims recency it cannot know.
@@ -540,10 +544,8 @@ function renderReposTable(repoAggs) {
     tr.tabIndex = 0;
     tr.setAttribute('role', 'row');
     if (expandable) {
-      tr.setAttribute('aria-label', 'Toggle worktrees for repository ' + label);
-      tr.setAttribute('aria-expanded', 'false');
-    } else {
-      tr.setAttribute('aria-label', 'Filter by repository ' + label);
+      // Expanded state survives SSE re-renders via the expandedWorktrees set.
+      tr.setAttribute('aria-expanded', expandedWorktrees.has(label) ? 'true' : 'false');
     }
 
     const calls = rData.calls;
@@ -563,7 +565,8 @@ function renderReposTable(repoAggs) {
 
     tr.innerHTML =
       '<td>' +
-      '  <div class="repo-name-wrap">' + chevron + '<strong>' + escapeHtml(label) + '</strong> ' + wtBadge + wtCount + '</div>' +
+      '  <div class="repo-name-wrap">' + chevron +
+      '    <strong class="repo-filter-label" role="button" tabindex="0" title="Filter telemetry by ' + escapeHtml(label) + '">' + escapeHtml(label) + '</strong> ' + wtBadge + wtCount + '</div>' +
       '  <div class="row-track"><div class="row-track-fill" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
@@ -571,6 +574,21 @@ function renderReposTable(repoAggs) {
       '<td class="text-muted num-col">' + lastStr + '</td>';
 
     tbody.appendChild(tr);
+
+    // The repository label is its own filter trigger: activating it filters
+    // without also firing the row's worktree toggle (stopPropagation), and
+    // keyboard users get Enter/Space on it like on the row itself.
+    const labelTarget = tr.querySelector('.repo-filter-label');
+    if (labelTarget) {
+      labelTarget.onclick = (ev) => { ev.stopPropagation(); filterByRepo(label); };
+      labelTarget.onkeydown = (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          filterByRepo(label);
+        }
+      };
+    }
 
     // Linked-worktree sub-rows stay collapsed until the main row is clicked;
     // the repository filter dropdown still scopes the feed to the main repo.
@@ -592,10 +610,16 @@ function renderReposTable(repoAggs) {
     });
 
     if (expandable) {
+      // Re-apply the persisted expansion so a rebuild does not collapse open
+      // branches; aria-expanded was already stamped from the set above.
+      if (expandedWorktrees.has(label)) {
+        subRows.forEach(sub => sub.classList.add('wt-open'));
+      }
       const toggle = () => {
         const open = tr.getAttribute('aria-expanded') !== 'true';
         tr.setAttribute('aria-expanded', String(open));
         subRows.forEach(sub => sub.classList.toggle('wt-open', open));
+        if (open) { expandedWorktrees.add(label); } else { expandedWorktrees.delete(label); }
         announce((open ? 'Expanded ' : 'Collapsed ') + worktrees.length + ' worktrees of ' + label);
       };
       tr.onclick = toggle;
@@ -654,7 +678,6 @@ function renderAgentsTable(agentAggs, totalCalls) {
     tr.className = 'agent-row-item';
     tr.tabIndex = 0;
     tr.setAttribute('role', 'row');
-    tr.setAttribute('aria-label', 'Filter by agent ' + aName);
     tr.onclick = () => filterByAgent(aName);
     tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); filterByAgent(aName); } };
 
@@ -692,6 +715,7 @@ function filterByAgent(agentName) {
   const select = document.getElementById('agent-filter');
   if (select) {
     select.value = agentName;
+    announce('Filtered by agent ' + agentName);
     applyTelemetryFilters();
   }
 }
@@ -717,7 +741,6 @@ function renderReuseReposTable(repoAggs) {
     tr.className = 'repo-row-item';
     tr.tabIndex = 0;
     tr.setAttribute('role', 'row');
-    tr.setAttribute('aria-label', 'Filter by repository ' + (rData.display || rName));
     // Candidate filters match store basenames; the path key would append a
     // ghost option and empty the list.
     tr.onclick = () => filterReuseByRepo(rData.display || rName);
@@ -764,10 +787,14 @@ function renderReuseAgentsTable(agentAggs) {
   entries.forEach(([aName, aData]) => {
     const tr = document.createElement('tr');
     tr.className = 'agent-row-item';
-    tr.onclick = () => {
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'row');
+    const openTelemetryAgent = () => {
       switchTab('telemetry');
       filterByAgent(aName);
     };
+    tr.onclick = openTelemetryAgent;
+    tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTelemetryAgent(); } };
 
     const calls = aData.reuse_calls || 0;
     const hits = aData.reuse_hits || 0;
@@ -807,6 +834,11 @@ function filterReuseByRepo(repoName) {
       select.appendChild(opt);
     }
     select.value = (select.value === repoName) ? 'ALL' : repoName;
+    if (select.value === 'ALL') {
+      announce('Filter reset: all repositories');
+    } else {
+      announce('Filtered by repository ' + repoName);
+    }
     renderReuseList();
   }
 }
@@ -832,7 +864,6 @@ function renderMemoryReposTable(repoAggs) {
     tr.className = 'repo-row-item';
     tr.tabIndex = 0;
     tr.setAttribute('role', 'row');
-    tr.setAttribute('aria-label', 'Filter by store ' + (rData.display || rName));
     // Store filters match store basenames; the path key would append a ghost
     // option and empty the list.
     tr.onclick = () => filterMemoryByRepo(rData.display || rName);
@@ -881,10 +912,14 @@ function renderMemoryAgentsTable(agentAggs) {
   entries.forEach(([aName, aData]) => {
     const tr = document.createElement('tr');
     tr.className = 'agent-row-item';
-    tr.onclick = () => {
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'row');
+    const openTelemetryAgent = () => {
       switchTab('telemetry');
       filterByAgent(aName);
     };
+    tr.onclick = openTelemetryAgent;
+    tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTelemetryAgent(); } };
 
     const calls = aData.memory_calls || 0;
     const errs = aData.memory_errors || 0;
@@ -912,20 +947,25 @@ function renderMemoryAgentsTable(agentAggs) {
 function filterMemoryByRepo(repoName) {
   const select = document.getElementById('mem-store-filter');
   if (select) {
-    let exists = false;
+    // Options carry value = store_id and text = short store name; rows pass
+    // the display name, so match either side and compare the matched option
+    // value (never the raw label) for the toggle. Never fabricate an option:
+    // an unmatched name would empty the note list.
+    let matchedValue = '';
     for (let i = 0; i < select.options.length; i++) {
-      if (select.options[i].value === repoName) {
-        exists = true;
+      const opt = select.options[i];
+      if (opt.value === repoName || opt.textContent === repoName) {
+        matchedValue = opt.value;
         break;
       }
     }
-    if (!exists) {
-      const opt = document.createElement('option');
-      opt.value = repoName;
-      opt.textContent = repoName;
-      select.appendChild(opt);
+    if (matchedValue === '' || select.value === matchedValue) {
+      select.value = 'ALL';
+      announce('Filter reset: all stores');
+    } else {
+      select.value = matchedValue;
+      announce('Filtered by store ' + repoName);
     }
-    select.value = (select.value === repoName) ? 'ALL' : repoName;
     renderMemoryList();
   }
 }
@@ -1122,6 +1162,7 @@ function filterByRepo(repoName) {
   const select = document.getElementById('repo-filter');
   if (select) {
     select.value = repoName;
+    announce('Filtered by repository ' + repoName);
     applyTelemetryFilters();
   }
 }

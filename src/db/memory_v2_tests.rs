@@ -108,7 +108,7 @@ fn epoch_change_forces_rebuild() {
     .unwrap();
     let n = super::memory_fts::ensure_memory_fts_v2(&conn, false).unwrap();
     assert_eq!(n, 1);
-    assert_eq!(meta(&conn, "fts_epoch").as_deref(), Some("2"));
+    assert_eq!(meta(&conn, "fts_epoch").as_deref(), Some("3"));
     assert_eq!(meta(&conn, "fts_v2_complete").as_deref(), Some("1"));
     let text: String = conn
         .query_row("SELECT text FROM memories_fts_v2", [], |r| r.get(0))
@@ -249,7 +249,7 @@ fn fresh_and_migrated_schema_match() {
         )
         .unwrap();
     assert!(v2_sql.contains("remove_diacritics 2"));
-    assert_eq!(meta(&fresh, "fts_epoch").as_deref(), Some("2"));
+    assert_eq!(meta(&fresh, "fts_epoch").as_deref(), Some("3"));
     assert_eq!(meta(&fresh, "fts_v2_complete").as_deref(), Some("1"));
     drop(fresh);
     drop(migrated);

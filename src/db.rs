@@ -372,6 +372,20 @@ pub fn publish_new_index(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Escape LIKE metacharacters so a ref containing `%` or `_` cannot match an
+/// arbitrary path and report itself verified. Pair with `ESCAPE '\'` on every
+/// LIKE term built from caller-controlled text.
+pub(crate) fn like_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    for ch in raw.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     //! Filesystem mutation helpers for db tests: every fs write performed by

@@ -152,7 +152,7 @@ The 10 core command surfaces cover complete code navigation, anti-reinvention, a
 
 ### Platform & Maintenance Commands
 
-- `eg mem write|query|get|delete|export|import|gc`: Zero-token project and global memory management (Markdown/JSONL export and reject-on-conflict import).
+- `eg mem write|query|get|touch|delete|export|import|gc|reindex`: Zero-token project and global memory management (Markdown/JSONL export and reject-on-conflict import).
 - `eg doctor [--invalidate]`: Verify index integrity, staleness, or reset derived data.
 - `eg stats [--path <dir>]`: Build-time summary of files, symbols, edges, and index bytes.
 - `eg unresolved [--names]`: Inspect where static resolution could not resolve call sites.
@@ -212,7 +212,7 @@ See the complete [CLI Reference](docs/cli-reference.md) for flag details and exi
 ### Real-Time Performance & Telemetry Footer
 Every MCP response includes a compact execution summary:
 ```text
-⚡ eg: 1.2ms | ~3.8k tokens saved
+⚡ eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
 ```
 Verify aggregate session savings at any time:
 ```bash

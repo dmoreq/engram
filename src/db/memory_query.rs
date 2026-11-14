@@ -259,13 +259,17 @@ pub fn memory_current_keys(
         .map_err(map_memory_err)
 }
 
-/// Current row for one exact key plus its total revision count.
+/// Current row for one exact key plus its total revision count. The highest
+/// revision wins: since inactive-revision gating, an expired row can be
+/// re-written without being marked superseded, so two rows of one key may
+/// both carry `superseded_by IS NULL` and the pick must be deterministic.
 pub fn memory_get(conn: &Connection, key: &str) -> Result<Option<(MemRow, i64)>> {
     let row = conn
         .query_row(
             &format!(
                 "SELECT {MEM_ROW_SQL} FROM memories
-                 WHERE key = ?1 AND superseded_by IS NULL LIMIT 1"
+                 WHERE key = ?1 AND superseded_by IS NULL
+                 ORDER BY rev DESC LIMIT 1"
             ),
             rusqlite::params![key],
             mem_row,

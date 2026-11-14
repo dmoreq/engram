@@ -128,14 +128,16 @@ fn inspect_store(
     let index = store.repo.as_ref().and_then(|r| db::try_open_index(r).ok());
     // v1 stores predate anchored_at; read the creation time as the anchor
     // instead of failing the whole store on a missing column.
-    let anchor_expr = if column_present(&conn, "memories", "anchored_at") {
-        "anchored_at"
-    } else {
-        "0"
-    };
+    let anchor_expr =
+        if crate::db::column_present(&conn, "memories", "anchored_at").unwrap_or(false) {
+            "anchored_at"
+        } else {
+            "0"
+        };
     let sql = format!(
         "SELECT refs, {anchor_expr}, created_at FROM memories \
-         WHERE superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1) LIMIT 500"
+         WHERE superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1) \
+         ORDER BY key ASC, id ASC LIMIT 500"
     );
     let mut stmt = conn.prepare(&sql).map_err(|_| MemoryFailure::Corrupt)?;
     let rows = stmt
@@ -191,15 +193,4 @@ fn regular_store(path: &Path) -> bool {
 
 fn symlink_store(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-}
-
-fn column_present(conn: &Connection, table: &str, column: &str) -> bool {
-    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
-        return false;
-    };
-    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) else {
-        return false;
-    };
-    let names: Vec<String> = rows.flatten().collect();
-    names.iter().any(|name| name == column)
 }

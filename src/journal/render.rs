@@ -31,6 +31,9 @@ struct ErrorRecord {
 struct ToolAgg {
     calls: usize,
     errors: usize,
+    /// Successful calls only: empty (exit 1) and ambiguous (exit 2) results
+    /// carry no savings — the dashboard summary's Ok-only accounting.
+    ok_calls: usize,
     empty: usize,
     empty_ok: usize,
     empty_error: usize,
@@ -109,10 +112,18 @@ fn load_global_usage_lines() -> crate::error::Result<String> {
 /// Fold one parsed line into its per-tool aggregate; one counter rule set.
 fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
     agg.calls += 1;
+    let shown = fields.shown.unwrap_or(fields.result_count).max(0) as usize;
     // One exit-code classification for the CLI and the dashboard: empty and
-    // ambiguous results are not failures, so they must not inflate `errors`.
-    if crate::error::ExitClass::of(fields.exit_code) == crate::error::ExitClass::Error {
-        agg.errors += 1;
+    // ambiguous results are not failures and price no savings — only a real
+    // success bills rows and calls into the savings arms.
+    match crate::error::ExitClass::of(fields.exit_code) {
+        crate::error::ExitClass::Ok => {
+            agg.ok_calls += 1;
+            agg.total_shown += shown;
+            agg.total_results += fields.result_count.max(0) as usize;
+        }
+        crate::error::ExitClass::Error => agg.errors += 1,
+        crate::error::ExitClass::Empty | crate::error::ExitClass::Ambiguous => {}
     }
     if fields.result_count == 0 {
         agg.empty += 1;
@@ -122,7 +133,6 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
             agg.empty_error += 1;
         }
     }
-    let shown = fields.shown.unwrap_or(fields.result_count).max(0) as usize;
     let capped = if fields.tool == "reuse" {
         fields.reuse.is_some_and(|reuse| reuse.capped > 0)
     } else {
@@ -135,8 +145,6 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
         agg.stale += 1;
     }
     agg.ambiguous += fields.ambiguous.max(0) as usize;
-    agg.total_shown += shown;
-    agg.total_results += fields.result_count.max(0) as usize;
     if let Some(us) = fields.latency_us {
         agg.latencies.push(us.max(0) as u64);
     }
@@ -225,12 +233,7 @@ fn savings_basis(aggs: &std::collections::BTreeMap<String, ToolAgg>) -> String {
             .iter()
             .map(|tool| {
                 aggs.get(*tool).map_or(0, |agg| {
-                    estimated_tokens_saved(
-                        tool,
-                        agg.total_shown,
-                        agg.total_results,
-                        agg.calls.saturating_sub(agg.errors),
-                    )
+                    estimated_tokens_saved(tool, agg.total_shown, agg.total_results, agg.ok_calls)
                 })
             })
             .sum();
@@ -285,21 +288,47 @@ fn aggregate_global_usage(
         // root that still exists as a real directory. Dead roots and
         // identityless legacy lines are the same non-entities here as on the
         // dashboard, so both surfaces always list the same repositories.
-        let Some(repo_key) = fields
+        let Some(journaled) = fields
             .repo
             .clone()
             .filter(|repo| liveness::repo_is_live(Some(repo)))
         else {
             continue;
         };
+        // Global telemetry lists durable repositories only: the same scratch
+        // rule every dashboard panel applies, judged on a linked worktree's
+        // main root so a scratch checkout of a real project survives.
+        if liveness::repo_is_ephemeral(&journaled) {
+            continue;
+        }
+        // A linked worktree contributes under its main repository's row,
+        // keyed by the canonical main root; an unresolvable pointer keeps
+        // its own row.
+        let main = fields
+            .worktree
+            .then(|| crate::repo::cached_worktree_main_root(Path::new(&journaled)))
+            .flatten();
+        let (repo_key, display) = match &main {
+            Some(main) => {
+                let main = main.to_string_lossy().into_owned();
+                let display = Path::new(&main)
+                    .file_name()
+                    .map_or_else(|| main.clone(), |n| n.to_string_lossy().into_owned());
+                (main, display)
+            }
+            None => (
+                journaled,
+                fields
+                    .repo_name
+                    .clone()
+                    .unwrap_or_else(|| UNATTRIBUTED.to_string()),
+            ),
+        };
         fold_tool(&fields, aggs.entry(fields.tool.clone()).or_default());
 
         let r_agg = repo_aggs.entry(repo_key).or_default();
         if r_agg.display.is_empty() {
-            r_agg.display = fields
-                .repo_name
-                .clone()
-                .unwrap_or_else(|| UNATTRIBUTED.to_string());
+            r_agg.display = display;
         }
         r_agg.calls += 1;
         if crate::error::ExitClass::of(fields.exit_code) == crate::error::ExitClass::Error {
@@ -312,7 +341,9 @@ fn aggregate_global_usage(
                 agent: fields.agent,
             });
         }
-        if fields.worktree {
+        // `[worktree]` marks an unresolved worktree row only; a folded entry
+        // already shows under its main repository.
+        if fields.worktree && main.is_none() {
             r_agg.worktree = true;
         }
     }
@@ -401,7 +432,6 @@ fn format_age_secs(diff: i64) -> String {
     }
 }
 
-/// Informational USD-per-token coefficient for the `~$` savings estimate: a
 fn calculate_telemetry_totals(
     aggs: &std::collections::BTreeMap<String, ToolAgg>,
 ) -> (usize, usize) {
@@ -409,9 +439,8 @@ fn calculate_telemetry_totals(
     let mut reuse_hits = 0;
 
     for (tool, agg) in aggs {
-        let successful_calls = agg.calls.saturating_sub(agg.errors);
         saved_tokens +=
-            estimated_tokens_saved(tool, agg.total_shown, agg.total_results, successful_calls);
+            estimated_tokens_saved(tool, agg.total_shown, agg.total_results, agg.ok_calls);
         if tool == "reuse" {
             reuse_hits += agg.reuse_scan_results.max(agg.reuse_scan_shown);
         }

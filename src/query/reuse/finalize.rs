@@ -19,6 +19,8 @@ pub(super) fn finalize(
             .then_with(|| a.file.cmp(&b.file))
             .then_with(|| a.line.cmp(&b.line))
             .then_with(|| a.canonical.cmp(&b.canonical))
+            .then_with(|| a.canonical_file.cmp(&b.canonical_file))
+            .then_with(|| a.canonical_line.cmp(&b.canonical_line))
     });
     let freshness_headers = report.freshness.headers();
     crate::journal::set_freshness(crate::journal::ReuseFreshness {
@@ -28,7 +30,11 @@ pub(super) fn finalize(
         unknown_count: report.freshness.unknown_count,
         unknown_reason: report.freshness.unknown_reason.map(|r| r.as_str()),
     });
-    let below_threshold = report
+    // Candidates the collect-time confidence gate removed were never in this
+    // pool (they are already in `counts.below_threshold`); `extra_below`
+    // counts only judge rejections' survivors and freshness demotions that
+    // slipped past the pre-filter, so summing the two cannot double count.
+    let extra_below = report
         .pool
         .iter()
         .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
@@ -36,6 +42,7 @@ pub(super) fn finalize(
     report
         .pool
         .retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
+    let below_threshold = report.counts.below_threshold + extra_below;
     let eligible = report.pool.len();
     let limit_omitted = eligible.saturating_sub(opts.limit);
     report.pool.truncate(opts.limit);
@@ -202,4 +209,63 @@ pub(super) fn finalize(
     query.mode = report.mode;
     query.truncated = report.counts.truncated;
     Ok(query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tie_candidate(canonical_file: &str, canonical_line: i64) -> ReuseCandidate {
+        ReuseCandidate {
+            detector: DetectorId::D5,
+            symbol: "pkg.Alpha".into(),
+            file: "src/a.py".into(),
+            line: 1,
+            canonical: "pkg.Beta".into(),
+            canonical_file: canonical_file.into(),
+            canonical_line,
+            canonical_callers: 0,
+            overlap_pct: None,
+            shared_items: Vec::new(),
+            raw_client: None,
+            confidence: ReuseConfidence::Medium,
+            reasons: Vec::new(),
+            freshness: Freshness::Fresh,
+        }
+    }
+
+    #[test]
+    fn finalize_sort_tie_breaks_on_canonical_file_and_line() {
+        let conn = Connection::open_in_memory().unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let opts = ReuseOpts::new(Vec::new(), 10, false, ReuseConfidence::Low, false).unwrap();
+        // Identical detector rank, symbol, file, and line; only the canonical
+        // identity differs. Without the tie-breakers the stable sort would
+        // keep the insertion order and the zeta candidate would stay first.
+        let report = ReuseReport {
+            mode: ReuseMode::Scan,
+            pool: vec![
+                tie_candidate("src/zeta.py", 9),
+                tie_candidate("src/alpha.py", 2),
+                tie_candidate("src/alpha.py", 1),
+            ],
+            counts: ReuseCounts::default(),
+            freshness: freshness::FreshnessReport::default(),
+            path_matches: 0,
+            stderr: String::new(),
+        };
+        let query = finalize(&ctx, report, &opts).unwrap();
+        let joined = query.lines.join("\n");
+        let alpha1 = joined.find("in src/alpha.py:1)").unwrap();
+        let alpha2 = joined.find("in src/alpha.py:2)").unwrap();
+        let zeta = joined.find("in src/zeta.py:9)").unwrap();
+        assert!(alpha1 < alpha2 && alpha2 < zeta, "{joined}");
+        assert!(
+            joined.contains("3 duplication candidate(s) found"),
+            "{joined}"
+        );
+    }
 }

@@ -254,7 +254,9 @@ fn from_tool_args_analysis(a: &ArgReader<'_>, tool: &str) -> Result<CommandReque
             paths: a.str_array("paths")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_REUSE_LIMIT)?,
             deep_callee: a.b_spec(tool, "deep_callee")?,
-            min_confidence: a.s_opt_spec(tool, "min_confidence")?.unwrap_or_default(),
+            min_confidence: a
+                .s_opt_spec(tool, "min_confidence")?
+                .unwrap_or_else(|| "low".to_string()),
             propose: a.s_opt_spec(tool, "propose")?,
             callees: a.str_array("callees")?,
             explain: a.b_spec(tool, "explain")?,
@@ -311,8 +313,8 @@ fn from_tool_args_memory(a: &ArgReader<'_>, tool: &str) -> Result<CommandRequest
                     .map(|t| t.split_whitespace().map(str::to_string).collect())
                     .unwrap_or_default(),
                 all: a.b("all"),
-                kind: crate::memory::parse_kind_filter(tool, a.s("kind").as_deref())?,
-                scope: crate::memory::parse_scope_filter(tool, a.s("scope").as_deref())?,
+                kind: crate::memory::parse_kind_filter("mem query", a.s("kind").as_deref())?,
+                scope: crate::memory::parse_scope_filter("mem query", a.s("scope").as_deref())?,
                 limit: a.n_spec(tool, "limit", crate::memory::DEFAULT_MEM_LIMIT)?,
                 include_superseded: a.b("include_superseded"),
                 global,

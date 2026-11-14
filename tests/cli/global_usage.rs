@@ -4,8 +4,10 @@ use super::common::*;
 
 #[test]
 fn global_usage_dual_writes_and_summarizes_cross_repo() {
-    let repo1 = temp_repo("global-usage-repo1");
-    let repo2 = temp_repo("global-usage-repo2");
+    // Journaled roots must be durable (outside the OS temp tree): the global
+    // summary hides scratch identities.
+    let repo1 = stable_repo("global-usage-repo1");
+    let repo2 = stable_repo("global-usage-repo2");
     let global_dir = temp_repo("global-usage-store");
 
     write(&repo1, "a.py", "def func_a(): pass\n");
@@ -86,7 +88,7 @@ fn global_usage_dual_writes_and_summarizes_cross_repo() {
 
 #[test]
 fn global_usage_drops_dead_and_identityless_lines() {
-    let live_repo = temp_repo("global-usage-live");
+    let live_repo = stable_repo("global-usage-live");
     let global_dir = temp_repo("global-usage-dead-store");
     write(&live_repo, "a.py", "def func_a(): pass\n");
 

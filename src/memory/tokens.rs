@@ -101,11 +101,28 @@ fn split_run_unicode(run: &str) -> Vec<String> {
     parts
 }
 
+/// A character that stays inside one Unicode word token: alphanumeric letters
+/// and digits, plus the combining-mark blocks (`General_Category = Mn`) that
+/// decomposed (NFD) spellings attach to their base letter. Without the mark
+/// ranges, NFD Vietnamese text would split at every tone mark (`tiếng` ->
+/// `tie` + `ng`). FTS5 `unicode61 remove_diacritics 2` folds the marks, so
+/// keeping them inside the token restores NFC-NFD cross-matching.
+fn is_unicode_word_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(
+            c as u32,
+            0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0xFE20..=0xFE2F
+        )
+}
+
 fn push_clean(parts: &mut Vec<String>, raw: &str) {
     let cleaned: String = raw
         .to_lowercase()
         .chars()
-        .filter(|c| c.is_alphanumeric())
+        // `\u{0307}` (combining dot above) stays excluded: `İ` case-expands to
+        // `i` + the dot, and the token must be the bare `i` (doc-comment on
+        // `split_run_unicode`).
+        .filter(|&c| is_unicode_word_char(c) && c != '\u{0307}')
         .collect();
     if !cleaned.is_empty() {
         parts.push(cleaned);
@@ -138,7 +155,7 @@ pub fn mem_tokens_unicode(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut run = String::new();
     for c in text.chars() {
-        if c.is_alphanumeric() {
+        if is_unicode_word_char(c) {
             run.push(match c {
                 'đ' | 'Đ' => 'd',
                 other => other,
@@ -292,6 +309,27 @@ mod tests {
             mem_fts_text("k", "t", "Bộ nhớ"),
             mem_fts_text_unicode("k", "t", "Bộ nhớ")
         );
+    }
+
+    #[test]
+    fn mem_tokens_unicode_keeps_nfd_syllable_intact() {
+        // The NFD spelling of `tiếng` (tone marks as combining marks, the
+        // macOS/PDF clipboard shape) must yield exactly one token, like the
+        // NFC spelling; the tokenizer does not normalize, so the two spellings
+        // are distinct tokens that FTS5 folds to the same skeleton.
+        let nfd = "ti\u{0065}\u{0302}\u{0301}ng";
+        let nfc = "tiếng";
+        assert_eq!(mem_tokens_unicode(nfd), vec![nfd.to_string()]);
+        assert_eq!(mem_tokens_unicode(nfc), vec![nfc.to_string()]);
+    }
+
+    #[test]
+    fn mem_tokens_unicode_drops_turkic_dot_after_lowercase() {
+        // `İ` case-expands to `i` + combining dot above (U+0307); the dot is
+        // stripped so the token stays the bare `i`.
+        assert_eq!(mem_tokens_unicode("İ"), strings(&["i"]));
+        // In a word the same expansion keeps the rest of the run intact.
+        assert_eq!(mem_tokens_unicode("İstanbul"), strings(&["istanbul"]));
     }
 }
 

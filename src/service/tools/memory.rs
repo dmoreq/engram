@@ -68,7 +68,7 @@ pub(super) const MEM_WRITE: ToolSpec = ToolSpec {
                 name: "touch",
                 kind: ParamKind::Bool,
                 required: false,
-                description: "Refresh created_at (last asserted) when content_hash matches an existing current note",
+                description: "Refresh created_at and re-assert the invocation's TTL (expires_at; explicit ttl wins, else the 7-day session default) when content_hash matches an existing current note",
             },
             ParamSpec {
                 name: "confirm",

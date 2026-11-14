@@ -1,7 +1,7 @@
 //! HTTP request/response primitives: bounded parsing, loopback Host guard,
 //! defensive headers, and one stderr line per request.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;
 
@@ -19,10 +19,19 @@ const MAX_HEADERS: usize = 64;
 
 pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Option<HttpRequest>> {
     let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
+    // The request line is bounded like the header block below: a first line
+    // over the cap aborts parsing instead of growing the buffer without limit.
+    let mut request_line = Vec::new();
+    let read = (&mut reader)
+        .take(MAX_HEADER_BYTES as u64)
+        .read_until(b'\n', &mut request_line)?;
+    if read == 0 || request_line.last() != Some(&b'\n') {
+        // Empty stream, or a first line over the cap (or torn mid-line):
+        // refuse the request.
         return Ok(None);
     }
+    let request_line = String::from_utf8(request_line)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
@@ -80,16 +89,32 @@ pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Optio
 
 /// The dashboard answers only for loopback hostnames. A rebound public domain
 /// resolves to 127.0.0.1 but still sends its own `Host`, which this rejects.
+/// Bracketed IPv6 literals are read between the brackets (RFC 7230), so
+/// `[::1]:port` is accepted; bare IPv6 forms (`::1`, `::1:8080`) have no
+/// unambiguous hostname and stay rejected.
 pub(super) fn host_allowed(host: Option<&str>) -> bool {
     let Some(host) = host else {
         return true;
     };
-    let name = host
-        .split(':')
-        .next()
-        .unwrap_or(host)
-        .trim_start_matches('[');
+    let Some(name) = host_name(host) else {
+        return false;
+    };
     matches!(name, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0")
+}
+
+/// Extract the Host header's hostname: the text between brackets for a
+/// bracketed literal, else the text before the first `:`. A bracket without
+/// a closing `]`, or a leading empty segment (`::1` splits to `""`), is
+/// ambiguous and yields no hostname.
+fn host_name(host: &str) -> Option<&str> {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split_once(']').map(|(inside, _)| inside);
+    }
+    let name = host.split(':').next().unwrap_or(host);
+    if name.is_empty() {
+        return None;
+    }
+    Some(name)
 }
 
 /// Loopback-only request authenticity: a mutating request must be
@@ -161,4 +186,65 @@ pub(super) fn send_response(
         stream.write_all(body)?;
     }
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_allowed_accepts_loopback_forms() {
+        for host in [
+            "[::1]:8080",
+            "127.0.0.1:8080",
+            "localhost:3000",
+            "0.0.0.0:80",
+            "localhost",
+        ] {
+            assert!(host_allowed(Some(host)), "{host} must be accepted");
+        }
+    }
+
+    #[test]
+    fn host_allowed_rejects_public_hosts_and_bare_ipv6_forms() {
+        for host in [
+            "evil.example:80",
+            "evil.example",
+            "[2001:db8::1]:443",
+            "::1",
+            "::1:8080",
+        ] {
+            assert!(!host_allowed(Some(host)), "{host} must be rejected");
+        }
+    }
+
+    #[test]
+    fn request_line_over_cap_is_rejected() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        let big = format!("GET /{}.html HTTP/1.1\r\n", "a".repeat(9000));
+        std::io::Write::write_all(&mut client, big.as_bytes()).unwrap();
+        drop(client);
+        let (mut server, _) = listener.accept().unwrap();
+        assert!(read_http_request(&mut server).unwrap().is_none());
+    }
+
+    #[test]
+    fn request_line_at_the_cap_still_parses() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let head = "GET /";
+        let tail = " HTTP/1.1\r\n";
+        let pad = MAX_HEADER_BYTES - head.len() - tail.len() - ".html".len();
+        let line = format!("{head}{}.html{tail}", "a".repeat(pad));
+        assert_eq!(line.len(), MAX_HEADER_BYTES);
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        std::io::Write::write_all(&mut client, line.as_bytes()).unwrap();
+        drop(client);
+        let (mut server, _) = listener.accept().unwrap();
+        let req = read_http_request(&mut server).unwrap();
+        assert!(req.is_some(), "a request line of exactly the cap parses");
+        assert_eq!(req.unwrap().path.len(), MAX_HEADER_BYTES - 4 - tail.len());
+    }
 }

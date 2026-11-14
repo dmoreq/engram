@@ -113,18 +113,30 @@ fn has_aws_access_key(text: &str) -> bool {
 }
 
 fn has_jwt(text: &str) -> bool {
-    text.split_whitespace().any(|token| {
-        if !token.starts_with("eyJ") {
-            return false;
+    // Scan every `eyJ` hit instead of whitespace-split words: JWTs embedded in
+    // JSON strings (`"token": "eyJ..."`) or assignments (`JWT=eyJ...`) never
+    // start a whitespace-delimited word. The boundary gate rejects mid-word
+    // false hits, and the maximal base64url-and-dot run carries the three
+    // base64url segments (each >= 10 chars) the detector requires.
+    for (idx, _) in text.match_indices("eyJ") {
+        if !boundary(text, idx) {
+            continue;
         }
-        let parts: Vec<&str> = token.split('.').collect();
-        parts.len() >= 3
+        let run_end = text[idx..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+            .unwrap_or(text.len() - idx);
+        let parts: Vec<&str> = text[idx..idx + run_end].split('.').collect();
+        if parts.len() >= 3
             && parts.iter().all(|p| {
                 p.len() >= 10
                     && p.chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             })
-    })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn has_private_key(text: &str) -> bool {
@@ -240,6 +252,39 @@ mod tests {
             (database.to_string(), "database-url"),
         ] {
             assert_eq!(suspected_secret(&text), Some(label), "{text}");
+        }
+    }
+
+    #[test]
+    fn jwt_detected_in_json_string_and_env_assignment() {
+        let seg1 = format!("eyJ{}", "a".repeat(10));
+        let seg2 = format!("eyJ{}", "b".repeat(10));
+        let seg3 = "c".repeat(10);
+        let bare = format!("{seg1}.{seg2}.{seg3}");
+        // JSON string value and KEY=assignment shapes: the JWT never starts a
+        // whitespace-delimited word, yet must still be detected.
+        for text in [
+            format!(r#"{{"token": "{bare}"}}"#),
+            format!("JWT={bare}"),
+            format!("auth = Bearer {bare};"),
+        ] {
+            assert_eq!(suspected_secret(&text), Some("jwt"), "{text}");
+        }
+    }
+
+    #[test]
+    fn jwt_negative_shapes_stay_undetected() {
+        let seg = format!("eyJ{}", "a".repeat(10));
+        let full = format!("{seg}.{seg}.{seg}");
+        // eyJ prefix alone, two-segment and short-segment shapes, and a
+        // mid-word false hit all stay undetected.
+        for text in [
+            "eyJhbGciOi".to_string(),
+            format!("{seg}.{seg}"),
+            format!("{}.{}.{}", "a".repeat(10), "b".repeat(10), "c".repeat(10)),
+            format!("word{full}"),
+        ] {
+            assert_eq!(suspected_secret(&text), None, "{text}");
         }
     }
 

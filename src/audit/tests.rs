@@ -132,3 +132,24 @@ fn alias_is_stable_and_path_free() {
     assert_eq!(a.len(), 21);
     assert!(!a.contains('/'));
 }
+
+#[test]
+fn audit_root_resolution_follows_reporef_for_subdirectories() {
+    use crate::repo::RepoRef;
+    // The error-mapping rule is asserted at the resolution level: a `--root`
+    // subdirectory resolves to its git repository, so journal lines recorded
+    // under the repo root survive `same_root` filtering.
+    let outer = temp_root("audit-reporef-subdir");
+    make_dir_all(outer.join(".git")).unwrap();
+    let sub = outer.join("src");
+    make_dir_all(&sub).unwrap();
+    let resolved = RepoRef::resolve(Some(&sub)).unwrap();
+    let expected = std::fs::canonicalize(&outer).unwrap_or_else(|_| outer.clone());
+    assert_eq!(resolved.root(), expected);
+
+    // An explicit root that cannot resolve keeps its usage error (exit 2);
+    // only the no-explicit-root branch maps failures to the exit-1 hint.
+    let err = RepoRef::resolve(Some(std::path::Path::new("/"))).unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    remove_tree(&outer);
+}

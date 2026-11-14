@@ -198,7 +198,15 @@ fn scan_path_suffix(text: &str, bytes: &[u8], mut name: String, mut i: usize) ->
 /// calls, skips string/char literals, and ignores method-call receivers
 /// (`x.f(`) whose receiver expression a text scan cannot reconstruct.
 pub(super) fn scan_macro_call_names(raw: &str) -> Vec<String> {
-    let text = raw.get(..MAX_MACRO_TOKEN_TEXT).unwrap_or(raw);
+    // Clamp to the cap, then walk back to the nearest UTF-8 boundary: when
+    // the cap lands mid-character, `str::get` would return `None` and fall
+    // back to scanning the entire macro body. The walk-back is at most 3
+    // bytes and always terminates at 0, which is a boundary.
+    let mut end = raw.len().min(MAX_MACRO_TOKEN_TEXT);
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = &raw[..end];
     let bytes = text.as_bytes();
     let n = bytes.len();
     let mut calls = Vec::new();
@@ -421,4 +429,24 @@ fn visit_impl_item<'a>(w: &mut Walker<'a, '_, '_>) {
     w.ctx.class_stack.push(qualname);
     w.work.push(Step::PopClass);
     push_children_rev(w.work, w.node);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macro_scan_caps_at_char_boundary() {
+        // 3-byte characters place the 64 KiB cap mid-character: the exact
+        // case where `str::get(..cap)` returned `None` and the scan fell
+        // back to the unbounded macro body. The clamp must stop at the last
+        // character boundary before the cap instead.
+        let filler = "\u{1EEB}".repeat(30_000); // 90_000 bytes, all 3-byte chars
+        let raw = format!("assert_eq!(inner_call() {filler} tail_call())");
+        let calls = scan_macro_call_names(&raw);
+        assert!(calls.contains(&"inner_call".to_string()));
+        // The call beyond the cap is outside the clamped scan window.
+        assert!(!calls.contains(&"tail_call".to_string()));
+        assert!(calls.len() <= MAX_MACRO_CALLS_PER_SITE);
+    }
 }

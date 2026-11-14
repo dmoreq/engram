@@ -345,11 +345,18 @@ fn handle_tools_call(
     )
 }
 
-/// Active-root fallback shared by initialize and tools/call: the enclosing git
-/// repository when one exists, else the discovered project root.
+/// Active-root fallback shared by initialize and tools/call, resolved through
+/// the shared `RepoRef` resolver: a nested `.engram/` store wins over the
+/// enclosing git root (matching the CLI), and a subdirectory resolves to its
+/// repository instead of standing in for one.
 fn root_from_path(start: &Path) -> Option<PathBuf> {
-    crate::walk::find_git_root(start).or_else(|| crate::walk::discover_root(Some(start)).ok())
+    crate::repo::RepoRef::resolve(Some(start))
+        .ok()
+        .map(|r| r.root().to_path_buf())
 }
+
+#[cfg(test)]
+mod tests;
 
 fn infer_active_root(root: &mut Option<PathBuf>, arguments: &Value) {
     if root.is_some() {

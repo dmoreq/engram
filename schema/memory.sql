@@ -54,5 +54,5 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(text, tokenize='unicode61');
 CREATE VIRTUAL TABLE memories_fts_v2 USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 -- Unicode index: rowid = memories.id; text = mem_fts_text(key, tags, body).
 -- The SQLite tokenizer folds Vietnamese tones; mem_tokens_unicode maps đ -> d.
--- Reads use this table only when memory_meta says fts_epoch = 2 and
+-- Reads use this table only when memory_meta says fts_epoch = 3 and
 -- fts_v2_complete = 1. Maintained in lockstep with memories_fts.

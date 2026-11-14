@@ -164,7 +164,9 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
             Status::Pass
         };
         if let Some(b) = baseline {
-            if data.baseline.sufficient && p95 > 2.0 * b {
+            // The 2x-baseline rule escalates a regression; it must never
+            // downgrade a severity the static thresholds already assigned.
+            if status == Status::Pass && data.baseline.sufficient && p95 > 2.0 * b {
                 status = Status::Warn;
             }
         }
@@ -234,3 +236,6 @@ pub(super) fn budget(tool: &str) -> Option<(f64, f64)> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

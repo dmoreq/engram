@@ -57,6 +57,9 @@ pub struct TuiState {
     pub log_path: PathBuf,
     pub repo_filter: Option<String>,
     pub errors_only: bool,
+    /// Global-journal mode: scratch stores hide from every event path, the
+    /// same exclusion the linear mode applies. Set once at construction.
+    pub exclude_ephemeral: bool,
     pub summary: Value,
     pub reuse_candidates: Vec<Value>,
     pub reuse_summary: Value,
@@ -71,12 +74,14 @@ impl TuiState {
         log_path: PathBuf,
         repo_filter: Option<String>,
         errors_only: bool,
+        exclude_ephemeral: bool,
     ) -> Self {
         let mut state = Self {
             active_tab: MonitorTab::Graph,
             log_path,
             repo_filter,
             errors_only,
+            exclude_ephemeral,
             summary: json!({}),
             reuse_candidates: Vec::new(),
             reuse_summary: json!({}),
@@ -125,32 +130,14 @@ impl TuiState {
     }
 
     pub fn matches_filter(&self, val: &Value) -> bool {
-        if self.errors_only {
-            let code = val.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
-            if code < 3 {
-                return false;
-            }
-        }
-
-        if let Some(ref rf) = self.repo_filter {
-            if rf != "ALL" {
-                let r_name = val
-                    .get("repo_name")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        val.get("repo").and_then(Value::as_str).and_then(|p| {
-                            std::path::Path::new(p).file_name().and_then(|n| n.to_str())
-                        })
-                    })
-                    .unwrap_or(crate::repo::UNATTRIBUTED);
-                if r_name != rf {
-                    return false;
-                }
-            }
-        }
-
-        true
+        // One predicate for both monitor modes: the duplicated body lived here
+        // and in `is_event_matched`, so `--repo` and `--errors` could drift.
+        super::is_event_matched(
+            val,
+            self.repo_filter.as_deref(),
+            self.errors_only,
+            self.exclude_ephemeral,
+        )
     }
 
     pub fn push_event(&mut self, val: Value) {

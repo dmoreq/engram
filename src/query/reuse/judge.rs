@@ -181,7 +181,7 @@ fn source(ctx: &QueryCtx<'_>, file: &str, name: &str) -> Option<String> {
         .query_row(
             "SELECT line_start, line_end FROM symbols \
              WHERE file_path = ?1 AND (name = ?2 OR qualname = ?2) \
-             ORDER BY line_start LIMIT 1",
+             ORDER BY line_start, qualname LIMIT 1",
             rusqlite::params![file, name],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

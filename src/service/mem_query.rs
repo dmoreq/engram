@@ -78,47 +78,9 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefStatus {
-    Valid,
-    Modified,
-    Broken,
-}
-
-pub(crate) fn check_ref_status(
-    index_conn: &rusqlite::Connection,
-    r: &str,
-    anchor: i64,
-) -> RefStatus {
-    let file_check: rusqlite::Result<(String, i64)> = index_conn.query_row(
-        "SELECT path, mtime FROM files WHERE path = ?1 OR path LIKE ?2 LIMIT 1",
-        rusqlite::params![r, format!("%/{r}")],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
-    if let Ok((_path, mtime_nanos)) = file_check {
-        return if (mtime_nanos / 1_000_000_000) > anchor {
-            RefStatus::Modified
-        } else {
-            RefStatus::Valid
-        };
-    }
-
-    let sym_check: rusqlite::Result<i64> = index_conn.query_row(
-        "SELECT f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
-         WHERE s.qualname = ?1 OR s.name = ?1 LIMIT 1",
-        rusqlite::params![r],
-        |row| row.get(0),
-    );
-    if let Ok(mtime_nanos) = sym_check {
-        return if (mtime_nanos / 1_000_000_000) > anchor {
-            RefStatus::Modified
-        } else {
-            RefStatus::Valid
-        };
-    }
-
-    RefStatus::Broken
-}
+// The ref-status helper lives in the db layer (`crate::db::query_state`)
+// so the reuse allowlist can consume it without a query->service edge.
+use crate::db::{check_ref_status, RefStatus};
 
 pub(super) fn check_note_ref_status(
     index_conn: Option<&rusqlite::Connection>,
@@ -420,3 +382,6 @@ pub(super) fn render_mem_hit(row: &crate::db::MemRow, tag: &str, revs: i64) -> A
         String::new(),
     )
 }
+
+#[cfg(test)]
+mod tests;

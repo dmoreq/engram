@@ -153,8 +153,10 @@ impl Metrics {
                 self.mem_query_successes += 1;
                 self.mem_reads += 1;
             }
-            "mem_get" => self.mem_reads += 1,
-            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" => {
+            // Parity with the dashboard's classification: an export reads the
+            // store, a reindex mutates its derived state.
+            "mem_get" | "mem_export" => self.mem_reads += 1,
+            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" | "mem_reindex" => {
                 self.mem_writes += 1
             }
             _ => {}
@@ -284,8 +286,12 @@ pub fn collect(mode: &Mode, now: i64, days: u32, baseline_days: u32) -> Result<A
         }
     }
 
-    let baseline_oldest = baseline_metrics.oldest_ts;
-    let clipped = baseline_oldest.map(|t| t > b_start).unwrap_or(false);
+    // Clipping means the journal cannot prove coverage of the baseline
+    // window's start: only the coverage-wide oldest valid entry can show
+    // that pre-`b_start` history survived rotation. The baseline bucket
+    // itself only admits entries at or after `b_start`, so its own oldest
+    // can never prove window coverage.
+    let clipped = coverage.oldest_ts.map(|t| t > b_start).unwrap_or(false);
     let sufficient = baseline_metrics.successes >= 20
         && baseline_metrics.active_days.len() >= 3
         && !clipped
@@ -409,31 +415,11 @@ fn same_root(a: &Path, b: &Path) -> bool {
 }
 
 fn canonical_tool(tool: &str) -> String {
-    const KNOWN: &[&str] = &[
-        "build",
-        "callers",
-        "callees",
-        "context",
-        "imports",
-        "path",
-        "impact",
-        "unresolved",
-        "symbols",
-        "reuse",
-        "search",
-        "stats",
-        "doctor",
-        "usage",
-        "mem_write",
-        "mem_touch",
-        "mem_query",
-        "mem_get",
-        "mem_delete",
-        "mem_gc",
-        "mem_export",
-        "mem_import",
-    ];
-    if KNOWN.contains(&tool) {
+    // One taxonomy: every priced tool plus every deliberately unpriced one.
+    // A newly journaled tool lands here automatically once it gains a pricing
+    // arm or joins `UNPRICED_TOOLS`, so `audit` and `mem_reindex` cannot fall
+    // back to "other" again.
+    if is_priced(tool) || crate::journal::UNPRICED_TOOLS.contains(&tool) {
         tool.to_string()
     } else {
         "other".to_string()
@@ -462,3 +448,6 @@ pub fn is_navigation(tool: &str) -> bool {
         "callers" | "callees" | "context" | "path" | "impact" | "imports"
     )
 }
+
+#[cfg(test)]
+mod tests;

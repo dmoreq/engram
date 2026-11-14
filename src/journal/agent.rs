@@ -57,6 +57,13 @@ const AGENT_ALIASES: &[(&str, &str)] = &[
 /// One canonical spelling for a caller-reported name. An unknown name is kept
 /// as written (trimmed and capped): an operator's `ENGRAM_AGENT` tag must
 /// survive even when it is not in the table.
+///
+/// Terminal safety: before the cap, control characters (C0/C1, including
+/// `ESC`) and bidi/format characters are stripped, so MCP `clientInfo.name`
+/// and `ENGRAM_AGENT` values can no longer carry escape payloads into `eg
+/// monitor`'s raw-mode renderer or the web tags. Residual: journal lines
+/// already written before this filter are not rewritten — the filter protects
+/// new writes only (same-user data, matching the worktree-pointer residual).
 fn canonical_agent(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -66,7 +73,30 @@ fn canonical_agent(raw: &str) -> Option<String> {
     if let Some((_, canonical)) = AGENT_ALIASES.iter().find(|(alias, _)| *alias == lower) {
         return Some((*canonical).to_string());
     }
-    Some(trimmed.chars().take(32).collect())
+    let safe: String = trimmed
+        .chars()
+        .filter(|c| is_safe_agent_char(*c))
+        .take(32)
+        .collect();
+    if safe.is_empty() {
+        return None;
+    }
+    Some(safe)
+}
+
+/// A character that survives into a stored agent name: neither a Unicode
+/// control character nor a bidi/format character that passes `is_control()`
+/// but would flip terminal rendering or spoof attribution.
+fn is_safe_agent_char(c: char) -> bool {
+    if c.is_control() {
+        return false;
+    }
+    !matches!(c,
+        '\u{202A}'..='\u{202E}'   // bidi embedding and override
+        | '\u{2066}'..='\u{2069}' // bidi isolate
+        | '\u{200B}'..='\u{200F}' // zero-width and directional marks
+        | '\u{FEFF}'              // byte-order mark / zero-width no-break space
+    )
 }
 
 /// Env markers the agent CLIs export to the shells they spawn, innermost agent
@@ -210,6 +240,29 @@ mod tests {
     fn unknown_names_are_kept_as_written() {
         assert_eq!(canonical_agent("  MyAgent ").as_deref(), Some("MyAgent"));
         assert_eq!(canonical_agent("   "), None);
+    }
+
+    #[test]
+    fn ansi_escape_bytes_are_stripped_from_agent_names() {
+        // ESC [ 31 m, C0 bytes, and CR/LF collapse to the printable remainder.
+        assert_eq!(
+            canonical_agent("\u{1b}[31mname\r\nx\u{7f}").as_deref(),
+            Some("[31mnamex")
+        );
+        // Bidi override and zero-width space are stripped too.
+        assert_eq!(
+            canonical_agent("\u{202E}evil\u{200B}").as_deref(),
+            Some("evil")
+        );
+        // A name made entirely of control characters is not attributed at all.
+        assert_eq!(canonical_agent("\u{1b}\u{7f}\r"), None);
+        // The alias table path is unaffected by the filter.
+        assert_eq!(canonical_agent("\u{1b}claude").as_deref(), Some("claude"));
+        // The 32-character cap applies to the filtered name.
+        let long = format!("{}{}", "ab".repeat(24), "\u{1b}");
+        let got = canonical_agent(&long).unwrap();
+        assert_eq!(got.chars().count(), 32);
+        assert!(got.chars().all(|c| !c.is_control()));
     }
 
     #[test]

@@ -113,13 +113,31 @@ pub fn worktree_main_root(root: &Path) -> Option<PathBuf> {
         // here is not a worktree pointer either.
         return None;
     }
-    let content = std::fs::read_to_string(&pointer).ok()?;
+    // The pointer is one short line; a larger file is malformed and must not
+    // force an unbounded read.
+    const MAX_POINTER_BYTES: u64 = 4096;
+    let mut file = std::fs::File::open(&pointer).ok()?;
+    let mut raw = Vec::new();
+    use std::io::Read as _;
+    (&mut file)
+        .take(MAX_POINTER_BYTES + 1)
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > MAX_POINTER_BYTES {
+        return None;
+    }
+    let content = String::from_utf8(raw).ok()?;
     let gitdir = PathBuf::from(content.strip_prefix("gitdir:")?.trim());
     let gitdir = if gitdir.is_absolute() {
         gitdir
     } else {
         root.join(gitdir)
     };
+    // Canonicalize before any layout check: a spoofed pointer like
+    // `<victim>/.git/worktrees/..` passes every lexical segment check but
+    // canonically resolves to `<victim>/.git`, whose parent segment is not
+    // `worktrees`. A dangling gitdir is not a worktree pointer either.
+    let gitdir = std::fs::canonicalize(&gitdir).ok()?;
     // Layout: <main>/.git/worktrees/<name>. A `modules` segment means a
     // submodule pointer, which belongs to no worktree.
     let name_dir = gitdir.parent()?;
@@ -282,6 +300,32 @@ mod tests {
         assert_eq!(worktree_main_root(&wt), None);
         remove_tree(&main);
         remove_tree(&wt);
+    }
+
+    #[test]
+    fn worktree_pointer_with_dotdot_after_worktrees_is_rejected() {
+        // `gitdir: <victim>/.git/worktrees/..` passes the lexical worktrees
+        // and `.git` segment checks; canonicalizing first collapses the `..`
+        // onto `<victim>/.git`, whose parent segment is not `worktrees`, so
+        // the spoof resolves to no main repository.
+        let victim = git_root("wt-spoof-victim");
+        make_dir_all(victim.join(".git/worktrees")).unwrap();
+        let spoof = temp_root("wt-spoof");
+        let pointer = format!("gitdir: {}/.git/worktrees/..\n", victim.display());
+        write_file(spoof.join(".git"), pointer.as_bytes()).unwrap();
+        assert_eq!(worktree_main_root(&spoof), None);
+        remove_tree(&victim);
+        remove_tree(&spoof);
+    }
+
+    #[test]
+    fn oversized_pointer_is_rejected() {
+        // A pointer larger than the 4 KiB read cap is malformed, not a worktree.
+        let root = temp_root("wt-pointer-huge");
+        let body = format!("gitdir: {}\n", "x".repeat(6000));
+        write_file(root.join(".git"), body.as_bytes()).unwrap();
+        assert_eq!(worktree_main_root(&root), None);
+        remove_tree(&root);
     }
 
     #[test]

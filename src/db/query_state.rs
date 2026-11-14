@@ -79,8 +79,9 @@ fn object_exists(conn: &Connection, kind: &str, name: &str) -> bool {
     object_exists_result(conn, kind, name).unwrap_or(false)
 }
 
-/// True when `table` has a column named `column`.
-pub(super) fn column_present(
+/// True when `table` has a column named `column`. Callers that only need a
+/// boolean gate pair this with `.unwrap_or(false)` to swallow read errors.
+pub(crate) fn column_present(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -377,4 +378,66 @@ pub(crate) fn edge_kinds_sql() -> String {
             EdgeKind::TypeRef,
         ])
     )
+}
+
+/// Ref freshness verdict for one `--refs` token: `Valid` names an indexed
+/// entity no newer than the note's anchor, `Modified` names one that changed
+/// after it, and `Broken` names nothing resolvable. Lives in the db layer so
+/// both `mem query` (service) and the reuse allowlist (query) can call it
+/// downward instead of one of them reaching sideways or upward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefStatus {
+    Valid,
+    Modified,
+    Broken,
+}
+
+/// Resolve one `--refs` token against the index and compare its newest
+/// indexed mtime against the note's `anchor`. File-shaped tokens match the
+/// exact path first, then a same-suffix path (a moved `a/b.rs` still resolves
+/// through `x/a/b.rs`); anything else resolves as a symbol qualname or name.
+pub(crate) fn check_ref_status(
+    index_conn: &rusqlite::Connection,
+    r: &str,
+    anchor: i64,
+) -> RefStatus {
+    // `_`/`%` in a ref must stay literals (a deleted `foo_bar.rs` must never
+    // "match" `src/fooXbar.rs`), and the winner over the exact-or-suffix
+    // candidates must be deterministic (exact path first, then newest mtime,
+    // then path) because rowid order differs between fresh and incremental
+    // builds. The symbol arm orders the same way (newest mtime first, then
+    // qualname, then path): same-named symbols in different files must anchor
+    // on the newest one under both build modes, so a `Valid` verdict is
+    // proven against every match.
+    let file_check: rusqlite::Result<(String, i64)> = index_conn.query_row(
+        "SELECT path, mtime FROM files
+         WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
+         ORDER BY (path = ?1) DESC, mtime DESC, path ASC LIMIT 1",
+        rusqlite::params![r, format!("%/{}", like_escape(r))],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+    if let Ok((_path, mtime_nanos)) = file_check {
+        return if (mtime_nanos / 1_000_000_000) > anchor {
+            RefStatus::Modified
+        } else {
+            RefStatus::Valid
+        };
+    }
+
+    let sym_check: rusqlite::Result<i64> = index_conn.query_row(
+        "SELECT f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
+         WHERE s.qualname = ?1 OR s.name = ?1
+         ORDER BY f.mtime DESC, s.qualname, s.file_path LIMIT 1",
+        rusqlite::params![r],
+        |row| row.get(0),
+    );
+    if let Ok(mtime_nanos) = sym_check {
+        return if (mtime_nanos / 1_000_000_000) > anchor {
+            RefStatus::Modified
+        } else {
+            RefStatus::Valid
+        };
+    }
+
+    RefStatus::Broken
 }

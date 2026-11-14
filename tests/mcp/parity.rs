@@ -395,3 +395,35 @@ fn default_mcp_exposes_core_navigation_tools() {
         .unwrap()
         .contains("unknown tool 'mem_get'"));
 }
+
+#[test]
+fn mem_query_error_prefix_matches_cli() {
+    // A dedicated fixture: g10_initialize_tools_list_and_parity shares
+    // `fixture("parity")` and parallel runs would race on that directory.
+    let repo = fixture("mcp-mem-query-prefix");
+    let mut srv = spawn(&repo);
+
+    // An invalid kind must surface the CLI's exact prefix (`mem query`), not
+    // the MCP tool name (`mem_query`).
+    let resp = rpc(
+        &mut srv,
+        1,
+        "tools/call",
+        json!({"name": "mem_query", "arguments": {"terms": "anything", "kind": "bogus"}}),
+    );
+    assert_eq!(resp["result"]["isError"], true, "{resp}");
+    let text = result_text(&resp);
+    assert!(text.contains("mem query: kind must be one of"), "{text}");
+    assert!(!text.contains("mem_query:"), "{text}");
+
+    // Byte parity with the CLI surface for the same invalid argument (the
+    // server wraps the message in the shared `eg: usage: ` renderer).
+    let cli = eg_cmd(&repo)
+        .args(["mem", "query", "anything", "--kind", "bogus"])
+        .output()
+        .unwrap();
+    assert_eq!(cli.status.code(), Some(2));
+    let cli_err = String::from_utf8_lossy(&cli.stderr);
+    assert_eq!(cli_err.trim(), text.trim(), "CLI: {cli_err} | MCP: {text}");
+    let _ = fs::remove_dir_all(&repo);
+}

@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -79,7 +79,6 @@ pub fn serve_dashboard(
         db::global_usage_log_path().unwrap_or_else(|_| PathBuf::from("usage.log"))
     };
 
-    let _ = crate::journal::prune_stale_entries_all(&log_path);
     let mode = if local { "local" } else { "global" };
     eprintln!(
         "eg dashboard: mode={mode} root={} log={}",
@@ -105,12 +104,7 @@ pub fn serve_dashboard(
         }
         match stream {
             Ok(stream) => {
-                let log = log_path.clone();
-                let r_path = root_path.clone();
-                let is_global = !local;
-                thread::spawn(move || {
-                    let _ = handle_client(stream, &log, r_path.as_deref(), is_global);
-                });
+                admit_connection(stream, log_path.clone(), root_path.clone(), !local);
             }
             Err(_) => {
                 thread::sleep(Duration::from_millis(50));
@@ -119,6 +113,28 @@ pub fn serve_dashboard(
     }
 
     Ok(())
+}
+
+/// Admit one accepted connection or refuse it under the concurrency cap: a
+/// refusal answers `503` and closes without spawning a thread, so a flood of
+/// idle sockets cannot exhaust thread count or memory.
+pub fn admit_connection(
+    stream: TcpStream,
+    log_path: PathBuf,
+    root: Option<PathBuf>,
+    is_global: bool,
+) {
+    if ACTIVE_CONNS.load(Ordering::SeqCst) >= MAX_CONCURRENT_CONNS {
+        log_connection_cap_reached(MAX_CONCURRENT_CONNS);
+        let mut stream = stream;
+        let _ = send_response(&mut stream, 503, "text/plain; charset=utf-8", b"", false);
+        return;
+    }
+    ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst);
+    thread::spawn(move || {
+        let _guard = ConnGuard;
+        let _ = handle_client(stream, &log_path, root.as_deref(), is_global);
+    });
 }
 
 fn open_browser(url: &str) {
@@ -395,7 +411,7 @@ pub fn handle_client(
     }
 
     if method == "POST" && path == "/api/memory/touch" {
-        return touch::handle_memory_touch(&mut stream, root, log_path, &req);
+        return touch::handle_memory_touch(&mut stream, root, log_path, global, &req);
     }
 
     if method != "GET" && method != "HEAD" {
@@ -423,7 +439,7 @@ pub fn handle_client(
         }
         let _guard = SseGuard;
         if is_head {
-            let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
             stream.write_all(header.as_bytes())?;
             return stream.flush();
         }
@@ -443,5 +459,34 @@ struct SseGuard;
 impl Drop for SseGuard {
     fn drop(&mut self) {
         SSE_CLIENTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Live connection threads, capped so saturation stays visible instead of
+/// silently degrading into unbounded thread spawn.
+static ACTIVE_CONNS: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONCURRENT_CONNS: usize = 64;
+
+/// Last second (UNIX epoch) a cap-reached line was printed, for rate limiting.
+static LAST_CAP_LOG_SEC: AtomicU64 = AtomicU64::new(0);
+
+/// Releases the concurrency slot when the connection thread ends.
+struct ConnGuard;
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        ACTIVE_CONNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One stderr line per second at most: a rejection flood must be visible on
+/// the console without drowning it.
+fn log_connection_cap_reached(cap: usize) {
+    let sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if LAST_CAP_LOG_SEC.swap(sec, Ordering::SeqCst) != sec {
+        eprintln!("eg dashboard: connection cap reached ({cap})");
     }
 }

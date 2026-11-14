@@ -238,7 +238,7 @@ fn resolve_dir(
     paths: &mut Vec<String>,
     matched_files: &mut HashSet<String>,
 ) -> Result<()> {
-    let prefix = format!("{}/%", escape_like(input));
+    let prefix = format!("{}/%", crate::db::like_escape(input));
     let mut stmt = ctx
         .conn
         .prepare("SELECT path FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'")?;
@@ -269,7 +269,7 @@ fn resolve_symbol(
     symbols: &mut HashSet<String>,
     matched_files: &mut HashSet<String>,
 ) -> Result<()> {
-    let escaped = escape_like(input);
+    let escaped = crate::db::like_escape(input);
     let module_suffix = format!("%::{escaped}");
     let dot_suffix = format!("%.{escaped}");
     let mut stmt = ctx.conn.prepare(
@@ -318,19 +318,6 @@ fn resolve_symbol(
             })
         }
     }
-}
-
-/// Escape LIKE metacharacters so a target containing `%`, `_`, or `\` is
-/// matched literally.
-fn escape_like(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(ch, '\\' | '%' | '_') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 /// A path is in scope when it equals a target file or sits below a target

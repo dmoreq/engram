@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Instant;
 
-use engram::dashboard::server::{handle_client, poll_sse_file};
+use engram::dashboard::server::{admit_connection, handle_client, poll_sse_file};
 
 use super::common::*;
 
@@ -445,6 +445,7 @@ fn dashboard_serves_favicon_and_logo_assets() {
     handle.join().unwrap();
 }
 
+mod assets;
 mod monitor;
 mod security;
 mod sse;

@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 
 use super::corpus::{load_callees, load_symbols};
+use super::guards::language_family;
 use super::tokens::{build_name_stoplist, build_stoplist, tokenize_name_sig};
 use super::*;
 
@@ -161,16 +162,6 @@ fn proposal_language(signature: &str) -> Option<String> {
         Some("tsjs".to_string())
     } else {
         None
-    }
-}
-
-fn language_family(file: &str) -> String {
-    let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext {
-        "py" | "pyi" => "python".to_string(),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => "tsjs".to_string(),
-        "rs" => "rust".to_string(),
-        other => other.to_ascii_lowercase(),
     }
 }
 

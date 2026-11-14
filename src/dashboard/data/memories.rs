@@ -110,10 +110,14 @@ fn discover_memory_stores(root: Option<&Path>, entries: &[Value]) -> Vec<Store> 
 
     let mut locals: HashMap<String, PathBuf> = HashMap::new();
     super::discover_repos(root, entries, "memory.db", &mut locals);
-    let mut names: Vec<String> = locals.keys().cloned().collect();
-    names.sort();
-    for name in names {
-        if let Some(repo) = locals.remove(&name) {
+    // Keys are repository paths; labels are assigned over the sorted set so
+    // same-basename checkouts stay distinct stores with distinct labels.
+    let mut paths: Vec<String> = locals.keys().cloned().collect();
+    paths.sort();
+    let mut taken = std::collections::HashSet::new();
+    for path in paths {
+        if let Some(repo) = locals.remove(&path) {
+            let name = super::display_name_for(Path::new(&path), &mut taken);
             let db_path = repo.join(".engram").join("memory.db");
             push(name, repo.clone(), db_path, Some(repo));
         }
@@ -149,19 +153,6 @@ fn aggregate_recalls(entries: &[Value]) -> HashMap<String, (usize, f64)> {
     recalls_map
 }
 
-/// Escape LIKE metacharacters so a ref containing `%` or `_` cannot match an
-/// arbitrary path and report itself verified.
-fn like_escape(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len() + 2);
-    for ch in raw.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
 pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, anchor: i64) -> Value {
     let Some(iconn) = index_conn else {
         // No index for this store (global, or a repo that was never built):
@@ -173,10 +164,12 @@ pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, ancho
     };
 
     if let Ok(mut f_stmt) = iconn.prepare(
-        "SELECT path, size, mtime FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\' LIMIT 1",
+        "SELECT path, size, mtime FROM files
+         WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
+         ORDER BY (path = ?1) DESC, mtime DESC, path ASC LIMIT 1",
     ) {
         if let Ok((path, size, mtime_nanos)) = f_stmt.query_row(
-            rusqlite::params![r, format!("%/{}", like_escape(r))],
+            rusqlite::params![r, format!("%/{}", crate::db::like_escape(r))],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -197,7 +190,9 @@ pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, ancho
     }
 
     if let Ok(mut s_stmt) = iconn.prepare(
-        "SELECT f.path, s.line_start, s.line_end, f.mtime FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.name = ?1 OR s.qualname = ?1 LIMIT 1",
+        "SELECT f.path, s.line_start, s.line_end, f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
+         WHERE s.name = ?1 OR s.qualname = ?1
+         ORDER BY s.line_start ASC, f.path ASC, s.qualname ASC LIMIT 1",
     ) {
         if let Ok((fp, ls, le, mtime_nanos)) = s_stmt.query_row(rusqlite::params![r], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
@@ -339,20 +334,30 @@ fn collect_store_notes(
 
     // v1 stores predate anchored_at; fall back to created_at at read time
     // instead of migrating a read-only connection.
-    let anchor_expr = if column_present(&conn, "memories", "anchored_at") {
-        "anchored_at"
+    let anchor_expr =
+        if crate::db::column_present(&conn, "memories", "anchored_at").unwrap_or(false) {
+            "anchored_at"
+        } else {
+            "0"
+        };
+    // An expired session note is not current even though nothing superseded
+    // it. v1 stores predate the TTL column: nothing there can be expired, so
+    // `is_current` stays the supersession predicate alone.
+    let has_expiry = crate::db::column_present(&conn, "memories", "expires_at").unwrap_or(false);
+    let current_expr = if has_expiry {
+        "(superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1))"
     } else {
-        "0"
+        "(superseded_by IS NULL AND 1)"
     };
     let sql = format!(
         "SELECT id, key, rev, kind, scope, body, tags, refs, source, created_at, {anchor_expr}, \
-         (superseded_by IS NULL) FROM memories ORDER BY key ASC, rev DESC"
+         {current_expr} FROM memories ORDER BY key ASC, rev DESC"
     );
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|e| err("prepare", e.to_string()))?;
 
-    let rows = stmt.query_map([], |r| {
+    let decode = |r: &rusqlite::Row<'_>| -> rusqlite::Result<MemoryRow> {
         Ok(MemoryRow {
             id: r.get(0)?,
             key: r.get(1)?,
@@ -367,7 +372,14 @@ fn collect_store_notes(
             anchored_at: r.get(10)?,
             is_current: r.get::<_, i64>(11)? != 0,
         })
-    });
+    };
+    // Per-branch binding: an unconditional `?1` bind fails InvalidParameterCount
+    // exactly on the v1 stores the column guard protects.
+    let rows = if has_expiry {
+        stmt.query_map([crate::db::unix_now()], decode)
+    } else {
+        stmt.query_map([], decode)
+    };
 
     let mapped = rows.map_err(|e| err("query", e.to_string()))?;
     for row in mapped {
@@ -384,107 +396,5 @@ fn collect_store_notes(
     Ok(())
 }
 
-fn column_present(conn: &Connection, table: &str, column: &str) -> bool {
-    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
-        return false;
-    };
-    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) else {
-        return false;
-    };
-    let names: Vec<String> = rows.flatten().collect();
-    names.iter().any(|name| name == column)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn global_store_is_not_nested_under_a_second_engram_dir() {
-        let root = PathBuf::from("synthetic-global-root");
-        let db = global_store_db(&root);
-        assert_eq!(db, root.join("memory.db"));
-        assert!(!db.to_string_lossy().contains(".engram/.engram"));
-    }
-
-    #[test]
-    fn tracked_store_is_reported_not_read() {
-        let dir = crate::db::test_support::temp_root("tracked-dashboard-memory");
-        let repo = dir.join("repo");
-        crate::db::test_support::make_dir_all(repo.join(".engram")).unwrap();
-        crate::db::test_support::write_file(repo.join(".engram/memory.db"), b"attacker").unwrap();
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["init", "-q"])
-            .status();
-        if !matches!(status, Ok(s) if s.success()) {
-            crate::db::test_support::remove_tree(&dir);
-            return;
-        }
-        let added = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["add", "-f", ".engram/memory.db"])
-            .status()
-            .unwrap();
-        assert!(added.success());
-        let store = Store {
-            name: "repo".to_string(),
-            repo_root: repo.clone(),
-            db_path: repo.join(".engram/memory.db"),
-            store_id: "tracked".to_string(),
-            guard_root: Some(repo),
-        };
-        let mut notes = Vec::new();
-        let err = collect_store_notes(&store, &HashMap::new(), &mut notes).unwrap_err();
-        assert_eq!(err["stage"], "security", "{err}");
-        assert!(err["message"].as_str().unwrap().contains("git-tracked"));
-        assert!(notes.is_empty());
-        crate::db::test_support::remove_tree(&dir);
-    }
-
-    #[test]
-    fn refs_without_an_index_are_unverified_not_broken() {
-        let store = Store {
-            name: "global".to_string(),
-            repo_root: PathBuf::from("/nonexistent-eg-global"),
-            db_path: PathBuf::from("/nonexistent-eg-global/memory.db"),
-            store_id: "global".to_string(),
-            guard_root: None,
-        };
-        let row = MemoryRow {
-            id: 1,
-            key: "k".to_string(),
-            rev: 1,
-            kind: "fact".to_string(),
-            scope: "durable".to_string(),
-            body: "b".to_string(),
-            tags_raw: String::new(),
-            refs_raw: "src/main.rs".to_string(),
-            source: "cli".to_string(),
-            created_at: 100,
-            anchored_at: 0,
-            is_current: true,
-        };
-        let note = format_note_json(&store, row, None, &HashMap::new());
-        assert_eq!(note["ref_status"], "unverified");
-        assert_eq!(note["resolved_refs"][0]["status"], "unverified");
-    }
-
-    #[test]
-    fn recall_counts_only_exact_key_reads() {
-        let entries = vec![
-            json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 10.0 }),
-            json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 12.0 }),
-            // A bare store-wide query cannot be attributed to one note.
-            json!({ "tool": "mem_query", "args": { "terms": "" }, "ts": 13.0 }),
-            // A different key must not accrue.
-            json!({ "tool": "mem_get", "args": { "key": "beta" }, "ts": 14.0 }),
-        ];
-        let recalls = aggregate_recalls(&entries);
-        assert_eq!(recalls.get("alpha").copied(), Some((2, 12.0)));
-        assert_eq!(recalls.get("beta").copied(), Some((1, 14.0)));
-        assert!(!recalls.contains_key(""));
-    }
-}
+mod tests;

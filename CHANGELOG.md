@@ -14,6 +14,41 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+### Changed
+- `eg usage` savings now count only successful calls (exit 0): empty (exit 1)
+  and ambiguous (exit 2) results no longer price into `Estimated Token
+  Savings`, matching the dashboard summary; totals for sessions with
+  empty-result or ambiguous calls decrease accordingly.
+- `eg usage --global` now applies the same truthfulness rules as the global
+  dashboard: linked worktrees fold into their main repository's row, and
+  repositories under the OS temp tree stay hidden, so both surfaces list the
+  same repositories from the same journal.
+- The MCP `reuse` tool defaults `min_confidence` to `low` when the argument is
+  omitted, matching the CLI default; the usage journal records `low` instead of
+  an empty string.
+- Documentation faces state the real contracts: the `docs/health.md` automation
+  prompt passes the `mem write` key as a positional argument (no `--key` flag
+  exists), `docs/cli-reference.md` documents 20 tools behind `--all-tools`
+  (7 extended memory tools), and the `eg mem` help plus the README maintenance
+  list include `touch` and `reindex`.
+- The MCP telemetry footer examples in `README.md` and `docs/agent-integration.md`
+  show the current footer format: latency, `N items`, and
+  `~T tokens saved vs file reads`.
+- `eg mem write --touch` re-asserts the invocation's TTL (`expires_at`) and
+  refreshes `created_at`; it no longer moves `anchored_at`, which stays owned
+  by `eg mem touch`. Re-asserting a session note without `--ttl` applies the
+  7-day default. Superseded and expired keys are unreachable by every touch
+  path — `eg mem touch`, `mem write --touch`, and the dashboard's
+  `/api/memory/touch`, which now answers 404/409 instead of re-anchoring a
+  dead revision — and re-writing a dead key appends a revision (restoring its
+  FTS rows) instead of reporting a duplicate while the dead row keeps its
+  supersede chain.
+- Vietnamese notes written in decomposed Unicode (NFD, e.g. macOS clipboard
+  text) tokenize to whole syllables again; stores reindex their derived Unicode
+  FTS automatically on the next write (tokenizer epoch 3).
+
 ## [1.0.6] - 2026-11-14
 
 ### Added
