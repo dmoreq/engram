@@ -6,7 +6,6 @@ description = "Local deterministic code graph, real-time anti-reinvention engine
 license = "MIT OR Apache-2.0"
 publish = false  # review pending; crates.io name is prepared as `engram`
 repository = "https://github.com/dmoreq/engram"
-homepage = "https://github.com/dmoreq/engram"
 documentation = "https://docs.rs/engram"
 readme = "README.md"
 keywords = ["code-index", "call-graph", "anti-reinvention", "agent-memory", "mcp"]

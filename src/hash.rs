@@ -8,8 +8,8 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET;
     // Eight independent XOR/multiply steps per iteration: the dependency
     // chain stays exact FNV-1a while the loop overhead shrinks on 1 MiB files.
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    for chunk in chunks {
         macro_rules! step {
             ($i:expr) => {{
                 hash ^= u64::from(chunk[$i]);
@@ -25,7 +25,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
         step!(6);
         step!(7);
     }
-    for &b in chunks.remainder() {
+    for &b in remainder {
         hash ^= u64::from(b);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
