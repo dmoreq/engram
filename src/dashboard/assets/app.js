@@ -200,8 +200,7 @@ function loadSummaryData() {
       if (relEl) {
         // Zero calls is unmeasured, not a perfect score: render the
         // unmeasured state instead of the payload's default 100.0.
-        const graphCalls = data.graph_calls !== undefined ? data.graph_calls : (data.total_calls || 0);
-        if (graphCalls === 0) {
+        if (totalCalls === 0) {
           relEl.textContent = '—';
         } else {
           const rel = data.graph_reliability_pct !== undefined ? data.graph_reliability_pct : (data.reliability_pct || 100.0);
@@ -213,15 +212,21 @@ function loadSummaryData() {
 
       const p50El = document.getElementById('metric-p50');
       if (p50El) {
+        // Latency without samples is unmeasured, not instant: match the
+        // reliability tile's em-dash rule.
         const p50 = data.graph_p50_ms !== undefined ? data.graph_p50_ms : data.p50_ms;
-        p50El.textContent = (p50 || 0.0).toFixed(1) + 'ms';
+        p50El.textContent = totalCalls === 0 ? '—' : (p50 || 0.0).toFixed(1) + 'ms';
       }
 
       const latSubEl = document.getElementById('metric-latency-sub');
       if (latSubEl) {
-        const p95 = data.graph_p95_ms !== undefined ? data.graph_p95_ms : data.p95_ms;
-        const avg = data.graph_avg_ms !== undefined ? data.graph_avg_ms : data.avg_ms;
-        latSubEl.textContent = 'p95 = ' + (p95 || 0.0).toFixed(1) + 'ms · avg = ' + (avg || 0.0).toFixed(1) + 'ms';
+        if (totalCalls === 0) {
+          latSubEl.textContent = 'No queries recorded';
+        } else {
+          const p95 = data.graph_p95_ms !== undefined ? data.graph_p95_ms : data.p95_ms;
+          const avg = data.graph_avg_ms !== undefined ? data.graph_avg_ms : data.avg_ms;
+          latSubEl.textContent = 'p95 = ' + (p95 || 0.0).toFixed(1) + 'ms · avg = ' + (avg || 0.0).toFixed(1) + 'ms';
+        }
       }
 
       const tokEl = document.getElementById('metric-tokens');
@@ -271,6 +276,12 @@ function loadReuseData() {
       prewriteSearches = data.prewrite_searches || [];
 
       const summary = data.summary || {};
+      // Gated or unreadable repositories are excluded from the scan: surface
+      // them instead of leaving "—" cells unexplained.
+      if (summary.degraded) {
+        showFetchError('reuse', (summary.errors || [])
+          .map(e => (e.repo || 'repo') + ': ' + e.message).join('; '));
+      }
       reusePools = summary.repo_candidate_pools || {};
       const totalCandidates = summary.total_candidates !== undefined ? summary.total_candidates : reuseCandidates.length;
 
@@ -295,12 +306,19 @@ function loadReuseData() {
       const judge = summary.judge || {};
       const kpiJudge = document.getElementById('reuse-kpi-judge');
       const kpiJudgeSub = document.getElementById('reuse-kpi-judge-sub');
-      if (kpiJudge) kpiJudge.textContent = (judge.reviewed || 0).toLocaleString();
+      if (kpiJudge) {
+        // No judged run in the window is unmeasured, not a zero verdict count.
+        kpiJudge.textContent = judge.runs ? (judge.reviewed || 0).toLocaleString() : '—';
+      }
       if (kpiJudgeSub) {
         if (!judge.runs) {
           kpiJudgeSub.textContent = 'No judged runs in the retained journal';
         } else {
-          kpiJudgeSub.textContent = (judge.rejected || 0) + ' rejected as distinct'
+          const reviewed = judge.reviewed || 0;
+          const rejected = judge.rejected || 0;
+          // Calibration signal: how often the judge overruled the lexical tier.
+          const rate = reviewed ? ' (' + (100.0 * rejected / reviewed).toFixed(1) + '%)' : '';
+          kpiJudgeSub.textContent = rejected + ' rejected as distinct' + rate
             + ((judge.failed || 0) ? ' · ' + judge.failed + ' failed' : '');
         }
       }
@@ -330,7 +348,8 @@ function updateDetectorPills(counts, total) {
     if (det === 'ALL') {
       pill.textContent = 'All (' + total + ')';
     } else if (counts && counts[det] !== undefined) {
-      const label = det === 'D1' ? 'D1 Callee' : det === 'D2' ? 'D2 Interface' : det === 'D3' ? 'D3 Bypass' : 'D4 Wrapper';
+      const label = { D1: 'D1 Callee', D2: 'D2 Interface', D3: 'D3 Bypass', D4: 'D4 Wrapper',
+                      D5: 'D5 Class', D1L: 'D1L Unresolved', DT: 'DT Tests' }[det] || det;
       pill.textContent = label + ' (' + counts[det] + ')';
     }
   });
@@ -946,6 +965,13 @@ function renderMemoryReposTable(repoAggs) {
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
     const relClass = errs === 0 ? 'status-ok' : 'status-err';
+    // Recall effectiveness: share of ok reads that returned content. No
+    // reads at all is unmeasured, not a zero rate.
+    const hitRate = reads === 0
+      ? '<span class="text-muted">—</span>'
+      : (rData.memory_read_hit_rate_pct !== undefined && rData.memory_read_hit_rate_pct !== null
+        ? rData.memory_read_hit_rate_pct.toFixed(1) + '%'
+        : '<span class="text-muted">—</span>');
 
     tr.innerHTML =
       '<td>' +
@@ -954,6 +980,7 @@ function renderMemoryReposTable(repoAggs) {
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
       '<td class="text-right num-col text-muted">' + reads.toLocaleString() + ' r · ' + writes.toLocaleString() + ' w</td>' +
+      '<td class="text-right num-col">' + hitRate + '</td>' +
       '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>';
 
     tbody.appendChild(tr);
@@ -1056,7 +1083,8 @@ function renderToolsTable(toolAggs, totalCalls) {
     const tr = document.createElement('tr');
     const calls = tData.calls;
     const pct = (calls / maxCalls) * 100.0;
-    const p50Str = (tData.p50 || 0.0).toFixed(1) + 'ms';
+    // A zero p50 in the payload means "no latency samples", not an instant tool.
+    const p50Str = tData.p50 ? tData.p50.toFixed(1) + 'ms' : '—';
     const share = totalCalls ? (calls / totalCalls * 100.0) : 0.0;
     const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
 
@@ -1629,7 +1657,6 @@ function renderMemoryDossier(m) {
     '  <div class="text-muted" style="font-size:0.8rem;">Scope: <strong>' + m.scope + '</strong> &middot; Source: <code>' + m.source + '</code></div>' +
     '</div>' +
     '<div class="recall-banner">' +
-    '  <div><strong>' + escapeHtml(m.prev_category || 'KNOWLEDGE GUARD') + ':</strong> ' + escapeHtml(m.prev_detail || '') + '</div>' +
     '  <div style="font-family:var(--font-mono); font-size:0.78rem;">Recalls: <strong>' + m.recall_count + '</strong> &middot; Last: ' + lastRecalledStr + '</div>' +
     '</div>' +
     '<div class="dossier-section-title">Memory Content</div>' +
@@ -1813,6 +1840,7 @@ const TIP = {
   'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Limit-capped" means the scan returned its limit, so the true candidate pool is larger.',
   'col.results_shown': 'Results the search or scan showed to the agent.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
+  'col.memory_hit_rate': 'Share of ok memory reads that returned at least one item (query results, exact-key gets, exported rows). "—" when the row has no reads.',
   'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4 show their evidence class instead of a percentage.',
   'card.callers': 'Call sites using the canonical helper.',
   'card.confidence': 'Static confidence tier; stale or unknown freshness caps it at low.',
@@ -1827,6 +1855,9 @@ const TIP = {
   'det.d2': 'Same parameter types and name tokens.',
   'det.d3': 'Calls a raw client the project already wraps.',
   'det.d4': 'One-caller wrapper that only forwards a call.',
+  'det.d5': 'Both are method-shape twins of the same class.',
+  'det.d1l': 'Both call the same not-yet-indexed functions.',
+  'det.dt': 'Both are test helpers sharing token shapes.',
   'filter.status': 'Show only runs with these exit codes.',
   'filter.superseded': 'Show older revisions replaced by a newer note.'
 };

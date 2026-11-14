@@ -255,6 +255,9 @@
         <button class="filter-pill" data-det="D2" data-tip="det.d2">D2 Interface</button>
         <button class="filter-pill" data-det="D3" data-tip="det.d3">D3 Bypass</button>
         <button class="filter-pill" data-det="D4" data-tip="det.d4">D4 Wrapper</button>
+        <button class="filter-pill" data-det="D5" data-tip="det.d5">D5 Class</button>
+        <button class="filter-pill" data-det="D1L" data-tip="det.d1l">D1L Unresolved</button>
+        <button class="filter-pill" data-det="DT" data-tip="det.dt">DT Tests</button>
       </div>
 
       <label for="reuse-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
@@ -313,7 +316,7 @@
       </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.currency">Anchor Currency Rate</div>
-        <div class="kpi-value text-success" id="mem-kpi-currency">100.0%</div>
+        <div class="kpi-value text-success" id="mem-kpi-currency">&mdash;</div>
         <div class="kpi-sub" id="mem-kpi-currency-sub">0 valid &middot; 0 modified &middot; 0 broken</div>
       </div>
     </div>
@@ -331,11 +334,12 @@
               <th>Repository / Store</th>
               <th class="text-right">Calls</th>
               <th class="text-right" data-tip="col.reads_writes">Reads / Writes</th>
+              <th class="text-right" data-tip="col.memory_hit_rate">Read Hit Rate</th>
               <th data-tip="col.reliability">Reliability</th>
             </tr>
           </thead>
           <tbody id="mem-repos-tbody">
-            <tr><td colspan="4" class="empty-cell">Loading repositories...</td></tr>
+            <tr><td colspan="5" class="empty-cell">Loading repositories...</td></tr>
           </tbody>
         </table>
       </div>

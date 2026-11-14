@@ -299,6 +299,13 @@ impl SummaryState {
                 .search_hit_calls += 1;
             self.agent_mut(v.agent_name).search_hit_calls += 1;
         }
+        // Memory recall effectiveness: a read that returned content (query
+        // results, an exact-key get, exported rows) counts as a hit.
+        if v.facts.is_mem_read && v.shown > 0 {
+            self.repo_mut(folded_key(v), &v.repo_display)
+                .memory_read_hits += 1;
+            self.agent_mut(v.agent_name).memory_read_hits += 1;
+        }
         if v.tool == "reuse" {
             let scan = LastReuseScan {
                 ts: v.ts,
@@ -407,6 +414,8 @@ struct RepoAgg {
     memory_errors: usize,
     memory_reads: usize,
     memory_writes: usize,
+    /// Ok reads that returned content (denominator: `memory_reads`).
+    memory_read_hits: usize,
     /// Pre-write `eg search` volume and the share that returned at least one
     /// result: the adoption and usefulness signal of the prevention surface.
     search_calls: usize,

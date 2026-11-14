@@ -108,6 +108,12 @@ fn format_aggs(aggs: HashMap<String, RepoAgg>, with_worktree: bool) -> BTreeMap<
         } else {
             None
         };
+        // Unmeasured (no reads) serializes as null, never a perfect score.
+        let memory_read_hit_rate_pct = if v.memory_reads > 0 {
+            Some(100.0 * v.memory_read_hits as f64 / v.memory_reads as f64)
+        } else {
+            None
+        };
         let last_reuse_scan = v.last_reuse_scan.map(|s| {
             json!({
                 "ts": s.ts,
@@ -138,6 +144,7 @@ fn format_aggs(aggs: HashMap<String, RepoAgg>, with_worktree: bool) -> BTreeMap<
             "memory_reliability_pct": rel_pct(v.memory_errors, v.memory_calls),
             "memory_reads": v.memory_reads,
             "memory_writes": v.memory_writes,
+            "memory_read_hit_rate_pct": memory_read_hit_rate_pct,
         });
         if with_worktree {
             entry["worktree"] = json!(v.worktree);

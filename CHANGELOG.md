@@ -16,6 +16,27 @@ changes bump the minor while 0.x is unstable.
 
 ## [Unreleased]
 
+### Changed
+- Six-lens metrics audit (correctness/spec, security/trust,
+  performance/reliability, test quality, API/observability,
+  effectiveness/calibration) over every dashboard display. `/api/reuse`
+  summary moves to schema 4: the never-rendered `confidence_counts`,
+  `reason_counts`, and `sample_strategy` blocks are retired; `detector_counts`
+  now counts every detector type present (D5 class-shape, D1L unresolved, DT
+  test helpers were invisible to the filter pills).
+- The Semantic Judge tile renders an em dash when the judge has never
+  produced a verdict (zero-judgeable runs no longer count as runs) and adds
+  the rejection rate — the judge's calibration signal — to its subtitle.
+- Memory recall effectiveness is now measurable: repo/agent rows carry
+  `memory_read_hit_rate_pct` (ok reads that returned content over all reads,
+  `null` when unmeasured), rendered as a Read Hit Rate column.
+- Unmeasured states no longer fabricate numbers: graph latency KPIs and the
+  per-tool p50 render an em dash with no samples, the Anchor Currency tile
+  no longer ships a static 100.0% placeholder, and gated/unreadable
+  repositories surface a degraded banner on the Anti-Reinvention tab
+  instead of silent "—" cells. The memory dossier stops reading
+  `prev_category`/`prev_detail` — fields the payload never sent.
+
 ## [1.0.8] - 2026-11-14
 
 ### Added
