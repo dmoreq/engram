@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" width="280" height="64" alt="engram logo" />
+</p>
+
 # engram (`eg`)
 
 [![CI](https://github.com/dmoreq/engram/actions/workflows/ci.yml/badge.svg)](https://github.com/dmoreq/engram/actions/workflows/ci.yml)

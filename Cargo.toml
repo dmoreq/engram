@@ -13,6 +13,7 @@ keywords = ["code-index", "call-graph", "anti-reinvention", "agent-memory", "mcp
 categories = ["development-tools", "command-line-utilities"]
 rust-version = "1.90"
 include = [
+    "/assets/**",
     "/src/**",
     "/bench/**",
     "/tests/*.rs",

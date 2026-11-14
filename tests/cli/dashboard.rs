@@ -384,6 +384,67 @@ fn dashboard_summary_folds_worktree_into_main_repo() {
     let _ = std::fs::remove_dir_all(&wt_root);
 }
 
+#[test]
+fn dashboard_serves_favicon_and_logo_assets() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = thread::spawn(move || {
+        let temp_log =
+            std::env::temp_dir().join(format!("test_usage_fav_{}.log", std::process::id()));
+        for _ in 0..4 {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = handle_client(stream, &temp_log, None, false);
+        }
+    });
+
+    // 1. GET /favicon.svg -> 200 OK, image/svg+xml
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .write_all(b"GET /favicon.svg HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("Content-Type: image/svg+xml"), "{resp}");
+    assert!(resp.contains("<svg"), "{resp}");
+
+    // 2. GET /favicon.ico -> 200 OK, image/svg+xml
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("Content-Type: image/svg+xml"), "{resp}");
+    assert!(resp.contains("<svg"), "{resp}");
+
+    // 3. GET /logo.svg -> 200 OK, image/svg+xml
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .write_all(b"GET /logo.svg HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("Content-Type: image/svg+xml"), "{resp}");
+    assert!(resp.contains("<svg"), "{resp}");
+
+    // 4. GET / -> 200 OK with favicon link and logo image in HTML
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("rel=\"icon\""), "{resp}");
+    assert!(resp.contains("src=\"/logo.svg\""), "{resp}");
+
+    handle.join().unwrap();
+}
+
 mod monitor;
 mod security;
 mod sse;

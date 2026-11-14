@@ -20,6 +20,8 @@ use http::{host_allowed, read_http_request, send_response, RequestLog};
 static INDEX_HTML: &str = include_str!("assets/index.html");
 static STYLE_CSS: &str = include_str!("assets/style.css");
 static APP_JS: &str = include_str!("assets/app.js");
+static FAVICON_SVG: &str = include_str!("assets/favicon.svg");
+static LOGO_SVG: &str = include_str!("assets/logo.svg");
 
 pub fn serve_dashboard(
     root: Option<&Path>,
@@ -164,9 +166,18 @@ fn serve_static_asset(stream: &mut TcpStream, path: &str, is_head: bool) -> std:
             )?;
             Ok(true)
         }
-        "/favicon.ico" => {
-            let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-            stream.write_all(resp.as_bytes())?;
+        "/favicon.svg" | "/favicon.ico" => {
+            send_response(
+                stream,
+                200,
+                "image/svg+xml",
+                FAVICON_SVG.as_bytes(),
+                is_head,
+            )?;
+            Ok(true)
+        }
+        "/logo.svg" => {
+            send_response(stream, 200, "image/svg+xml", LOGO_SVG.as_bytes(), is_head)?;
             Ok(true)
         }
         _ => Ok(false),
