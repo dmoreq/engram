@@ -28,6 +28,7 @@ let allMemories = [];
 let recentQueries = [];
 let reuseCandidates = [];
 let prewriteSearches = [];
+let reusePools = {};    // repo label -> true candidate pool (pre-25-cap)
 let totalCalls = 0;
 let totalErrors = 0;
 let latestSummaryData = null;
@@ -270,6 +271,7 @@ function loadReuseData() {
       prewriteSearches = data.prewrite_searches || [];
 
       const summary = data.summary || {};
+      reusePools = summary.repo_candidate_pools || {};
       const totalCandidates = summary.total_candidates !== undefined ? summary.total_candidates : reuseCandidates.length;
 
       const kpiCount = document.getElementById('reuse-kpi-count');
@@ -314,6 +316,9 @@ function loadReuseData() {
       populateReuseRepoFilter();
       renderReuseList();
       renderPrewriteTable();
+      // Pools arrived with the reuse payload: re-render the repos table so
+      // the sampled/pool column is not stuck at the pre-fetch zeros.
+      renderReuseReposTable(latestSummaryData ? (latestSummaryData.repo_aggs || {}) : {});
     })
     .catch(err => showFetchError('reuse', err.message));
 }
@@ -806,7 +811,16 @@ function renderReuseReposTable(repoAggs) {
     const wt = rData.worktree;
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
-    const sampled = candidateCounts[rData.display || rName];
+    const label = rData.display || rName;
+    const sampled = candidateCounts[label];
+    const pool = reusePools[label];
+    // Sampled / pool: the top-overlap count actually shown next to the
+    // repository's full candidate pool. Absent pool = unmeasured scan.
+    const candCell = pool === undefined
+      ? '<span class="text-muted">—</span>'
+      : (pool === 0
+        ? '0'
+        : (sampled || 0).toLocaleString() + ' <span class="text-muted">/ ' + pool.toLocaleString() + '</span>');
 
     tr.innerHTML =
       '<td>' +
@@ -815,7 +829,7 @@ function renderReuseReposTable(repoAggs) {
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
       '<td class="text-right num-col">' + searchHitRateCell(rData) + '</td>' +
-      '<td class="text-right num-col">' + (sampled !== undefined ? sampled.toLocaleString() : '<span class="text-muted">0</span>') + '</td>' +
+      '<td class="text-right num-col">' + candCell + '</td>' +
       '<td class="text-right num-col">' + lastScanCell(rData) + '</td>' +
       '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
 
@@ -1795,7 +1809,7 @@ const TIP = {
   'col.tokens_saved': 'Estimated tokens avoided instead of reading files (coefficients, not a measurement).',
   'col.reuse_tokens_saved': 'Estimated tokens avoided by search and reuse calls (coefficients, not a measurement).',
   'col.search_hit_rate': 'Share of pre-write searches that returned at least one result. "—" when the row has no searches.',
-  'col.candidates_sample': 'Duplicate twins the dashboard scan sampled for this repository (top-overlap sample, at most 25 per repo).',
+  'col.candidates_sample': 'Duplicate twins per repository: shown is the top-overlap sample (at most 25); after the slash is the repository\u2019s full candidate pool. "\u2014" when the repository was not scanned.',
   'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Limit-capped" means the scan returned its limit, so the true candidate pool is larger.',
   'col.results_shown': 'Results the search or scan showed to the agent.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
