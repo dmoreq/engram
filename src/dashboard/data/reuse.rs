@@ -81,6 +81,8 @@ struct ScanCache {
     computed_at: std::time::Instant,
     candidates: Vec<Value>,
     total_candidates: usize,
+    /// True pool per repository label (pre-25-cap): pairs with the sampled count.
+    repo_pools: std::collections::BTreeMap<String, usize>,
 }
 
 fn scan_key(repos: &HashMap<String, PathBuf>) -> u64 {
@@ -111,10 +113,14 @@ fn cache_enabled() -> bool {
     std::env::var("ENGRAM_DASHBOARD_NO_CACHE").as_deref() != Ok("1")
 }
 
+/// One completed scan: decorated candidates, the corpus-wide pool total, and
+/// the per-repository pools behind them.
+type ScanOutcome = (Vec<Value>, usize, std::collections::BTreeMap<String, usize>);
+
 fn cached_scan(
     repos: &HashMap<String, PathBuf>,
     labels: &HashMap<String, String>,
-) -> ((Vec<Value>, usize), bool, u64) {
+) -> (ScanOutcome, bool, u64) {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<Option<ScanCache>>> = OnceLock::new();
     let cell = CACHE.get_or_init(|| Mutex::new(None));
@@ -122,8 +128,13 @@ fn cached_scan(
     if cache_enabled() {
         if let Ok(guard) = cell.lock() {
             if let Some(cached) = guard.as_ref().filter(|c| c.key == key) {
+                let outcome: ScanOutcome = (
+                    cached.candidates.clone(),
+                    cached.total_candidates,
+                    cached.repo_pools.clone(),
+                );
                 return (
-                    (cached.candidates.clone(), cached.total_candidates),
+                    outcome,
                     true,
                     cached.computed_at.elapsed().as_millis() as u64,
                 );
@@ -134,6 +145,7 @@ fn cached_scan(
     // the sorted path set, so candidate order is deterministic across polls.
     let mut candidates_json = Vec::new();
     let mut total = 0usize;
+    let mut pools = std::collections::BTreeMap::new();
     let mut paths: Vec<&String> = repos.keys().collect();
     paths.sort();
     for path in paths {
@@ -142,7 +154,7 @@ fn cached_scan(
             .get(path)
             .map(String::as_str)
             .unwrap_or(path.as_str());
-        total += collect_repo_candidates(r_name, r_root, &mut candidates_json);
+        total += collect_repo_candidates(r_name, r_root, &mut candidates_json, &mut pools);
     }
     if cache_enabled() {
         if let Ok(mut guard) = cell.lock() {
@@ -151,10 +163,11 @@ fn cached_scan(
                 computed_at: std::time::Instant::now(),
                 candidates: candidates_json.clone(),
                 total_candidates: total,
+                repo_pools: pools.clone(),
             });
         }
     }
-    ((candidates_json, total), false, 0)
+    ((candidates_json, total, pools), false, 0)
 }
 
 /// Attach usage from the current journal to cached candidates. The scan cache
@@ -178,7 +191,7 @@ pub fn collect_reuse_candidates(
     let (errors, blocked) = super::retain_untracked(&mut repos, &labels);
 
     let usage = aggregate_candidate_usage(entries);
-    let ((mut candidates_json, total_corpus_candidates), cache_hit, cache_age_ms) =
+    let ((mut candidates_json, total_corpus_candidates, repo_pools), cache_hit, cache_age_ms) =
         cached_scan(&repos, &labels);
     decorate_usage(&mut candidates_json, &usage);
 
@@ -204,12 +217,19 @@ pub fn collect_reuse_candidates(
     });
     summary["cache_hit"] = json!(cache_hit);
     summary["cache_age_ms"] = json!(cache_age_ms);
+    // Repos absent from the map were gated or unreadable: unmeasured, not zero.
+    summary["repo_candidate_pools"] = json!(repo_pools);
     summary["degraded"] = json!(blocked > 0);
     summary["errors"] = json!(errors);
     Ok((candidates_json, summary, prewrite_searches))
 }
 
-fn collect_repo_candidates(r_name: &str, r_root: &Path, out: &mut Vec<Value>) -> usize {
+fn collect_repo_candidates(
+    r_name: &str,
+    r_root: &Path,
+    out: &mut Vec<Value>,
+    pools: &mut std::collections::BTreeMap<String, usize>,
+) -> usize {
     // The dashboard opens index.db directly; apply the same provenance gate as
     // every CLI/MCP query so a tracked, attacker-authored index is not read.
     if crate::db::reject_tracked_eg_dir(r_root).is_err() {
@@ -235,6 +255,7 @@ fn collect_repo_candidates(r_name: &str, r_root: &Path, out: &mut Vec<Value>) ->
     for c in candidates {
         out.push(format_candidate_json(r_name, r_root, &conn, &c));
     }
+    pools.insert(r_name.to_string(), total);
     total
 }
 

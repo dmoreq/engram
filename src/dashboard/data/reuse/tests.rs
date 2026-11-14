@@ -25,6 +25,10 @@ fn reuse_scan_cache_hits_until_the_index_changes() {
     crate::db::test_support::write_file(repo.join(".engram").join("index.db"), b"x").unwrap();
     let (_, third_hit, _) = cached_scan(&repos, &labels);
     assert!(!third_hit, "changed index must recompute");
+    // An unreadable index measures nothing: the repo stays absent from the
+    // pool map instead of reporting a fabricated zero.
+    let ((_, _, pools), _, _) = cached_scan(&repos, &labels);
+    assert!(pools.is_empty(), "{pools:?}");
     crate::db::test_support::remove_tree(&dir);
 }
 

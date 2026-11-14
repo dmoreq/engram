@@ -38,11 +38,13 @@ changes bump the minor while 0.x is unstable.
   into `~/.zshrc`/`~/.bashrc` when absent.
 - The dashboard's Anti-Reinvention tables report effectiveness instead of
   usage: Search Hit Rate (share of pre-write searches that returned a
-  result, `null` when the row has no searches), Candidates (Sample) from
-  the dashboard's own scan (top-overlap sample, at most 25 per repo), and
-  Latest Scan (newest ok `eg reuse` run with its size and a limit-capped
-  marker). Candidate cards gain a "surfaced N×" badge when a twin was
-  reported before and is still present. The usage-weighted `reuse_hits`
+  result, `null` when the row has no searches), Candidates rendered as
+  "sampled / pool" — the top-overlap sample shown (at most 25 per repo)
+  next to the repository's full candidate pool, e.g. "25 / 115", with an
+  em dash for repositories the scan could not measure — and Latest Scan
+  (newest ok `eg reuse` run with its size and a limit-capped marker).
+  Candidate cards gain a "surfaced N×" badge when a twin was reported
+  before and is still present. The usage-weighted `reuse_hits`
   "Duplicate Hits" column is gone: it summed per-run result caps, so a
   repository nobody scanned looked clean (mskit showed 10 hits while one
   controlled scan returns 95 candidates).

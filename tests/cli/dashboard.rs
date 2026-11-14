@@ -472,6 +472,7 @@ fn dashboard_serves_favicon_and_logo_assets() {
 
 mod assets;
 mod monitor;
+mod reuse_api;
 mod security;
 mod sse;
 mod touch;
