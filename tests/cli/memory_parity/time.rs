@@ -3,19 +3,18 @@
 use std::path::Path;
 use std::process::Command;
 
+use rusqlite::Connection;
+
 use super::super::common::{eg, mem_out, mem_write, temp_repo};
 
 fn sql(repo: &Path, statement: &str) {
-    let out = Command::new("sqlite3")
-        .arg(repo.join(".engram/memory.db"))
-        .arg(statement)
-        .output()
-        .expect("sqlite3");
-    assert!(
-        out.status.success(),
-        "sqlite3 failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // The bundled rusqlite build has FTS5 enabled; the runner's sqlite3 CLI
+    // (system build) can lack the fts5 module, which `DROP TABLE` of the
+    // memories_fts_v2 virtual table requires.
+    let conn = Connection::open(repo.join(".engram/memory.db")).expect("open memory.db");
+    if let Err(err) = conn.execute_batch(statement) {
+        panic!("sqlite3 failed: {err}");
+    }
 }
 
 fn backdate(repo: &Path, key: &str, at: i64) {
