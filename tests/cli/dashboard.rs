@@ -190,6 +190,9 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     assert_eq!(antigravity["memory_errors"], 1);
     assert_eq!(antigravity["memory_reads"], 2);
     assert_eq!(antigravity["memory_writes"], 1);
+    // Two reads, neither returned content (query without shown, get failed):
+    // a measured 0.0, distinct from the null unmeasured state.
+    assert_eq!(antigravity["memory_read_hit_rate_pct"], 0.0);
     let ag_rel = antigravity["memory_reliability_pct"].as_f64().unwrap();
     assert!((ag_rel - 66.666).abs() < 0.1);
 
@@ -216,6 +219,8 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     assert_eq!(agg_b["search_calls"], 0);
     assert!(agg_b["search_hit_rate_pct"].is_null());
     assert!(agg_b["last_reuse_scan"].is_null());
+    // Reads exist but returned nothing: measured 0.0, not null.
+    assert_eq!(agg_b["memory_read_hit_rate_pct"], 0.0);
 
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&temp_dir);

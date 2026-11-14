@@ -59,7 +59,9 @@ pub(super) fn decorate_usage(candidates: &mut [Value], usage: &HashMap<String, (
 
 /// Judge totals over the retained journal. Only reuse lines carrying the
 /// structured `judge` object count as runs; a missing key or a null (legacy
-/// line, no-op run) contributes nothing.
+/// line, no-op run) contributes nothing. A run that reviewed nothing
+/// (`{0,0,0}` — zero judgeable candidates) is not a run: counting it would
+/// fabricate activity for a judge that was never exercised.
 pub(super) struct JudgeTotals {
     pub(super) runs: usize,
     pub(super) reviewed: usize,
@@ -82,10 +84,15 @@ pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
             continue;
         };
         let number = |key: &str| judge.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
+        let (reviewed, rejected, failed) =
+            (number("reviewed"), number("rejected"), number("failed"));
+        if reviewed + rejected + failed == 0 {
+            continue;
+        }
         totals.runs += 1;
-        totals.reviewed += number("reviewed");
-        totals.rejected += number("rejected");
-        totals.failed += number("failed");
+        totals.reviewed += reviewed;
+        totals.rejected += rejected;
+        totals.failed += failed;
     }
     totals
 }
@@ -149,6 +156,9 @@ mod usage_tests {
             // Legacy line without the object is not a run either.
             json!({ "tool": "reuse" }),
             json!({ "tool": "search", "judge": { "reviewed": 9 } }),
+            // Zero-judgeable run: {0,0,0} must not inflate the run count.
+            json!({ "tool": "reuse", "judged": true,
+                    "judge": { "reviewed": 0, "rejected": 0, "failed": 0 } }),
         ];
         let totals = aggregate_judge_usage(&entries);
         assert_eq!(totals.runs, 2);
