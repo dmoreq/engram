@@ -197,10 +197,17 @@ function loadSummaryData() {
 
       const relEl = document.getElementById('metric-reliability');
       if (relEl) {
-        const rel = data.graph_reliability_pct !== undefined ? data.graph_reliability_pct : (data.reliability_pct || 100.0);
-        relEl.textContent = totalErrors > 0
-          ? rel.toFixed(1) + '% clean (' + totalErrors + ' errs)'
-          : 'No errors recorded';
+        // Zero calls is unmeasured, not a perfect score: render the
+        // unmeasured state instead of the payload's default 100.0.
+        const graphCalls = data.graph_calls !== undefined ? data.graph_calls : (data.total_calls || 0);
+        if (graphCalls === 0) {
+          relEl.textContent = '—';
+        } else {
+          const rel = data.graph_reliability_pct !== undefined ? data.graph_reliability_pct : (data.reliability_pct || 100.0);
+          relEl.textContent = totalErrors > 0
+            ? rel.toFixed(1) + '% clean (' + totalErrors + ' errs)'
+            : 'No errors recorded';
+        }
       }
 
       const p50El = document.getElementById('metric-p50');
@@ -608,7 +615,11 @@ function renderReposTable(repoAggs) {
     const subRows = worktrees.map(([wtName, wtData]) => {
       const wtCalls = wtData.calls || 0;
       const wtErrs = wtData.errors || 0;
-      const wtRel = wtCalls ? 100.0 * (wtCalls - wtErrs) / wtCalls : 100.0;
+      // Zero calls is unmeasured, not a perfect score.
+      const wtRelCell = wtCalls === 0
+        ? '<span class="text-muted">—</span>'
+        : '<span class="badge ' + (wtErrs === 0 ? 'status-ok' : 'status-err') + '">'
+          + (100.0 * (wtCalls - wtErrs) / wtCalls).toFixed(1) + '% (' + wtErrs + ' err)</span>';
       const wtLast = wtData.last_ts ? new Date(wtData.last_ts * 1000).toLocaleString() : '—';
       const sub = document.createElement('tr');
       sub.className = 'repo-worktree-row';
@@ -616,7 +627,7 @@ function renderReposTable(repoAggs) {
       sub.innerHTML =
         '<td><div class="repo-name-wrap wt-sub-name"><span class="badge badge-wt">worktree</span> ' + escapeHtml(wtName) + '</div></td>' +
         '<td class="text-right num-col">' + wtCalls.toLocaleString() + '</td>' +
-        '<td><span class="badge ' + (wtErrs === 0 ? 'status-ok' : 'status-err') + '">' + wtRel.toFixed(1) + '% (' + wtErrs + ' err)</span></td>' +
+        '<td>' + wtRelCell + '</td>' +
         '<td class="text-muted num-col">' + wtLast + '</td>';
       tbody.appendChild(sub);
       return sub;
@@ -733,6 +744,36 @@ function filterByAgent(agentName) {
   }
 }
 
+// Duplicate-twin counts per repository from the dashboard's own reuse scan.
+// The scan samples at most 25 candidates per repo, so a count is a sample
+// floor, never a corpus total.
+function reuseCandidateCountsByRepo() {
+  const counts = {};
+  reuseCandidates.forEach(c => {
+    const repo = c.repo || '(unattributed)';
+    counts[repo] = (counts[repo] || 0) + 1;
+  });
+  return counts;
+}
+
+function searchHitRateCell(rData) {
+  const calls = rData.search_calls || 0;
+  if (calls === 0) return '<span class="text-muted">—</span>';
+  const pct = rData.search_hit_rate_pct;
+  if (pct === null || pct === undefined) return '<span class="text-muted">—</span>';
+  return '<span class="text-right">' + pct.toFixed(1) + '%</span>'
+    + ' <span class="text-muted" style="font-size: 0.72rem;">(' + calls + ' searches)</span>';
+}
+
+function lastScanCell(rData) {
+  const scan = rData.last_reuse_scan;
+  if (!scan) return '<span class="text-muted">—</span>';
+  const when = new Date(scan.ts * 1000).toLocaleDateString();
+  const size = scan.result_count.toLocaleString() + ' candidates'
+    + (scan.limit_capped ? ' <span class="text-muted" style="font-size: 0.72rem;">(limit-capped)</span>' : '');
+  return '<span class="text-muted" style="font-size: 0.72rem;">' + when + ' ·</span> ' + size;
+}
+
 function renderReuseReposTable(repoAggs) {
   const tbody = document.getElementById('reuse-repos-tbody');
   if (!tbody) return;
@@ -741,10 +782,11 @@ function renderReuseReposTable(repoAggs) {
     .filter(([_, rData]) => (rData.reuse_calls || 0) > 0);
 
   if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No anti-reinvention workspace activity recorded</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No anti-reinvention workspace activity recorded</td></tr>';
     return;
   }
 
+  const candidateCounts = reuseCandidateCountsByRepo();
   entries.sort((a, b) => (b[1].reuse_calls || 0) - (a[1].reuse_calls || 0));
   const maxCalls = entries[0][1].reuse_calls || 1;
 
@@ -760,12 +802,11 @@ function renderReuseReposTable(repoAggs) {
     tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); filterReuseByRepo(rData.display || rName); } };
 
     const calls = rData.reuse_calls || 0;
-    const hits = rData.reuse_hits || 0;
     const saved = rData.reuse_saved_tokens || 0;
     const wt = rData.worktree;
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
-    const hitBadge = hits > 0 ? '<span class="badge status-ok">' + hits.toLocaleString() + ' hits</span>' : '<span class="text-muted">0</span>';
+    const sampled = candidateCounts[rData.display || rName];
 
     tr.innerHTML =
       '<td>' +
@@ -773,7 +814,9 @@ function renderReuseReposTable(repoAggs) {
       '  <div class="row-track"><div class="row-track-fill" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td class="text-right num-col">' + hitBadge + '</td>' +
+      '<td class="text-right num-col">' + searchHitRateCell(rData) + '</td>' +
+      '<td class="text-right num-col">' + (sampled !== undefined ? sampled.toLocaleString() : '<span class="text-muted">0</span>') + '</td>' +
+      '<td class="text-right num-col">' + lastScanCell(rData) + '</td>' +
       '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
 
     tbody.appendChild(tr);
@@ -810,12 +853,10 @@ function renderReuseAgentsTable(agentAggs) {
     tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTelemetryAgent(); } };
 
     const calls = aData.reuse_calls || 0;
-    const hits = aData.reuse_hits || 0;
     const saved = aData.reuse_saved_tokens || 0;
     const pct = (calls / maxCalls) * 100.0;
     const share = totalReuseCalls ? (calls / totalReuseCalls * 100.0) : 0.0;
     const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
-    const hitBadge = hits > 0 ? '<span class="badge status-ok">' + hits.toLocaleString() + ' hits</span>' : '<span class="text-muted">0</span>';
 
     tr.innerHTML =
       '<td>' +
@@ -823,7 +864,7 @@ function renderReuseAgentsTable(agentAggs) {
       '  <div class="row-track"><div class="row-track-fill row-track-fill-agent" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td class="text-right num-col">' + hitBadge + '</td>' +
+      '<td class="text-right num-col">' + searchHitRateCell(aData) + '</td>' +
       '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
 
     tbody.appendChild(tr);
@@ -1266,13 +1307,18 @@ function renderReuseList() {
     const repoBadge = '<span class="badge badge-repo">' + escapeHtml(c.repo) + '</span>';
     const locBadge = '<span class="badge status-warn" data-tip="card.loc_saving">-' + c.loc_saving + ' LOC</span>';
     const confBadge = c.confidence ? '<span class="badge" data-tip="card.confidence">' + escapeHtml(c.confidence) + '</span>' : '';
+    // Advisory recurrence: the twin was surfaced to an agent before and is
+    // still present, which is the closure gap this number names.
+    const surfacedBadge = (c.reuse_count || 0) > 0
+      ? '<span class="badge" data-tip="card.usage">surfaced ' + c.reuse_count + '&times;</span>'
+      : '';
 
     card.innerHTML =
       '<div class="item-card-head">' +
       '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
       '    <span class="' + detBadgeClass + '" data-tip="det.' + c.detector.toLowerCase() + '">' + c.detector + '</span>' +
           (c.overlap_applicable ? '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + c.overlap_pct + '% overlap</span>' : '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + escapeHtml(detectorEvidenceLabel(c.detector)) + '</span>') +
-      '    ' + confBadge + locBadge +
+      '    ' + confBadge + locBadge + surfacedBadge +
       '  </div>' +
       '  ' + repoBadge +
       '</div>' +
@@ -1529,7 +1575,7 @@ function renderMemoryDossier(m) {
 
   let refsHtml = '';
   if (m.resolved_refs && m.resolved_refs.length) {
-    refsHtml = '<div class="dossier-section-title">Guarded Code References (.engram/index.db verified)</div><div class="chips-row">';
+    refsHtml = '<div class="dossier-section-title">Code References</div><div class="chips-row">';
     m.resolved_refs.forEach(r => {
       const status = r.status || (r.verified ? 'valid' : 'broken');
       const verClass = status === 'broken' ? 'chip-ref broken'
@@ -1740,15 +1786,19 @@ const TIP = {
   'kpi.candidates': 'Functions that look like near-copies of another function.',
   'kpi.excess_loc': 'Estimated deletable lines, extrapolated from the sampled candidates.',
   'kpi.judge': 'Gray-zone candidates the local semantic judge reviewed. Rejected means the judge called the pair distinct.',
-  'kpi.recall': 'Share of tagged sessions (ENGRAM_SESSION set) whose calls read memory. Untagged sessions are not measured.',
+  'kpi.recall': 'Share of tagged sessions (ENGRAM_SESSION set) whose calls read memory (query, get, or export). Untagged sessions are not measured.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
   'col.p50': 'Half of runs were faster than this.',
   'col.items': 'Results returned by the query.',
   'col.reliability': 'Share of runs that finished without error.',
-  'col.tokens_saved': 'Estimated tokens saved by search and reuse runs together.',
-  'col.hits': 'Search results shown to the agent in that repository.',
-  'col.reads_writes': 'Memory reads versus notes written.',
+  'col.tokens_saved': 'Estimated tokens avoided instead of reading files (coefficients, not a measurement).',
+  'col.reuse_tokens_saved': 'Estimated tokens avoided by search and reuse calls (coefficients, not a measurement).',
+  'col.search_hit_rate': 'Share of pre-write searches that returned at least one result. "—" when the row has no searches.',
+  'col.candidates_sample': 'Duplicate twins the dashboard scan sampled for this repository (top-overlap sample, at most 25 per repo).',
+  'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Limit-capped" means the scan returned its limit, so the true candidate pool is larger.',
+  'col.results_shown': 'Results the search or scan showed to the agent.',
+  'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
   'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4 show their evidence class instead of a percentage.',
   'card.callers': 'Call sites using the canonical helper.',
   'card.confidence': 'Static confidence tier; stale or unknown freshness caps it at low.',

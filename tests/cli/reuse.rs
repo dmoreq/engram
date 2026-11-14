@@ -38,11 +38,11 @@ fn reuse_detects_candidate_duplicates() {
         "{stdout}"
     );
     assert!(stdout.contains("parse_token"), "{stdout}");
-    // Verify telemetry recorded the duplication warning
+    // Verify telemetry recorded the surfaced duplicate candidates
     let usage = eg(&repo).args(["usage", "--quality"]).output().unwrap();
     let usage_stdout = String::from_utf8_lossy(&usage.stdout);
     assert!(
-        usage_stdout.contains("Anti-Reinvention: 1 duplication warnings caught"),
+        usage_stdout.contains("Anti-Reinvention: 1 duplicate candidates surfaced"),
         "{usage_stdout}"
     );
 }

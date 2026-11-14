@@ -36,6 +36,16 @@ changes bump the minor while 0.x is unstable.
 - `scripts/install.sh` detects `eg-judge`, creates `~/.engram/judge`, warns
   about a missing checkpoint, and exports `EG_JUDGE_BIN`/`EG_JUDGE_MODEL`
   into `~/.zshrc`/`~/.bashrc` when absent.
+- The dashboard's Anti-Reinvention tables report effectiveness instead of
+  usage: Search Hit Rate (share of pre-write searches that returned a
+  result, `null` when the row has no searches), Candidates (Sample) from
+  the dashboard's own scan (top-overlap sample, at most 25 per repo), and
+  Latest Scan (newest ok `eg reuse` run with its size and a limit-capped
+  marker). Candidate cards gain a "surfaced N×" badge when a twin was
+  reported before and is still present. The usage-weighted `reuse_hits`
+  "Duplicate Hits" column is gone: it summed per-run result caps, so a
+  repository nobody scanned looked clean (mskit showed 10 hits while one
+  controlled scan returns 95 candidates).
 
 ### Changed
 - `eg-judge` v1.0.1: `--stdin` now reads newline-delimited JSON batches (one
@@ -51,6 +61,12 @@ changes bump the minor while 0.x is unstable.
 - git probes (`tracked-engram`, build walk, meta head/dirty) strip `GIT_*`
   environment variables: an `eg` command inside a git hook inherited the
   hook's `GIT_DIR` and inspected the hook repository instead of its own.
+- `eg usage` states the anti-reinvention line honestly: "N duplicate
+  candidates surfaced" instead of "N duplication warnings caught", and the
+  candidate total is Ok-only (exit 1/2 scans surfaced nothing), matching
+  the dashboard. Unmeasured states render an em dash instead of a default
+  100%: zero graph calls, zero worktree calls, and zero-search repository
+  rows no longer display as perfect scores.
 
 ## [1.0.7] - 2026-11-14
 

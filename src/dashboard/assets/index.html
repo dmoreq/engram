@@ -45,7 +45,7 @@
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.graph_queries">Deterministic Graph Queries</div>
         <div id="metric-total-calls" class="kpi-value">0</div>
-        <div id="metric-reliability" class="kpi-sub">100.0% clean (0 errors)</div>
+        <div id="metric-reliability" class="kpi-sub">&mdash;</div>
       </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.p50">Median Latency (p50)</div>
@@ -208,12 +208,14 @@
             <tr>
               <th>Repository / Branch</th>
               <th class="text-right">Calls</th>
-              <th class="text-right" data-tip="col.hits">Duplicate Hits</th>
-              <th class="text-right" data-tip="col.tokens_saved">Reuse Tokens Saved</th>
+              <th class="text-right" data-tip="col.search_hit_rate">Search Hit Rate</th>
+              <th class="text-right" data-tip="col.candidates_sample">Candidates (Sample)</th>
+              <th class="text-right" data-tip="col.latest_scan">Latest Scan</th>
+              <th class="text-right" data-tip="col.reuse_tokens_saved">Reuse Tokens Saved</th>
             </tr>
           </thead>
           <tbody id="reuse-repos-tbody">
-            <tr><td colspan="4" class="empty-cell">Loading repositories...</td></tr>
+            <tr><td colspan="6" class="empty-cell">Loading repositories...</td></tr>
           </tbody>
         </table>
       </div>
@@ -228,8 +230,8 @@
             <tr>
               <th>Agent Identity</th>
               <th class="text-right">Calls</th>
-              <th class="text-right">Duplicate Hits</th>
-              <th class="text-right">Reuse Tokens Saved</th>
+              <th class="text-right" data-tip="col.search_hit_rate">Search Hit Rate</th>
+              <th class="text-right" data-tip="col.reuse_tokens_saved">Reuse Tokens Saved</th>
             </tr>
           </thead>
           <tbody id="reuse-agents-tbody">
@@ -278,7 +280,7 @@
     <div class="card" style="margin-top: 1.5rem;">
       <div class="card-title">
         <span>Pre-Write Discovery &amp; Verification Feed</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;"><span id="reuse-feed-count">0</span> queries recorded &middot; agent search and reuse to find canonical helpers</span>
+        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;"><span id="reuse-feed-count">0</span> pre-write lookups recorded &middot; agent search and reuse to find canonical helpers</span>
       </div>
       <div class="list-count text-muted" id="prewrite-list-count"></div>
       <table>
@@ -288,7 +290,7 @@
             <th>Repository</th>
             <th>Tool</th>
             <th>Query / Target</th>
-            <th class="text-right">Hits Returned</th>
+            <th class="text-right" data-tip="col.results_shown">Results shown</th>
             <th class="text-right">Latency</th>
           </tr>
         </thead>
@@ -312,7 +314,7 @@
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.currency">Anchor Currency Rate</div>
         <div class="kpi-value text-success" id="mem-kpi-currency">100.0%</div>
-        <div class="kpi-sub" id="mem-kpi-currency-sub">0 fresh &middot; 0 modified &middot; 0 broken</div>
+        <div class="kpi-sub" id="mem-kpi-currency-sub">0 valid &middot; 0 modified &middot; 0 broken</div>
       </div>
     </div>
 
@@ -341,7 +343,7 @@
       <div class="card">
         <div class="card-title">
           <span>Agent Memory Attribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Agent memory lookups, notes authored, and reliability</span>
+          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Agent memory lookups, operations, and reliability</span>
         </div>
         <table>
           <thead>

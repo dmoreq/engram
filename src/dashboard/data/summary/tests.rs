@@ -198,3 +198,52 @@ fn unresolvable_worktree_entries_keep_their_own_row() {
     assert_eq!(summary["repo_aggs"][&wt_str]["worktree"], true);
     crate::db::test_support::remove_tree(&wt);
 }
+
+#[test]
+fn search_hit_rate_is_null_without_searches() {
+    // A repository that never ran a pre-write search has no measurable rate:
+    // the payload must say so instead of emitting a perfect 100.0.
+    let repo = with_live_repo("summary-search-null");
+    let entries = vec![json!({ "tool": "callers", "exit_code": 0, "repo": repo })];
+    let summary = compute_summary(&entries);
+    let row = &summary["repo_aggs"][&repo];
+    assert_eq!(row["search_calls"], 0);
+    assert!(row["search_hit_rate_pct"].is_null());
+    assert!(row["last_reuse_scan"].is_null());
+    crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}
+
+#[test]
+fn search_hit_rate_counts_only_ok_hits() {
+    // Hits are ok searches that returned at least one result; empty (exit 1
+    // would be ok-with-zero) and error runs do not count toward the rate.
+    let repo = with_live_repo("summary-search-hits");
+    let entries = vec![
+        json!({ "tool": "search", "exit_code": 0, "repo": repo, "shown": 5 }),
+        json!({ "tool": "search", "exit_code": 0, "repo": repo, "shown": 0 }),
+        json!({ "tool": "search", "exit_code": 6, "repo": repo, "shown": 9 }),
+    ];
+    let summary = compute_summary(&entries);
+    let row = &summary["repo_aggs"][&repo];
+    assert_eq!(row["search_calls"], 3);
+    let rate = row["search_hit_rate_pct"].as_f64().unwrap();
+    assert!((rate - 100.0 / 3.0).abs() < 0.1, "{summary}");
+    crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}
+
+#[test]
+fn last_reuse_scan_prefers_the_newest_ok_scan() {
+    // The newest scan wins even when an older one was larger, so the cell
+    // tracks accretion direction rather than the historical maximum.
+    let repo = with_live_repo("summary-scan-cap");
+    let entries = vec![
+        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 100, "ts": 1700000001.0, "args": { "limit": 100 } }),
+        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 4, "ts": 1700000002.0, "args": { "limit": 10 } }),
+    ];
+    let summary = compute_summary(&entries);
+    let scan = &summary["repo_aggs"][&repo]["last_reuse_scan"];
+    assert_eq!(scan["result_count"], 4);
+    assert_eq!(scan["limit_capped"], false);
+    assert_eq!(scan["ts"], 1700000002.0);
+    crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}

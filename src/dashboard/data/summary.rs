@@ -78,6 +78,9 @@ struct EntryView<'a> {
     agent_name: &'a str,
     session_name: &'a str,
     session_tagged: bool,
+    /// `args.limit` for the tools that record one (`reuse`, `search`): a scan
+    /// whose `result_count` reached the limit returned more than it showed.
+    args_limit: Option<usize>,
     facts: EntryFacts,
 }
 
@@ -137,11 +140,17 @@ impl<'a> EntryView<'a> {
                 .get("session")
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.is_empty()),
+            args_limit: e
+                .get("args")
+                .and_then(|a| a.get("limit"))
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
             facts: {
                 let class = classify(tool);
                 EntryFacts {
                     is_graph: class.graph,
                     is_reuse: class.reuse,
+                    is_search: tool == "search",
                     is_mem: class.memory,
                     is_mem_read: class.mem_read,
                     is_mem_write: class.mem_write,
@@ -285,14 +294,21 @@ impl SummaryState {
             t.ok_shown += v.shown;
             t.ok_results += v.result_count;
         }
-        let reuse_hit = if v.tool == "reuse" {
-            v.shown.max(v.result_count)
-        } else {
-            0
-        };
-        if reuse_hit > 0 {
-            self.repo_mut(folded_key(v), &v.repo_display).reuse_hits += reuse_hit;
-            self.agent_mut(v.agent_name).reuse_hits += reuse_hit;
+        if v.facts.is_search && v.shown > 0 {
+            self.repo_mut(folded_key(v), &v.repo_display)
+                .search_hit_calls += 1;
+            self.agent_mut(v.agent_name).search_hit_calls += 1;
+        }
+        if v.tool == "reuse" {
+            let scan = LastReuseScan {
+                ts: v.ts,
+                result_count: v.result_count,
+                limit_capped: v.args_limit.is_some_and(|limit| v.result_count >= limit),
+            };
+            let repo = self.repo_mut(folded_key(v), &v.repo_display);
+            if repo.last_reuse_scan.as_ref().is_none_or(|s| v.ts >= s.ts) {
+                repo.last_reuse_scan = Some(scan);
+            }
         }
         self.saved_tokens += saved;
         self.repo_mut(folded_key(v), &v.repo_display).tokens_saved += saved;
@@ -356,30 +372,9 @@ fn main_display(main: &str) -> String {
         .unwrap_or_else(|| main.to_string())
 }
 
-/// Stamp one journal entry with `repo_main` and `repo_main_name` when it was
-/// recorded in a linked worktree whose `.git` pointer still resolves. Feeds
-/// show the worktree name plus the repository it belongs to, and the summary
-/// window reuses the same stamp so both stay consistent.
-pub(crate) fn annotate_worktree_main(entry: &mut Value) {
-    let Some(repo) = entry.get("repo").and_then(Value::as_str) else {
-        return;
-    };
-    if !entry
-        .get("worktree")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return;
-    }
-    let Some(main) = crate::repo::cached_worktree_main_root(Path::new(repo)) else {
-        return;
-    };
-    if let Some(name) = main.file_name() {
-        let name = name.to_string_lossy().into_owned();
-        entry["repo_main"] = json!(main.to_string_lossy());
-        entry["repo_main_name"] = json!(name);
-    }
-}
+/// The provenance stamp lives beside the payload assembly; the summary
+/// module keeps the re-export so existing `data::` call sites stay stable.
+pub(crate) use payload::annotate_worktree_main;
 
 #[derive(Default)]
 struct ToolAgg {
@@ -407,17 +402,34 @@ struct RepoAgg {
     graph_tokens_saved: usize,
     reuse_calls: usize,
     reuse_errors: usize,
-    reuse_hits: usize,
     reuse_tokens_saved: usize,
     memory_calls: usize,
     memory_errors: usize,
     memory_reads: usize,
     memory_writes: usize,
+    /// Pre-write `eg search` volume and the share that returned at least one
+    /// result: the adoption and usefulness signal of the prevention surface.
+    search_calls: usize,
+    search_hit_calls: usize,
+    /// Newest successful `eg reuse` scan: size, and whether it hit the
+    /// requested limit (so the true pool is larger). Shows staleness and
+    /// accretion direction per repository.
+    last_reuse_scan: Option<LastReuseScan>,
     last_ts: f64,
     /// Per-worktree breakdown under this repository: the dashboard renders
     /// these as expandable sub-rows, so only the counts a sub-row shows are
     /// kept. Empty unless linked-worktree entries folded into this row.
     worktrees: BTreeMap<String, WtAgg>,
+}
+
+/// The newest successful full reuse scan a repository recorded.
+#[derive(Clone, Copy)]
+struct LastReuseScan {
+    ts: f64,
+    result_count: usize,
+    /// True when `result_count` reached `args.limit`: the scan returned a
+    /// truncated view of a larger candidate pool.
+    limit_capped: bool,
 }
 
 /// One linked worktree's contribution to its main repository's row.
@@ -443,6 +455,7 @@ impl WtAgg {
 struct EntryFacts {
     is_graph: bool,
     is_reuse: bool,
+    is_search: bool,
     is_mem: bool,
     is_mem_read: bool,
     is_mem_write: bool,
@@ -459,6 +472,9 @@ fn record_entry_into(agg: &mut RepoAgg, facts: EntryFacts, ts: f64, worktree: bo
     }
     if facts.is_reuse {
         agg.reuse_calls += 1;
+    }
+    if facts.is_search {
+        agg.search_calls += 1;
     }
     if facts.is_mem {
         agg.memory_calls += 1;

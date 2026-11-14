@@ -177,8 +177,11 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     let claude = &json_val["agent_aggs"]["claude"];
     assert_eq!(claude["reuse_calls"], 3);
     assert_eq!(claude["reuse_errors"], 1);
-    assert_eq!(claude["reuse_hits"], 3);
     assert_eq!(claude["reuse_saved_tokens"], 4300);
+    // Pre-write search surface: one search, one hit (shown=2 > 0).
+    assert_eq!(claude["search_calls"], 1);
+    let claude_hit_rate = claude["search_hit_rate_pct"].as_f64().unwrap();
+    assert!((claude_hit_rate - 100.0).abs() < 0.1);
     let claude_rel = claude["reuse_reliability_pct"].as_f64().unwrap();
     assert!((claude_rel - 66.666).abs() < 0.1);
 
@@ -194,8 +197,14 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     assert_eq!(agg_a["display"], "repo-a");
     assert_eq!(agg_a["reuse_calls"], 3);
     assert_eq!(agg_a["reuse_errors"], 1);
-    assert_eq!(agg_a["reuse_hits"], 3);
+    assert_eq!(agg_a["search_calls"], 1);
     assert_eq!(agg_a["worktree"], true);
+    // Newest ok reuse scan (line 1): 3 results, no journaled args.limit, so
+    // the scan is not limit-capped.
+    let scan = &agg_a["last_reuse_scan"];
+    assert_eq!(scan["result_count"], 3);
+    assert_eq!(scan["limit_capped"], false);
+    assert!(scan["ts"].is_number());
 
     let agg_b = &json_val["repo_aggs"][&repo_b];
     assert_eq!(agg_b["display"], "repo-b");
@@ -203,6 +212,10 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     assert_eq!(agg_b["memory_errors"], 1);
     assert_eq!(agg_b["memory_reads"], 2);
     assert_eq!(agg_b["memory_writes"], 1);
+    // No searches on repo-b: the rate is unmeasured, serialized as null.
+    assert_eq!(agg_b["search_calls"], 0);
+    assert!(agg_b["search_hit_rate_pct"].is_null());
+    assert!(agg_b["last_reuse_scan"].is_null());
 
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&temp_dir);

@@ -1,6 +1,7 @@
 //! Unit tests for the global usage fold's live-repository and ephemeral
 //! rules, Ok-only savings pricing, and the worktree fold.
 
+use super::kpi::calculate_telemetry_totals;
 use super::*;
 use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
 
@@ -171,4 +172,23 @@ fn quality_row_folds_structured_judge_counts() {
     );
     let callers = tool_row("callers", &aggs["callers"], true);
     assert!(!callers.contains("judge_"), "{callers}");
+}
+
+#[test]
+fn usage_cli_counts_only_successful_reuse_scans() {
+    // Empty (1) and ambiguous (2) reuse scans surfaced nothing, so the
+    // candidate total must match the dashboard's Ok-only accounting.
+    let live = temp_root("usage-reuse-ok-only");
+    let repo = live.to_string_lossy().into_owned();
+    let lines = [
+        format!(r#"{{"ts":1700000000,"tool":"reuse","exit_code":0,"result_count":7,"shown":7,"total":0,"stale":false,"ambiguous":0,"latency_us":100,"repo":"{repo}"}}"#),
+        format!(r#"{{"ts":1700000001,"tool":"reuse","exit_code":1,"result_count":0,"shown":0,"total":0,"stale":false,"ambiguous":0,"latency_us":100,"repo":"{repo}"}}"#),
+        format!(r#"{{"ts":1700000002,"tool":"reuse","exit_code":2,"result_count":3,"shown":3,"total":0,"stale":false,"ambiguous":1,"latency_us":100,"repo":"{repo}"}}"#),
+    ]
+    .join("\n");
+    let aggs = aggregate_usage(&lines);
+    let (saved_tokens, reuse_candidates) = calculate_telemetry_totals(&aggs);
+    assert_eq!(reuse_candidates, 7, "only the exit-0 scan is counted");
+    assert!(saved_tokens > 0, "the ok scan is still priced");
+    remove_tree(&live);
 }
