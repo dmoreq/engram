@@ -10,9 +10,9 @@ mod kpi;
 mod read;
 mod reuse;
 mod row;
+use kpi::kpi_section;
 pub(crate) use parse::{parse_usage_line, UsageFields};
 pub(crate) use read::*;
-use kpi::kpi_section;
 use reuse::ReuseUsage;
 use row::tool_row;
 
