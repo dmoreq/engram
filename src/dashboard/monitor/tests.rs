@@ -11,13 +11,13 @@ fn monitor_gate_rejects_tracked_and_symlinked_journals() {
     crate::db::test_support::write_file(repo.join(".engram/usage.log"), b"{}\n").unwrap();
     assert!(monitor_gate(Some(&repo), false).is_ok());
     assert!(monitor_gate(Some(&repo), true).is_ok());
-    let init = std::process::Command::new("git")
+    let init = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&repo)
         .args(["init", "-q"])
         .status();
     if matches!(init, Ok(status) if status.success()) {
-        let added = std::process::Command::new("git")
+        let added = crate::db::test_support::stripped_git()
             .arg("-C")
             .arg(&repo)
             .args(["add", "-f", ".engram/usage.log"])

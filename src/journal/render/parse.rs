@@ -24,6 +24,7 @@ pub(crate) struct UsageFields {
     pub(crate) mode: Option<String>,
     pub(crate) truncated: bool,
     pub(crate) reuse: Option<ReuseUsage>,
+    pub(crate) judge: Option<reuse::JudgeUsage>,
     pub(crate) freshness_state: Option<String>,
     pub(crate) freshness_unknown: usize,
 }
@@ -62,6 +63,7 @@ pub(crate) fn parse_usage_line(line: &str) -> Option<UsageFields> {
             .and_then(|x| x.as_bool())
             .unwrap_or(false),
         reuse: v.get("reuse").and_then(reuse::parse),
+        judge: v.get("judge").and_then(reuse::parse_judge),
         freshness_state: v
             .get("freshness")
             .and_then(|f| f.get("state"))

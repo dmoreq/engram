@@ -55,13 +55,14 @@ pub(super) fn run_mem_write(
     })?;
     // Advisory only: a near-duplicate under another key suggests --supersedes.
     // Same-key updates and explicit --supersedes already express intent.
-    let consolidation = if supersedes.is_none() {
-        open_mem_conn(root_arg, *global, MemoryMode::Query)
-            .ok()
-            .and_then(|conn| crate::memory::find_consolidation_match(&conn, &note))
+    let consolidation_conn = if supersedes.is_none() {
+        open_mem_conn(root_arg, *global, MemoryMode::Query).ok()
     } else {
         None
     };
+    let consolidation = consolidation_conn
+        .as_ref()
+        .and_then(|conn| crate::memory::find_consolidation_match(conn, &note));
     let outcome = write_note(
         root_arg,
         &note,
@@ -74,7 +75,14 @@ pub(super) fn run_mem_write(
     let line = outcome_line(&outcome, &note.key);
     let mut stdout = format!("{}\n{line}\n", crate::memory::MEMORY_CAVEAT);
     if let Some(m) = consolidation {
-        stdout.push_str(&m.hint_line(&note.key));
+        let mut hint = m.hint_line(&note.key);
+        if let Some(pct) = consolidation_conn
+            .as_ref()
+            .and_then(|conn| m.semantic_similarity_pct(conn, &note))
+        {
+            hint.push_str(&format!(" (similarity={pct}%)"));
+        }
+        stdout.push_str(&hint);
         stdout.push('\n');
     }
     Ok(ArmOut::plain(stdout, String::new()))

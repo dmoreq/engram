@@ -109,6 +109,30 @@ fi
 mkdir -p "$HOME/.engram"
 chmod 700 "$HOME/.engram" 2>/dev/null || true
 
+# Optional local semantic judge (eg reuse --judge). Everything stays local:
+# a missing binary or checkpoint only disables the opt-in flag, never a
+# command's result.
+mkdir -p "$HOME/.engram/judge"
+chmod 700 "$HOME/.engram/judge" 2>/dev/null || true
+if [[ -x "$HOME/.cargo/bin/eg-judge" ]]; then
+  log_ok "Detected eg-judge at $HOME/.cargo/bin/eg-judge"
+  if [[ ! -f "$HOME/.engram/judge/model/lazy.json" ]]; then
+    log_warn "No checkpoint at ~/.engram/judge/model/lazy.json — eg reuse --judge degrades to static output."
+    log_warn "Point EG_JUDGE_MODEL at an exported checkpoint to enable it."
+  fi
+  if [[ -f "$HOME/.engram/judge/model/recipe.json" ]]; then
+    log_ok "Judge calibration recipe found (recipe.json)"
+  fi
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    if [[ -f "$rc" ]] && ! grep -q 'EG_JUDGE_BIN' "$rc"; then
+      printf '\nexport EG_JUDGE_BIN="%s"\nexport EG_JUDGE_MODEL="%s"\n' \
+        "$HOME/.cargo/bin/eg-judge" "$HOME/.engram/judge/model" >> "$rc"
+    fi
+  done
+else
+  log_warn "eg-judge not installed at ~/.cargo/bin/eg-judge — eg reuse --judge stays disabled."
+fi
+
 log_ok "Binaries and scripts installed:"
 echo "  ├─ ~/.cargo/bin/eg"
 echo "  ├─ ~/.local/bin/eg -> ~/.cargo/bin/eg"

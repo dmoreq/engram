@@ -195,6 +195,13 @@ pub fn collect_reuse_candidates(
 
     let mut summary =
         summarize_reuse_metrics(&candidates_json, total_corpus_candidates, prewrite_count);
+    let judge = usage::aggregate_judge_usage(entries);
+    summary["judge"] = json!({
+        "runs": judge.runs,
+        "reviewed": judge.reviewed,
+        "rejected": judge.rejected,
+        "failed": judge.failed,
+    });
     summary["cache_hit"] = json!(cache_hit);
     summary["cache_age_ms"] = json!(cache_age_ms);
     summary["degraded"] = json!(blocked > 0);
@@ -433,7 +440,7 @@ fn summarize_reuse_metrics(
     };
 
     json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "total_candidates": total_cands,
         "sample_strategy": "top_overlap_per_repo",
         // Extrapolated from the sampled candidates; flag it in-band so a
@@ -441,6 +448,12 @@ fn summarize_reuse_metrics(
         "preventable_loc": prev_loc,
         "preventable_loc_estimated": true,
         "prewrite_count": prewrite_count,
+        "judge": {
+            "runs": 0,
+            "reviewed": 0,
+            "rejected": 0,
+            "failed": 0,
+        },
         "avg_callers": avg_callers,
         "avg_callers_estimated": true,
         // Counts come from the sampled candidate list, not the whole corpus.

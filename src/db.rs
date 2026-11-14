@@ -419,6 +419,20 @@ pub(crate) mod test_support {
         fs::rename(from, to)
     }
 
+    /// A git command for fixture repositories with every `GIT_*` variable
+    /// stripped: a hook environment (`GIT_DIR` exported by `git push`) would
+    /// otherwise redirect the fixture's git operations into the shared
+    /// checkout's index.
+    pub(crate) fn stripped_git() -> std::process::Command {
+        let mut command = std::process::Command::new("git");
+        for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+            if key.starts_with("GIT_") {
+                command.env_remove(key);
+            }
+        }
+        command
+    }
+
     pub(crate) fn make_dir_all(path: impl AsRef<Path>) -> std::io::Result<()> {
         fs::create_dir_all(path)
     }

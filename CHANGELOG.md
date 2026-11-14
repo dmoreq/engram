@@ -14,6 +14,44 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+## [1.0.8] - 2026-11-14
+
+### Added
+- `eg reuse --judge` arbitrates gray-zone candidates as one NDJSON batch: a
+  single `eg-judge` subprocess loads the checkpoint once, reviews up to 20
+  pairs within a 256 KiB stdin/stdout cap and a 20 s deadline, and reports
+  `eg: judge: reviewed N, rejected M` on stderr. Runs with no judgeable
+  candidates print `eg: judge: 0 judgeable candidates` instead of staying
+  silent. A `recipe.json` next to the checkpoint is passed through as
+  `--recipe` automatically.
+- Reuse journal lines carry a structured `judge` object (`reviewed`,
+  `rejected`, `failed`). `eg usage --quality` aggregates the counters on the
+  reuse row, and `/api/reuse` (schema 3) exposes `summary.judge`; the
+  Anti-Reinvention tab gains a Semantic Judge tile reading that block.
+- `EG_JUDGE_MEM_HINT=1` makes the `mem write` consolidation hint append the
+  judge's semantic similarity, e.g. `(similarity=41%)`. Advisory only, off by
+  default; any judge failure keeps the token-overlap wording.
+- `scripts/install.sh` detects `eg-judge`, creates `~/.engram/judge`, warns
+  about a missing checkpoint, and exports `EG_JUDGE_BIN`/`EG_JUDGE_MODEL`
+  into `~/.zshrc`/`~/.bashrc` when absent.
+
+### Changed
+- `eg-judge` v1.0.1: `--stdin` now reads newline-delimited JSON batches (one
+  verdict line per pair, `index` on every line for multi-pair batches, 1 MiB
+  payload cap), the `similarity` stdin shape is fixed to `{"text_a","text_b"}`,
+  `judge-duplicate`/`judge-supersede` verdict lines carry `threshold`, and
+  `bench --threshold` is validated. `eg reuse --judge` previously failed on
+  every invocation because the binary had no `--stdin` flag and the
+  similarity stdin parser expected the supersede shape.
+- The deep-shared 10k reuse bench budget moves to 800 ms p95: the hosted
+  macOS runner measures 520-537 ms on this bench (local Apple Silicon ~197
+  ms), so the previous 500 ms gate failed CI on main for every merge.
+- git probes (`tracked-engram`, build walk, meta head/dirty) strip `GIT_*`
+  environment variables: an `eg` command inside a git hook inherited the
+  hook's `GIT_DIR` and inspected the hook repository instead of its own.
+
 ## [1.0.7] - 2026-11-14
 
 ### Added

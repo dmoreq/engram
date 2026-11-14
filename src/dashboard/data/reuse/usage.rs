@@ -57,6 +57,39 @@ pub(super) fn decorate_usage(candidates: &mut [Value], usage: &HashMap<String, (
     }
 }
 
+/// Judge totals over the retained journal. Only reuse lines carrying the
+/// structured `judge` object count as runs; a missing key or a null (legacy
+/// line, no-op run) contributes nothing.
+pub(super) struct JudgeTotals {
+    pub(super) runs: usize,
+    pub(super) reviewed: usize,
+    pub(super) rejected: usize,
+    pub(super) failed: usize,
+}
+
+pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
+    let mut totals = JudgeTotals {
+        runs: 0,
+        reviewed: 0,
+        rejected: 0,
+        failed: 0,
+    };
+    for e in entries {
+        if e.get("tool").and_then(Value::as_str) != Some("reuse") {
+            continue;
+        }
+        let Some(judge) = e.get("judge").filter(|j| j.is_object()) else {
+            continue;
+        };
+        let number = |key: &str| judge.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
+        totals.runs += 1;
+        totals.reviewed += number("reviewed");
+        totals.rejected += number("rejected");
+        totals.failed += number("failed");
+    }
+    totals
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;
@@ -102,5 +135,25 @@ mod usage_tests {
         assert_eq!(candidates[0]["reuse_count"], 3);
         assert_eq!(candidates[0]["last_reused_ts"], 250.0);
         assert_eq!(candidates[0]["usage_window"], "retained_journal");
+    }
+
+    #[test]
+    fn judge_totals_count_runs_not_lines() {
+        let entries = vec![
+            json!({ "tool": "reuse", "judged": true,
+                    "judge": { "reviewed": 2, "rejected": 1, "failed": 0 } }),
+            json!({ "tool": "reuse", "judged": true,
+                    "judge": { "reviewed": 1, "rejected": 0, "failed": 1 } }),
+            // No-op run: null judge object is not a run.
+            json!({ "tool": "reuse", "judged": false, "judge": serde_json::Value::Null }),
+            // Legacy line without the object is not a run either.
+            json!({ "tool": "reuse" }),
+            json!({ "tool": "search", "judge": { "reviewed": 9 } }),
+        ];
+        let totals = aggregate_judge_usage(&entries);
+        assert_eq!(totals.runs, 2);
+        assert_eq!(totals.reviewed, 3);
+        assert_eq!(totals.rejected, 1);
+        assert_eq!(totals.failed, 1);
     }
 }

@@ -198,7 +198,13 @@ pub(crate) fn stable_fixture(name: &str) -> TempRepo {
         .join(format!("eg-mcp-st-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    let init = Command::new("git")
+    let mut command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let init = command
         .arg("-C")
         .arg(&dir)
         .args(["init", "-q"])

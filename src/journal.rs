@@ -13,8 +13,8 @@ use serde_json::Value;
 
 mod reuse;
 pub use reuse::{
-    set_candidate_ids, set_freshness, set_judged, set_mode, set_reuse_counts, ReuseFreshness,
-    ReuseJournalCounts,
+    set_candidate_ids, set_freshness, set_judge_counts, set_judged, set_mode, set_reuse_counts,
+    JudgeJournalCounts, ReuseFreshness, ReuseJournalCounts,
 };
 
 /// Rotate `usage.log` to `usage.log.1` past this size (one prior generation).
@@ -39,6 +39,7 @@ pub(super) struct Pending {
     arm: String,
     agent: String,
     pub(super) judged: bool,
+    pub(super) judge: Option<JudgeJournalCounts>,
     pub(super) mode: &'static str,
     pub(super) truncated: bool,
     pub(super) reuse_counts: Option<ReuseJournalCounts>,
@@ -92,6 +93,7 @@ pub fn begin(surface: &'static str, tool: &str, args: &JournalArgs) {
             arm: env_tag(&["ENGRAM_ARM"]),
             agent: detect_agent(),
             judged: false,
+            judge: None,
             mode: "scan",
             truncated: false,
             reuse_counts: None,
@@ -156,6 +158,13 @@ pub fn finalize(root: Option<&Path>, exit_code: i32, latency_us: u64) {
         "repo_name": repo_name,
         "worktree": is_worktree,
         "judged": pending.judged,
+        "judge": pending.judge.map(|j| {
+            serde_json::json!({
+                "reviewed": j.reviewed,
+                "rejected": j.rejected,
+                "failed": j.failed,
+            })
+        }).unwrap_or(Value::Null),
     });
     let line_str = format!("{line}\n");
     // Never append to tracked, attacker-authored state.

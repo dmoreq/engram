@@ -10,6 +10,7 @@ mod global_usage;
 mod impact;
 mod incremental;
 mod invalidation;
+mod judge_batch;
 mod memory_basics;
 mod memory_doctor;
 mod memory_enhancements;
