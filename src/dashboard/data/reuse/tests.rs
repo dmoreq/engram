@@ -31,12 +31,18 @@ fn reuse_scan_cache_hits_until_the_index_changes() {
 #[test]
 fn summary_emits_sample_markers_and_estimate_flags() {
     let summary = summarize_reuse_metrics(&[], 0, 0);
-    assert_eq!(summary["schema_version"], 2);
+    assert_eq!(summary["schema_version"], 3);
     assert_eq!(summary["total_candidates"], 0);
     assert_eq!(summary["prewrite_count"], 0);
     assert_eq!(summary["sample_strategy"], "top_overlap_per_repo");
     assert_eq!(summary["preventable_loc_estimated"], true);
     assert_eq!(summary["detector_counts_estimated"], true);
+    // Judge totals are a structured block keyed `judge`; the retired scalar
+    // `judged_calls` stays absent.
+    assert_eq!(summary["judge"]["runs"], 0);
+    assert_eq!(summary["judge"]["reviewed"], 0);
+    assert_eq!(summary["judge"]["rejected"], 0);
+    assert_eq!(summary["judge"]["failed"], 0);
     assert!(summary.get("judged_calls").is_none());
     assert_eq!(summary["avg_callers"], 0.0);
     assert_eq!(summary["avg_callers_estimated"], true);

@@ -36,6 +36,27 @@ pub(crate) fn parse(value: &Value) -> Option<ReuseUsage> {
     })
 }
 
+/// Structured judge outcome parsed from a reuse journal line. Missing keys
+/// fold as zero, so a partially written line cannot panic the reader.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct JudgeUsage {
+    pub(crate) reviewed: usize,
+    pub(crate) rejected: usize,
+    pub(crate) failed: usize,
+}
+
+pub(crate) fn parse_judge(value: &Value) -> Option<JudgeUsage> {
+    if !value.is_object() {
+        return None;
+    }
+    let number = |key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0) as usize;
+    Some(JudgeUsage {
+        reviewed: number("reviewed"),
+        rejected: number("rejected"),
+        failed: number("failed"),
+    })
+}
+
 pub(super) fn fold(usage: Option<ReuseUsage>, truncated: bool, has_mode: bool, agg: &mut ToolAgg) {
     if let Some(reuse) = usage {
         agg.reuse_usage.provisional += reuse.provisional;

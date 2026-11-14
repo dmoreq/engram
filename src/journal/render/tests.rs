@@ -144,3 +144,31 @@ fn global_usage_folds_worktrees_and_drops_ephemeral() {
     remove_tree(&wt_root);
     remove_tree(&scratch);
 }
+
+#[test]
+fn quality_row_folds_structured_judge_counts() {
+    // Two judged runs (2 pairs reviewed, 1 rejected, 1 failed) plus a legacy
+    // reuse line without the judge object: the aggregate counts runs, not
+    // lines, and the non-reuse tool stays judge-free.
+    let live = env!("CARGO_MANIFEST_DIR").to_string();
+    let lines = [
+        format!(
+            r#"{{"tool":"reuse","exit_code":0,"result_count":3,"shown":3,"total":3,"mode":"scan","judged":true,"judge":{{"reviewed":1,"rejected":0,"failed":1}},"repo":"{live}"}}"#
+        ),
+        format!(
+            r#"{{"tool":"reuse","exit_code":0,"result_count":2,"shown":2,"total":2,"mode":"scan","judged":true,"judge":{{"reviewed":1,"rejected":1,"failed":0}},"repo":"{live}"}}"#
+        ),
+        format!(r#"{{"tool":"reuse","exit_code":0,"result_count":1,"shown":1,"total":1,"repo":"{live}"}}"#),
+        format!(r#"{{"tool":"callers","exit_code":0,"result_count":1,"repo":"{live}"}}"#),
+    ]
+    .join("\n");
+
+    let aggs = aggregate_usage(&lines);
+    let row = tool_row("reuse", &aggs["reuse"], true);
+    assert!(
+        row.contains("judge_reviewed=2 judge_rejected=1 judge_failed=1"),
+        "{row}"
+    );
+    let callers = tool_row("callers", &aggs["callers"], true);
+    assert!(!callers.contains("judge_"), "{callers}");
+}

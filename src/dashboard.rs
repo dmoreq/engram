@@ -242,6 +242,27 @@ mod client_contract_tests {
     }
 
     #[test]
+    fn judge_tile_reads_the_payload_summary_block() {
+        assert!(
+            HTML.contains("id=\"reuse-kpi-judge\""),
+            "judge tile value missing"
+        );
+        assert!(
+            HTML.contains("id=\"reuse-kpi-judge-sub\""),
+            "judge tile subtitle missing"
+        );
+        assert!(
+            JS.contains("const judge = summary.judge || {};"),
+            "judge tile must read the /api/reuse judge block"
+        );
+        assert!(
+            JS.contains("No judged runs in the retained journal"),
+            "zero-run copy missing"
+        );
+        assert!(JS.contains("'kpi.judge'"), "judge tooltip copy missing");
+    }
+
+    #[test]
     fn list_views_are_collapsible_and_deterministic() {
         assert!(
             HTML.contains("id=\"mem-view\""),

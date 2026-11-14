@@ -72,6 +72,23 @@ pub fn set_judged(value: bool) {
     });
 }
 
+/// Structured judge outcome for one invocation: pairs attempted, candidates
+/// rejected as distinct, and lines that failed to arbitrate.
+#[derive(Debug, Clone, Copy)]
+pub struct JudgeJournalCounts {
+    pub reviewed: usize,
+    pub rejected: usize,
+    pub failed: usize,
+}
+
+pub fn set_judge_counts(counts: JudgeJournalCounts) {
+    super::PENDING.with(|pending| {
+        if let Some(entry) = pending.borrow_mut().as_mut() {
+            entry.judge = Some(counts);
+        }
+    });
+}
+
 pub fn set_reuse_counts(counts: ReuseJournalCounts) {
     super::PENDING.with(|pending| {
         if let Some(entry) = pending.borrow_mut().as_mut() {

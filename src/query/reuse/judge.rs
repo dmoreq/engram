@@ -2,6 +2,9 @@
 //! for a verdict on gray-zone candidates. Missing binaries, model failures,
 //! timeouts, malformed output, and unknown verdicts never alter the static
 //! result; they add one stderr note.
+//!
+//! The batch contract: one NDJSON payload, one child process, one checkpoint
+//! load, one verdict line per pair in order.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -15,16 +18,14 @@ use super::*;
 
 pub(super) const GRAY_LOW: u64 = 45;
 pub(super) const GRAY_HIGH: u64 = 75;
-const MAX_JUDGED: usize = 5;
-const TIMEOUT: Duration = Duration::from_millis(15_000);
+/// Batch ceiling: one NDJSON line per judged candidate.
+const MAX_JUDGED: usize = 20;
+/// Cold Metal kernel compilation measured at 13.1 s; the deadline must cover
+/// one cold start plus a warm batch of 20 pairs.
+const TIMEOUT: Duration = Duration::from_millis(20_000);
 const POLL: Duration = Duration::from_millis(10);
-const MAX_INPUT: usize = 64 * 1024;
-const MAX_OUTPUT: usize = 64 * 1024;
-
-#[derive(Debug, Clone)]
-struct Verdict {
-    decision: VerdictDecision,
-}
+const MAX_INPUT: usize = 256 * 1024;
+const MAX_OUTPUT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VerdictDecision {
@@ -36,6 +37,16 @@ struct Setup {
     binary: PathBuf,
     model: PathBuf,
     subcommand: &'static str,
+    recipe: Option<PathBuf>,
+}
+
+/// Judge outcome for one invocation, in candidate order.
+struct BatchOutcome {
+    reviewed: usize,
+    rejected: usize,
+    failed: usize,
+    /// Candidate pool indices rejected as distinct.
+    reject_indices: Vec<usize>,
 }
 
 pub(super) fn apply(
@@ -52,40 +63,92 @@ pub(super) fn apply(
         Ok(setup) => setup,
         Err(note) => return Some(format!("eg: judge unavailable: {note}")),
     };
-    let before = pool.len();
-    let mut judged = 0usize;
-    let mut failed = false;
-    let mut reject = vec![false; pool.len()];
+    let mut indices: Vec<usize> = Vec::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
     for (index, candidate) in pool.iter().enumerate() {
-        if judged >= MAX_JUDGED || !is_judgeable(candidate, mode) {
+        if pairs.len() >= MAX_JUDGED || !is_judgeable(candidate, mode) {
             continue;
         }
-        judged += 1;
-        match arbitrate(ctx, &setup, candidate, proposal_signature) {
-            Some(verdict) => {
-                if verdict.decision == VerdictDecision::Distinct {
-                    reject[index] = true;
-                }
-            }
-            None => failed = true,
+        // A candidate whose source cannot be read safely is not judgeable; the
+        // batch continues without it instead of failing every verdict.
+        if let Some(pair) = pair_texts(ctx, candidate, proposal_signature) {
+            indices.push(index);
+            pairs.push(pair);
         }
     }
-    crate::journal::set_judged(judged > 0);
-    if failed {
+    if pairs.is_empty() {
+        crate::journal::set_judged(false);
+        crate::journal::set_judge_counts(crate::journal::JudgeJournalCounts {
+            reviewed: 0,
+            rejected: 0,
+            failed: 0,
+        });
+        return Some("eg: judge: 0 judgeable candidates".to_string());
+    }
+    // Keep the batch inside the stdin cap by dropping trailing pairs.
+    let mut payload = build_payload(&setup, &pairs);
+    while payload.is_none() && pairs.len() > 1 {
+        pairs.pop();
+        indices.pop();
+        payload = build_payload(&setup, &pairs);
+    }
+    let Some(payload) = payload else {
+        crate::journal::set_judged(false);
+        crate::journal::set_judge_counts(crate::journal::JudgeJournalCounts {
+            reviewed: 1,
+            rejected: 0,
+            failed: 1,
+        });
+        return Some(
+            "eg: judge unavailable: judge payload exceeds the cap; static result kept".to_string(),
+        );
+    };
+    let reviewed = pairs.len();
+    let mut outcome = BatchOutcome {
+        reviewed,
+        rejected: 0,
+        failed: reviewed,
+        reject_indices: Vec::new(),
+    };
+    if let Some(lines) = run_child_batch(&setup, &payload) {
+        if lines.len() == reviewed {
+            outcome.failed = 0;
+            for (position, raw) in lines.iter().enumerate() {
+                match parse_verdict(raw) {
+                    Some(VerdictDecision::Distinct) => {
+                        outcome.reject_indices.push(indices[position]);
+                        outcome.rejected += 1;
+                    }
+                    Some(VerdictDecision::Duplicate) => {}
+                    None => outcome.failed += 1,
+                }
+            }
+        }
+    }
+    let successes = outcome.reviewed.saturating_sub(outcome.failed);
+    crate::journal::set_judged(successes > 0);
+    crate::journal::set_judge_counts(crate::journal::JudgeJournalCounts {
+        reviewed: outcome.reviewed,
+        rejected: outcome.rejected,
+        failed: outcome.failed,
+    });
+    if successes == 0 {
         return Some("eg: judge unavailable: arbitration failed; static result kept".to_string());
     }
     let mut index = 0usize;
     pool.retain(|_| {
-        let keep = !reject[index];
+        let keep = !outcome.reject_indices.contains(&index);
         index += 1;
         keep
     });
-    (judged > 0).then(|| {
-        format!(
-            "eg: judge: reviewed {judged}, rejected {}",
-            before.saturating_sub(pool.len())
-        )
-    })
+    let mut note = format!(
+        "eg: judge: reviewed {}, rejected {}",
+        outcome.reviewed, outcome.rejected
+    );
+    if outcome.failed > 0 {
+        note.push_str(&format!(", {} failed", outcome.failed));
+    }
+    Some(note)
 }
 
 fn is_judgeable(candidate: &ReuseCandidate, mode: ReuseMode) -> bool {
@@ -128,10 +191,17 @@ fn detect_setup() -> std::result::Result<Setup, String> {
         Some(0) => "similarity",
         _ => "judge-duplicate",
     };
+    // A calibration recipe next to the checkpoint is picked up automatically;
+    // the caller never edits the command to use it.
+    let recipe = model
+        .join("recipe.json")
+        .is_file()
+        .then(|| model.join("recipe.json"));
     Ok(Setup {
         binary,
         model,
         subcommand,
+        recipe,
     })
 }
 
@@ -142,19 +212,18 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn arbitrate(
+fn pair_texts(
     ctx: &QueryCtx<'_>,
-    setup: &Setup,
     candidate: &ReuseCandidate,
     proposal_signature: Option<&str>,
-) -> Option<Verdict> {
+) -> Option<(String, String)> {
     let left = if candidate.file == "<proposal>" {
         proposal_signature?.to_string()
     } else {
         source(ctx, &candidate.file, &candidate.symbol)?
     };
     let right = source(ctx, &candidate.canonical_file, &candidate.canonical)?;
-    run_child(setup, &left, &right).map(|decision| Verdict { decision })
+    Some((left, right))
 }
 
 /// Source text of one symbol from its indexed span. The path must stay inside
@@ -196,22 +265,37 @@ fn source(ctx: &QueryCtx<'_>, file: &str, name: &str) -> Option<String> {
     Some(lines[start..end.min(lines.len())].join("\n"))
 }
 
-fn run_child(setup: &Setup, left: &str, right: &str) -> Option<VerdictDecision> {
-    let payload = if setup.subcommand == "similarity" {
-        serde_json::json!({"text_a": left, "text_b": right})
-    } else {
-        serde_json::json!({"code_a": left, "code_b": right})
-    };
-    let payload = serde_json::to_vec(&payload).ok()?;
+/// One NDJSON line per pair, in candidate order.
+fn build_payload(setup: &Setup, pairs: &[(String, String)]) -> Option<Vec<u8>> {
+    let mut payload = Vec::new();
+    for (left, right) in pairs {
+        let line = if setup.subcommand == "similarity" {
+            serde_json::json!({"text_a": left, "text_b": right})
+        } else {
+            serde_json::json!({"code_a": left, "code_b": right})
+        };
+        serde_json::to_writer(&mut payload, &line).ok()?;
+        payload.push(b'\n');
+    }
     if payload.len() > MAX_INPUT {
         return None;
     }
+    Some(payload)
+}
+
+/// Spawn one child, feed the batch, and return its verdict lines in order.
+/// `None` means the whole batch failed (spawn, timeout, cap, or shape).
+fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<String>> {
     let mut command = Command::new(&setup.binary);
     command
         .arg(setup.subcommand)
         .arg("--stdin")
         .arg("--model")
-        .arg(&setup.model)
+        .arg(&setup.model);
+    if let Some(recipe) = &setup.recipe {
+        command.arg("--recipe").arg(recipe);
+    }
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -227,6 +311,7 @@ fn run_child(setup: &Setup, left: &str, right: &str) -> Option<VerdictDecision> 
         let _ = child.wait();
         return None;
     };
+    let payload = payload.to_vec();
     let writer = std::thread::spawn(move || {
         let _ = stdin.write_all(&payload);
     });
@@ -267,7 +352,13 @@ fn run_child(setup: &Setup, left: &str, right: &str) -> Option<VerdictDecision> 
     if raw.len() > MAX_OUTPUT {
         return None;
     }
-    parse_verdict(&raw)
+    let lines: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some(lines)
 }
 
 #[cfg(unix)]
@@ -350,5 +441,22 @@ mod tests {
             parse_verdict(r#"{"decision":"duplicate","probability":1.2}"#),
             None
         );
+    }
+
+    #[test]
+    fn batch_payload_uses_the_kind_specific_shape() {
+        let setup = |subcommand: &'static str| Setup {
+            binary: PathBuf::from("eg-judge"),
+            model: PathBuf::from("model"),
+            subcommand,
+            recipe: None,
+        };
+        let pairs = vec![("left".to_string(), "right".to_string())];
+        let payload = build_payload(&setup("similarity"), &pairs).unwrap();
+        let text = String::from_utf8(payload).unwrap();
+        assert!(text.contains("\"text_a\":\"left\""), "{text}");
+        let payload = build_payload(&setup("judge-duplicate"), &pairs).unwrap();
+        let text = String::from_utf8(payload).unwrap();
+        assert!(text.contains("\"code_a\":\"left\""), "{text}");
     }
 }

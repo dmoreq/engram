@@ -6,9 +6,11 @@ use crate::repo::UNATTRIBUTED;
 mod parse;
 mod read;
 mod reuse;
+mod row;
 pub(crate) use parse::{parse_usage_line, UsageFields};
 pub(crate) use read::*;
 use reuse::ReuseUsage;
+use row::tool_row;
 
 #[derive(Default)]
 struct RepoAgg {
@@ -50,6 +52,10 @@ struct ToolAgg {
     reuse_scan_results: usize,
     reuse_stale: usize,
     reuse_unknown: usize,
+    judge_runs: usize,
+    judge_reviewed: usize,
+    judge_rejected: usize,
+    judge_failed: usize,
 }
 
 /// Summarize `usage.log` (+ `.1`); `quality` adds the empty split and cap count.
@@ -149,6 +155,14 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
         agg.latencies.push(us.max(0) as u64);
     }
     reuse::fold(fields.reuse, fields.truncated, fields.tool == "reuse", agg);
+    if fields.tool == "reuse" {
+        if let Some(judge) = fields.judge {
+            agg.judge_runs += 1;
+            agg.judge_reviewed += judge.reviewed;
+            agg.judge_rejected += judge.rejected;
+            agg.judge_failed += judge.failed;
+        }
+    }
     if fields.tool == "reuse" && fields.mode.as_deref().is_none_or(|mode| mode == "scan") {
         agg.reuse_scan_shown += shown;
         agg.reuse_scan_results += fields.result_count.max(0) as usize;
@@ -447,53 +461,6 @@ fn calculate_telemetry_totals(
     }
 
     (saved_tokens, reuse_hits)
-}
-
-fn tool_row(tool: &str, agg: &ToolAgg, quality: bool) -> String {
-    let mut lat = agg.latencies.clone();
-    lat.sort_unstable();
-    let p50 = percentile(&lat, 0.5);
-    let p95 = percentile(&lat, 0.95);
-    if quality {
-        let mut row = format!(
-            "  {tool}: {} calls, errors={} empty_ok={} ({}) empty_error={} stale={} ambiguous={} capped={} p50={p50} p95={p95}",
-            agg.calls,
-            agg.errors,
-            agg.empty_ok,
-            percent(agg.empty_ok, agg.calls),
-            agg.empty_error,
-            agg.stale,
-            agg.ambiguous,
-            agg.capped,
-        );
-        if agg.reuse_modes > 0 {
-            row.push_str(&format!(
-                " reuse_modes={} truncated={} provisional={} low={} medium={} high={} suppressed={} guarded={} below={} omitted={}",
-                agg.reuse_modes,
-                agg.reuse_truncated,
-                agg.reuse_usage.provisional,
-                agg.reuse_usage.low,
-                agg.reuse_usage.medium,
-                agg.reuse_usage.high,
-                agg.reuse_usage.suppressed,
-                agg.reuse_usage.guarded_out,
-                agg.reuse_usage.below_threshold,
-                agg.reuse_usage.omitted,
-            ));
-            if agg.reuse_stale > 0 || agg.reuse_unknown > 0 {
-                row.push_str(&format!(
-                    " stale={} unknown={}",
-                    agg.reuse_stale, agg.reuse_unknown
-                ));
-            }
-        }
-        row
-    } else {
-        format!(
-            "  {tool}: {} calls, errors={} empty={} stale={} ambiguous={} p50={p50} p95={p95}",
-            agg.calls, agg.errors, agg.empty, agg.stale, agg.ambiguous,
-        )
-    }
 }
 
 #[cfg(test)]

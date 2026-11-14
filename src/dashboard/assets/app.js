@@ -283,6 +283,19 @@ function loadReuseData() {
       const kpiLoc = document.getElementById('reuse-kpi-loc');
       if (kpiLoc) kpiLoc.textContent = '~' + (summary.preventable_loc || 0).toLocaleString() + ' LOC';
 
+      const judge = summary.judge || {};
+      const kpiJudge = document.getElementById('reuse-kpi-judge');
+      const kpiJudgeSub = document.getElementById('reuse-kpi-judge-sub');
+      if (kpiJudge) kpiJudge.textContent = (judge.reviewed || 0).toLocaleString();
+      if (kpiJudgeSub) {
+        if (!judge.runs) {
+          kpiJudgeSub.textContent = 'No judged runs in the retained journal';
+        } else {
+          kpiJudgeSub.textContent = (judge.rejected || 0) + ' rejected as distinct'
+            + ((judge.failed || 0) ? ' · ' + judge.failed + ' failed' : '');
+        }
+      }
+
       const feedCount = document.getElementById('reuse-feed-count');
       if (feedCount) {
         const count = summary.prewrite_count !== undefined ? summary.prewrite_count : prewriteSearches.length;
@@ -1726,6 +1739,7 @@ const TIP = {
   'kpi.tokens_saved': 'Estimated tokens an agent avoided spending on source reads (coefficients, not a measurement).',
   'kpi.candidates': 'Functions that look like near-copies of another function.',
   'kpi.excess_loc': 'Estimated deletable lines, extrapolated from the sampled candidates.',
+  'kpi.judge': 'Gray-zone candidates the local semantic judge reviewed. Rejected means the judge called the pair distinct.',
   'kpi.recall': 'Share of tagged sessions (ENGRAM_SESSION set) whose calls read memory. Untagged sessions are not measured.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
