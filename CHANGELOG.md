@@ -14,7 +14,7 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
-## [Unreleased]
+## [1.0.9] - 2026-11-15
 
 ### Changed
 - Six-lens metrics audit (correctness/spec, security/trust,
