@@ -198,7 +198,10 @@ endpoint on loopback only. Payload shape is versioned in-band:
   `session_recall_pct` (tagged sessions only), `tool_aggs` (per tool: `calls`,
   `errors`, `shown`, `p50`, `p95`, `saved_tokens`), `repo_aggs`, `agent_aggs`
   (keyed by canonical repository path / agent slug; `display` carries the
-  label), and `graph_recent_queries` (last 50 graph calls).
+  label; rows carry `search_calls`/`search_hit_rate_pct` — `null` when the
+  row has no searches — `last_reuse_scan` for the newest ok scan, and
+  `memory_read_hit_rate_pct` — `null` when the row has no memory reads), and
+  `graph_recent_queries` (last 50 graph calls).
 - `GET /api/reuse` — `candidates[]` (each: `id`, `repo`, `repo_path`,
   `detector`, `symbol`, `canonical`, `overlap_pct` or `null` with
   `overlap_applicable: false` for D3/D4, `confidence`, `reasons`,
@@ -206,11 +209,15 @@ endpoint on loopback only. Payload shape is versioned in-band:
   snippets, `reuse_count`/`last_reused_ts` with
   `usage_window: "retained_journal"` — how many journaled `eg reuse` runs
   surfaced this pair and when the last ran), `summary`
-  (`schema_version`, `total_candidates`, `sample_strategy:
-  "top_overlap_per_repo"`, `preventable_loc` with `preventable_loc_estimated:
-  true`, `detector_counts` with `detector_counts_estimated: true`,
-  `confidence_counts`, `reason_counts`, `prewrite_count`, `cache_hit`,
-  `cache_age_ms`), `prewrite_searches[]`.
+  (`schema_version: 4`, `total_candidates`, `preventable_loc` with
+  `preventable_loc_estimated: true`, `detector_counts` with
+  `detector_counts_estimated: true` — every detector type present in the
+  sample, `judge` (`runs`/`reviewed`/`rejected`/`failed`; zero-judgeable
+  runs are not runs), `prewrite_count`, `cache_hit`, `cache_age_ms`,
+  `repo_candidate_pools` (display label → full candidate pool before the
+  25-per-repo sample cap; repositories the scan could not measure are
+  absent), `degraded` with `errors[]` for gated/unreadable repositories),
+  `prewrite_searches[]`.
 - `GET /api/memories` — `{schema_version, notes[], degraded, errors[]}`. A
   store that cannot be read yields an `errors` entry and `degraded: true`
   instead of an empty list. Each note carries `store`, `store_id` (canonical

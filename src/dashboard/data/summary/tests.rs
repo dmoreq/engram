@@ -247,3 +247,39 @@ fn last_reuse_scan_prefers_the_newest_ok_scan() {
     assert_eq!(scan["ts"], 1700000002.0);
     crate::db::test_support::remove_tree(std::path::Path::new(&repo));
 }
+
+#[test]
+fn memory_read_hit_rate_is_null_without_reads() {
+    // A repository with no memory reads has no measurable recall rate: the
+    // payload must say so instead of emitting a fabricated 100.0.
+    let repo = with_live_repo("summary-mem-null");
+    let entries = vec![json!({ "tool": "callers", "exit_code": 0, "repo": repo })];
+    let summary = compute_summary(&entries);
+    let row = &summary["repo_aggs"][&repo];
+    assert_eq!(row["memory_reads"], 0);
+    assert!(row["memory_read_hit_rate_pct"].is_null());
+    crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}
+
+#[test]
+fn memory_read_hit_rate_counts_only_ok_hits() {
+    // Hits are ok reads that returned content: query/get/export alike.
+    // Empty reads, writes, and failed reads stay out of the numerator.
+    let repo = with_live_repo("summary-mem-hits");
+    let entries = vec![
+        json!({ "tool": "mem_query", "exit_code": 0, "repo": repo, "shown": 4 }),
+        json!({ "tool": "mem_get", "exit_code": 0, "repo": repo, "shown": 1 }),
+        json!({ "tool": "mem_export", "exit_code": 0, "repo": repo, "shown": 3 }),
+        json!({ "tool": "mem_query", "exit_code": 1, "repo": repo, "shown": 0 }),
+        json!({ "tool": "mem_write", "exit_code": 0, "repo": repo, "shown": 2 }),
+    ];
+    let summary = compute_summary(&entries);
+    let row = &summary["repo_aggs"][&repo];
+    // Denominator: every read call including the failed one. Numerator:
+    // ok reads that returned content (the failed query returned nothing).
+    assert_eq!(row["memory_reads"], 4);
+    let rate = row["memory_read_hit_rate_pct"].as_f64().unwrap();
+    assert!((rate - 75.0).abs() < 0.1, "{summary}");
+    assert_eq!(row["memory_writes"], 1);
+    crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}
