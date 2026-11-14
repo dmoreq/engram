@@ -3,7 +3,7 @@
   <rect width="64" height="64" rx="14" fill="#0D1117" />
   <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" stroke="#30363D" />
 
-  <!-- Citation-lock vertical anchors (--refs) -->
+  <!-- Citation-lock vertical anchors (refs) -->
   <path d="M17 24V40M32 32V48M47 24V40" stroke="#6E7681" stroke-width="1.6" stroke-dasharray="2.5 2" />
 
   <!-- Bottom plane: Persistent Memory Layer -->

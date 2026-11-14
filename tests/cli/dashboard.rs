@@ -392,7 +392,7 @@ fn dashboard_serves_favicon_and_logo_assets() {
     let handle = thread::spawn(move || {
         let temp_log =
             std::env::temp_dir().join(format!("test_usage_fav_{}.log", std::process::id()));
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (stream, _) = listener.accept().unwrap();
             let _ = handle_client(stream, &temp_log, None, false);
         }
@@ -431,7 +431,18 @@ fn dashboard_serves_favicon_and_logo_assets() {
     assert!(resp.contains("Content-Type: image/svg+xml"), "{resp}");
     assert!(resp.contains("<svg"), "{resp}");
 
-    // 4. GET / -> 200 OK with favicon link and logo image in HTML
+    // 4. GET /logo-light.svg -> 200 OK, image/svg+xml
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .write_all(b"GET /logo-light.svg HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut resp = String::new();
+    client.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
+    assert!(resp.contains("Content-Type: image/svg+xml"), "{resp}");
+    assert!(resp.contains("<svg"), "{resp}");
+
+    // 5. GET / -> 200 OK with favicon link and both logo variants in HTML
     let mut client = TcpStream::connect(addr).unwrap();
     client
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -441,6 +452,7 @@ fn dashboard_serves_favicon_and_logo_assets() {
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
     assert!(resp.contains("rel=\"icon\""), "{resp}");
     assert!(resp.contains("src=\"/logo.svg\""), "{resp}");
+    assert!(resp.contains("src=\"/logo-light.svg\""), "{resp}");
 
     handle.join().unwrap();
 }

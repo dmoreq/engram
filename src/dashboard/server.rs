@@ -22,6 +22,7 @@ static STYLE_CSS: &str = include_str!("assets/style.css");
 static APP_JS: &str = include_str!("assets/app.js");
 static FAVICON_SVG: &str = include_str!("assets/favicon.svg");
 static LOGO_SVG: &str = include_str!("assets/logo.svg");
+static LOGO_LIGHT_SVG: &str = include_str!("assets/logo-light.svg");
 
 pub fn serve_dashboard(
     root: Option<&Path>,
@@ -148,6 +149,12 @@ fn open_browser(url: &str) {
     let _ = std::process::Command::new(cmd).args(&args).spawn();
 }
 
+/// Serve an embedded SVG brand asset with the shared response writer.
+fn serve_svg(stream: &mut TcpStream, svg: &'static str, is_head: bool) -> std::io::Result<bool> {
+    send_response(stream, 200, "image/svg+xml", svg.as_bytes(), is_head)?;
+    Ok(true)
+}
+
 /// One parsed HTTP request. Header totals are bounded so a hostile local page
 /// cannot hold a thread with an endless header block.
 fn serve_static_asset(stream: &mut TcpStream, path: &str, is_head: bool) -> std::io::Result<bool> {
@@ -182,20 +189,9 @@ fn serve_static_asset(stream: &mut TcpStream, path: &str, is_head: bool) -> std:
             )?;
             Ok(true)
         }
-        "/favicon.svg" | "/favicon.ico" => {
-            send_response(
-                stream,
-                200,
-                "image/svg+xml",
-                FAVICON_SVG.as_bytes(),
-                is_head,
-            )?;
-            Ok(true)
-        }
-        "/logo.svg" => {
-            send_response(stream, 200, "image/svg+xml", LOGO_SVG.as_bytes(), is_head)?;
-            Ok(true)
-        }
+        "/favicon.svg" | "/favicon.ico" => serve_svg(stream, FAVICON_SVG, is_head),
+        "/logo.svg" => serve_svg(stream, LOGO_SVG, is_head),
+        "/logo-light.svg" => serve_svg(stream, LOGO_LIGHT_SVG, is_head),
         _ => Ok(false),
     }
 }
