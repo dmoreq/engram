@@ -41,12 +41,23 @@ pub fn execute(req: &AuditRequest, root_arg: Option<&Path>) -> Result<AuditOutco
     let mode = if req.global {
         collect::Mode::Global
     } else {
-        let root = crate::walk::discover_root(root_arg).map_err(|_| {
-            EgError::NoResults(
-                "audit: no repository here; run eg audit --global for machine-wide telemetry"
-                    .to_string(),
-            )
-        })?;
+        // Root discovery shares the one resolver (`RepoRef::resolve`) instead
+        // of re-deriving it here: a `--root` subdirectory resolves to its
+        // repository. An explicit-root failure is a usage error (exit 2) and
+        // propagates unchanged; a discovered-root failure keeps the
+        // no-repository exit 1.
+        let root = match crate::repo::RepoRef::resolve(root_arg) {
+            Ok(repo) => repo.root().to_path_buf(),
+            Err(err) => {
+                if root_arg.is_some() {
+                    return Err(err);
+                }
+                return Err(EgError::NoResults(
+                    "audit: no repository here; run eg audit --global for machine-wide telemetry"
+                        .to_string(),
+                ));
+            }
+        };
         collect::Mode::Local(root)
     };
     let data = collect::collect(&mode, now, req.days, req.baseline_days)?;

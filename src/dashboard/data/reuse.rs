@@ -43,17 +43,25 @@ impl Loc {
 /// Resolve one qualname's location from the index (exact match, then suffix
 /// match), falling back to `estimate` when the symbols table has no row.
 fn symbol_loc(conn: &Connection, qualname: &str, estimate: Loc) -> Loc {
+    // `_`/`%` in a qualname stay literals, and the exact-or-suffix winner is
+    // deterministic (exact first, then earliest line, then file path) because
+    // rowid order differs between fresh and incremental builds.
     let Ok(mut stmt) = conn.prepare(
-        "SELECT file_path, line_start, line_end FROM symbols WHERE qualname = ?1 OR qualname LIKE ?2 LIMIT 1",
+        "SELECT file_path, line_start, line_end FROM symbols
+         WHERE qualname = ?1 OR qualname LIKE ?2 ESCAPE '\\'
+         ORDER BY (qualname = ?1) DESC, line_start ASC, file_path ASC LIMIT 1",
     ) else {
         return estimate;
     };
-    match stmt.query_row(rusqlite::params![qualname, format!("%{qualname}")], |r| {
-        let fp: String = r.get(0)?;
-        let ls: i64 = r.get(1)?;
-        let le: i64 = r.get(2)?;
-        Ok((fp, ls, le))
-    }) {
+    match stmt.query_row(
+        rusqlite::params![qualname, format!("%{}", crate::db::like_escape(qualname))],
+        |r| {
+            let fp: String = r.get(0)?;
+            let ls: i64 = r.get(1)?;
+            let le: i64 = r.get(2)?;
+            Ok((fp, ls, le))
+        },
+    ) {
         Ok((file, start, end)) => Loc {
             loc: (end - start + 1).max(1),
             file,
@@ -103,7 +111,10 @@ fn cache_enabled() -> bool {
     std::env::var("ENGRAM_DASHBOARD_NO_CACHE").as_deref() != Ok("1")
 }
 
-fn cached_scan(repos: &HashMap<String, PathBuf>) -> ((Vec<Value>, usize), bool, u64) {
+fn cached_scan(
+    repos: &HashMap<String, PathBuf>,
+    labels: &HashMap<String, String>,
+) -> ((Vec<Value>, usize), bool, u64) {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<Option<ScanCache>>> = OnceLock::new();
     let cell = CACHE.get_or_init(|| Mutex::new(None));
@@ -119,10 +130,18 @@ fn cached_scan(repos: &HashMap<String, PathBuf>) -> ((Vec<Value>, usize), bool, 
             }
         }
     }
-    // Compute outside the lock; publish only a complete scan.
+    // Compute outside the lock; publish only a complete scan. The scan walks
+    // the sorted path set, so candidate order is deterministic across polls.
     let mut candidates_json = Vec::new();
     let mut total = 0usize;
-    for (r_name, r_root) in repos {
+    let mut paths: Vec<&String> = repos.keys().collect();
+    paths.sort();
+    for path in paths {
+        let r_root = &repos[path];
+        let r_name = labels
+            .get(path)
+            .map(String::as_str)
+            .unwrap_or(path.as_str());
         total += collect_repo_candidates(r_name, r_root, &mut candidates_json);
     }
     if cache_enabled() {
@@ -147,10 +166,20 @@ pub fn collect_reuse_candidates(
 ) -> Result<(Vec<Value>, Value, Vec<Value>)> {
     let mut repos: HashMap<String, PathBuf> = HashMap::new();
     discover_repos(root, entries, "index.db", &mut repos);
+    // Keys are repository paths; labels are assigned over the sorted set so
+    // same-basename checkouts stay distinct rows with distinct labels.
+    let mut paths: Vec<String> = repos.keys().cloned().collect();
+    paths.sort();
+    let mut taken = std::collections::HashSet::new();
+    let labels: HashMap<String, String> = paths
+        .iter()
+        .map(|p| (p.clone(), super::display_name_for(Path::new(p), &mut taken)))
+        .collect();
+    let (errors, blocked) = super::retain_untracked(&mut repos, &labels);
 
     let usage = aggregate_candidate_usage(entries);
     let ((mut candidates_json, total_corpus_candidates), cache_hit, cache_age_ms) =
-        cached_scan(&repos);
+        cached_scan(&repos, &labels);
     decorate_usage(&mut candidates_json, &usage);
 
     let prewrite_searches = collect_prewrite_searches(entries);
@@ -168,12 +197,22 @@ pub fn collect_reuse_candidates(
         summarize_reuse_metrics(&candidates_json, total_corpus_candidates, prewrite_count);
     summary["cache_hit"] = json!(cache_hit);
     summary["cache_age_ms"] = json!(cache_age_ms);
+    summary["degraded"] = json!(blocked > 0);
+    summary["errors"] = json!(errors);
     Ok((candidates_json, summary, prewrite_searches))
 }
 
 fn collect_repo_candidates(r_name: &str, r_root: &Path, out: &mut Vec<Value>) -> usize {
+    // The dashboard opens index.db directly; apply the same provenance gate as
+    // every CLI/MCP query so a tracked, attacker-authored index is not read.
+    if crate::db::reject_tracked_eg_dir(r_root).is_err() {
+        return 0;
+    }
     let db_path = r_root.join(".engram").join("index.db");
-    if !db_path.is_file() {
+    if crate::db::reject_symlink(&r_root.join(".engram"), ".engram directory").is_err()
+        || crate::db::reject_symlink(&db_path, "index.db").is_err()
+        || !db_path.is_file()
+    {
         return 0;
     }
     let conn =
@@ -181,7 +220,7 @@ fn collect_repo_candidates(r_name: &str, r_root: &Path, out: &mut Vec<Value>) ->
             Ok(c) => c,
             Err(_) => return 0,
         };
-    let (candidates, total) =
+    let (candidates, total, _) =
         match crate::query::reuse::analyze_corpus(&conn, None, None, 25, false) {
             Ok(res) => res,
             Err(_) => return 0,
@@ -201,7 +240,17 @@ fn format_shared_evidence(c: &ReuseCandidate) -> String {
         DetectorId::D2 => "shared tokens",
         DetectorId::D3 => "client bypass",
         DetectorId::D4 => "details",
+        DetectorId::D5 => "class methods",
+        DetectorId::D1L => "unresolved callees",
+        DetectorId::DT => "shared test tokens",
     };
+    if c.detector == DetectorId::D3 {
+        return c
+            .raw_client
+            .as_deref()
+            .map(|raw| format!("client bypass: [{raw}]"))
+            .unwrap_or_default();
+    }
     if c.shared_items.is_empty() {
         String::new()
     } else {
@@ -251,26 +300,42 @@ fn format_candidate_json(
     let shared_evidence = format_shared_evidence(c);
     let (cand_loc, can_loc, cand_snippet, can_snippet) =
         resolve_candidate_snippets(r_root, conn, c);
+    let ctx = crate::query::QueryCtx { conn, root: r_root };
+    let stale = crate::query::file_changed(&ctx, &c.file)
+        || crate::query::file_changed(&ctx, &c.canonical_file);
+    let confidence = if stale {
+        crate::query::reuse::ReuseConfidence::Low
+    } else {
+        c.confidence
+    };
+    let mut reasons: Vec<&str> = c.reasons.iter().map(|r| r.as_str()).collect();
+    if stale {
+        reasons.push("stale-index");
+    }
 
     let loc_saving = cand_loc.loc;
+    let symbol = crate::query::reuse::sanitize(&c.symbol);
+    let canonical = crate::query::reuse::sanitize(&c.canonical);
     let narrative = format!(
         "Consolidating '{}' into authoritative '{}' ([callers={}]) deletes ~{} duplicate lines and eliminates drift between twin implementations.",
-        c.symbol, c.canonical, c.canonical_callers, loc_saving
+        symbol, canonical, c.canonical_callers, loc_saving
     );
 
     json!({
-        "id": format!("{}:{}->{}", r_name, c.symbol, c.canonical),
+        "id": format!("{}:{}->{}", r_name, symbol, canonical),
         "repo": r_name,
         "detector": c.detector.as_str(),
-        "symbol": c.symbol,
-        "canonical": c.canonical,
+        "symbol": symbol,
+        "canonical": canonical,
         "canonical_callers": c.canonical_callers,
-        "canonical_file": c.canonical_file,
+        "canonical_file": crate::query::reuse::sanitize(&c.canonical_file),
         "canonical_line": c.canonical_line,
         // D3/D4 emit no overlap metric: their match is an evidence class, not
         // a measured percentage. The UI renders a label from `detector`.
         "overlap_pct": c.overlap_pct,
         "overlap_applicable": c.overlap_pct.is_some(),
+        "confidence": confidence.as_str(),
+        "reasons": reasons,
         "shared_evidence": shared_evidence,
         "candidate_info": json!({
             "file": cand_loc.file,
@@ -318,6 +383,23 @@ fn collect_prewrite_searches(entries: &[Value]) -> Vec<Value> {
         }
     }
     out
+}
+
+fn candidate_reason_counts(candidates_json: &[Value]) -> Value {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for candidate in candidates_json {
+        if let Some(reasons) = candidate.get("reasons").and_then(Value::as_array) {
+            for reason in reasons.iter().filter_map(Value::as_str) {
+                *counts.entry(reason.to_string()).or_default() += 1;
+            }
+        }
+    }
+    Value::Object(
+        counts
+            .into_iter()
+            .map(|(key, count)| (key, json!(count)))
+            .collect(),
+    )
 }
 
 fn summarize_reuse_metrics(
@@ -369,68 +451,16 @@ fn summarize_reuse_metrics(
             "D4": candidates_json.iter().filter(|c| c.get("detector") == Some(&json!("D4"))).count(),
         },
         "detector_counts_estimated": true,
+        "confidence_counts": {
+            "low": candidates_json.iter().filter(|c| c.get("confidence") == Some(&json!("low"))).count(),
+            "provisional": candidates_json.iter().filter(|c| c.get("confidence") == Some(&json!("provisional"))).count(),
+            "medium": candidates_json.iter().filter(|c| c.get("confidence") == Some(&json!("medium"))).count(),
+            "high": candidates_json.iter().filter(|c| c.get("confidence") == Some(&json!("high"))).count(),
+        },
+        "reason_counts": candidate_reason_counts(candidates_json),
+        "confidence_counts_estimated": true,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reuse_scan_cache_hits_until_the_index_changes() {
-        let dir = crate::db::test_support::temp_root("reuse-scan-cache");
-        let repo = dir.join("repo");
-        crate::db::test_support::make_dir_all(repo.join(".engram")).unwrap();
-        crate::db::test_support::write_file(repo.join(".engram").join("index.db"), b"").unwrap();
-        let mut repos: HashMap<String, PathBuf> = HashMap::new();
-        repos.insert("repo".to_string(), repo.clone());
-
-        let (_, first_hit, _) = cached_scan(&repos);
-        let (_, second_hit, _) = cached_scan(&repos);
-        assert!(!first_hit, "first scan must compute");
-        assert!(second_hit, "second scan with an unchanged index must hit");
-
-        // A changed index mtime invalidates the cache.
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        crate::db::test_support::write_file(repo.join(".engram").join("index.db"), b"x").unwrap();
-        let (_, third_hit, _) = cached_scan(&repos);
-        assert!(!third_hit, "changed index must recompute");
-        crate::db::test_support::remove_tree(&dir);
-    }
-
-    #[test]
-    fn summary_emits_sample_markers_and_estimate_flags() {
-        let summary = summarize_reuse_metrics(&[], 0, 0);
-        assert_eq!(summary["schema_version"], 2);
-        assert_eq!(summary["total_candidates"], 0);
-        assert_eq!(summary["prewrite_count"], 0);
-        assert_eq!(summary["sample_strategy"], "top_overlap_per_repo");
-        assert_eq!(summary["preventable_loc_estimated"], true);
-        assert_eq!(summary["detector_counts_estimated"], true);
-        assert!(summary.get("judged_calls").is_none());
-        assert_eq!(summary["avg_callers"], 0.0);
-        assert_eq!(summary["avg_callers_estimated"], true);
-    }
-}
-
-#[cfg(test)]
-mod containment_tests {
-    use super::*;
-
-    #[test]
-    fn snippet_paths_stay_inside_the_repository_root() {
-        let root = crate::db::test_support::temp_root("reuse-contain");
-        crate::db::test_support::write_file(root.join("ok.rs"), b"fn a() {}\n").unwrap();
-        crate::db::test_support::make_dir_all(root.join("src")).unwrap();
-        crate::db::test_support::write_file(root.join("src").join("in.rs"), b"fn b() {}\n")
-            .unwrap();
-
-        assert!(contained_path(&root, "ok.rs").is_some());
-        assert!(contained_path(&root, "src/in.rs").is_some());
-        // Escapes and absolute paths never resolve.
-        assert!(contained_path(&root, "../outside.rs").is_none());
-        assert!(contained_path(&root, "/etc/passwd").is_none());
-        assert!(contained_path(&root, "src/../../outside.rs").is_none());
-        crate::db::test_support::remove_tree(&root);
-    }
-}
+mod tests;

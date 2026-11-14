@@ -1,4 +1,4 @@
-# Documentation Index
+# <img src="../assets/icon.svg" width="32" height="32" valign="middle" alt="engram icon" /> Documentation Index
 
 Welcome to the `engram` (`eg`) technical documentation.
 

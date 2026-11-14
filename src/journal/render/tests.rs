@@ -1,11 +1,25 @@
-//! Unit tests for the global usage fold's live-repository rule.
+//! Unit tests for the global usage fold's live-repository and ephemeral
+//! rules, Ok-only savings pricing, and the worktree fold.
 
 use super::*;
+use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+
+/// A writable repository root OUTSIDE the OS temp tree: under the gitignored
+/// `target/` directory. Temp-tree fixture roots are exactly the ephemeral
+/// prefixes, so a global-fold fixture row that must survive the scratch rule
+/// needs a durable location.
+fn stable_root(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("eg-{name}-{}", std::process::id()));
+    remove_tree(&dir);
+    dir
+}
 
 #[test]
 fn global_rows_require_a_live_repo_root() {
-    let live_root = crate::db::test_support::temp_root("journal-global-live");
-    let live = live_root.to_string_lossy().into_owned();
+    // The checkout itself is the durable live row (prune.rs fixture pattern).
+    let live = env!("CARGO_MANIFEST_DIR").to_string();
     let lines = [
         format!(r#"{{"tool":"callers","exit_code":0,"repo":"{live}","repo_name":"live-repo"}}"#),
         // Purge policy: a dead absolute root is dropped before any fold.
@@ -31,13 +45,11 @@ fn global_rows_require_a_live_repo_root() {
     assert!(out.contains("live-repo"), "{out}");
     assert!(!out.contains("agent-skills"), "{out}");
     assert!(!out.contains("repo1"), "{out}");
-    crate::db::test_support::remove_tree(&live_root);
 }
 
 #[test]
 fn live_repo_errors_render_and_dead_ones_vanish() {
-    let live_root = crate::db::test_support::temp_root("journal-global-err");
-    let live = live_root.to_string_lossy().into_owned();
+    let live = env!("CARGO_MANIFEST_DIR").to_string();
     let lines = [
         format!(r#"{{"tool":"callers","exit_code":3,"repo":"{live}","repo_name":"live-repo"}}"#),
         r#"{"tool":"callers","exit_code":3,"repo":"/nonexistent-eg-global/deleted","repo_name":"agent-skills"}"#.to_string(),
@@ -54,5 +66,81 @@ fn live_repo_errors_render_and_dead_ones_vanish() {
     assert!(out.contains("live-repo"), "{out}");
     assert!(!out.contains("agent-skills"), "{out}");
     assert!(!out.contains("repo1"), "{out}");
-    crate::db::test_support::remove_tree(&live_root);
+}
+
+#[test]
+fn usage_cli_does_not_price_empty_or_ambiguous_exit_codes() {
+    // Exit 1 (empty) and exit 2 (ambiguous) carry no savings: the priced arms
+    // bill only successful calls, matching the dashboard summary. The rows
+    // name a live root so the fold is not vacuous.
+    let live = temp_root("usage-pricing-live");
+    let repo = live.to_string_lossy().into_owned();
+    let lines = [
+        format!(r#"{{"ts":1700000000,"tool":"callers","exit_code":1,"result_count":0,"shown":0,"total":0,"stale":false,"ambiguous":0,"latency_us":100,"repo":"{repo}"}}"#),
+        format!(r#"{{"ts":1700000001,"tool":"context","exit_code":2,"result_count":0,"shown":0,"total":0,"stale":false,"ambiguous":2,"latency_us":100,"repo":"{repo}"}}"#),
+    ]
+    .join("\n");
+    let aggs = aggregate_usage(&lines);
+    assert_eq!(aggs["callers"].calls, 1, "the fold is not vacuous");
+    assert_eq!(aggs["context"].calls, 1);
+    let (saved_tokens, _) = calculate_telemetry_totals(&aggs);
+    assert_eq!(saved_tokens, 0, "empty and ambiguous calls are unpriced");
+    remove_tree(&live);
+}
+
+#[test]
+fn global_usage_folds_worktrees_and_drops_ephemeral() {
+    // Durable main repository plus a linked worktree checked out under the
+    // temp tree (liveness fixture pattern): the worktree contributes under
+    // the main repo and never as its own row, and a plain scratch repo
+    // disappears from the global totals entirely.
+    let main_root = stable_root("usage-wt-main");
+    make_dir_all(main_root.join(".git/worktrees/wt")).unwrap();
+    make_dir_all(main_root.join(".engram")).unwrap();
+    let wt_root = temp_root("usage-wt-checkout");
+    let pointer = format!("gitdir: {}/.git/worktrees/wt\n", main_root.display());
+    write_file(wt_root.join(".git"), pointer.as_bytes()).unwrap();
+    let scratch = temp_root("usage-scratch-repo");
+
+    let main = std::fs::canonicalize(&main_root)
+        .unwrap_or_else(|_| main_root.clone())
+        .to_string_lossy()
+        .into_owned();
+    let main_name = main_root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let wt = wt_root.to_string_lossy().into_owned();
+    let scratch_path = scratch.to_string_lossy().into_owned();
+    let lines = [
+        // Direct call in the main repository.
+        format!(r#"{{"tool":"build","exit_code":0,"repo":"{main}","repo_name":"{main_name}","worktree":false}}"#),
+        // Worktree call: folds onto the main repository's row.
+        format!(r#"{{"tool":"callers","exit_code":0,"result_count":2,"shown":2,"total":2,"repo":"{wt}","repo_name":"wt-checkout","worktree":true}}"#),
+        // Scratch identity: hidden from the global totals.
+        format!(r#"{{"tool":"build","exit_code":0,"repo":"{scratch_path}","repo_name":"probe"}}"#),
+    ]
+    .join("\n");
+
+    let (aggs, repo_aggs, _) = aggregate_global_usage(&lines);
+    assert_eq!(aggs["build"].calls, 1, "scratch entry dropped from totals");
+    assert_eq!(aggs["callers"].calls, 1, "worktree call priced once");
+    assert_eq!(repo_aggs.len(), 1, "one row: the main repository");
+    let row = repo_aggs.get(&main).expect("folded under the main root");
+    assert_eq!(row.calls, 2, "main call + folded worktree call");
+    assert_eq!(row.display, main_name, "row label is the main root");
+    assert!(!row.worktree, "folded entries are not a worktree row");
+    assert!(
+        !repo_aggs.contains_key(&wt),
+        "the worktree never forms its own row"
+    );
+    assert!(
+        !repo_aggs.contains_key(&scratch_path),
+        "scratch identity hidden"
+    );
+
+    remove_tree(&main_root);
+    remove_tree(&wt_root);
+    remove_tree(&scratch);
 }

@@ -14,7 +14,139 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
-## [Unreleased]
+## [1.0.7] - 2026-11-14
+
+### Added
+- The dashboard header carries the brand logo with a theme-aware pair:
+  `/logo.svg` (dark badge) on dark and the new `/logo-light.svg` (white
+  badge on the light token palette) on light, toggled in CSS with no
+  JavaScript involvement; the favicon stays theme-independent.
+- Brand SVG assets (dashboard favicon, dashboard logo, repo-root icon and
+  logo used by the README) now parse as strict XML — the previous
+  `--refs` comment text was an illegal double hyphen inside an XML
+  comment and broke `<img>` rendering of the header logo.
+
+### Changed
+- `eg usage` savings now count only successful calls (exit 0): empty (exit 1)
+  and ambiguous (exit 2) results no longer price into `Estimated Token
+  Savings`, matching the dashboard summary; totals for sessions with
+  empty-result or ambiguous calls decrease accordingly.
+- `eg usage --global` now applies the same truthfulness rules as the global
+  dashboard: linked worktrees fold into their main repository's row, and
+  repositories under the OS temp tree stay hidden, so both surfaces list the
+  same repositories from the same journal.
+- The MCP `reuse` tool defaults `min_confidence` to `low` when the argument is
+  omitted, matching the CLI default; the usage journal records `low` instead of
+  an empty string.
+- Documentation faces state the real contracts: the `docs/health.md` automation
+  prompt passes the `mem write` key as a positional argument (no `--key` flag
+  exists), `docs/cli-reference.md` documents 20 tools behind `--all-tools`
+  (7 extended memory tools), and the `eg mem` help plus the README maintenance
+  list include `touch` and `reindex`.
+- The MCP telemetry footer examples in `README.md` and `docs/agent-integration.md`
+  show the current footer format: latency, `N items`, and
+  `~T tokens saved vs file reads`.
+- `eg mem write --touch` re-asserts the invocation's TTL (`expires_at`) and
+  refreshes `created_at`; it no longer moves `anchored_at`, which stays owned
+  by `eg mem touch`. Re-asserting a session note without `--ttl` applies the
+  7-day default. Superseded and expired keys are unreachable by every touch
+  path — `eg mem touch`, `mem write --touch`, and the dashboard's
+  `/api/memory/touch`, which now answers 404/409 instead of re-anchoring a
+  dead revision — and re-writing a dead key appends a revision (restoring its
+  FTS rows) instead of reporting a duplicate while the dead row keeps its
+  supersede chain.
+- Vietnamese notes written in decomposed Unicode (NFD, e.g. macOS clipboard
+  text) tokenize to whole syllables again; stores reindex their derived Unicode
+  FTS automatically on the next write (tokenizer epoch 3).
+
+## [1.0.6] - 2026-11-14
+
+### Added
+- Dashboard telemetry folds linked git worktrees into their main repository:
+  one row per repository with a per-worktree breakdown behind an expandable
+  row, and `from <main-repo>` provenance on Recent Queries feed rows and live
+  SSE frames. The main root resolves from the worktree's `.git` pointer file,
+  so no schema change and no git spawn are involved.
+
+### Changed
+- The global dashboard treats repository roots under the OS temp directory
+  (`/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`) as scratch identities:
+  probe fixtures and throwaway checkouts never reach the repository tables,
+  and `eg dashboard` start drops their lines from the global journal. Local
+  dashboards and `eg usage` keep their full history.
+
+### Changed
+- `eg reuse` now supports four confidence tiers: `low`, `provisional`,
+  `medium`, and `high`; `--min-confidence` filters candidates and the summary
+  reports each tier. `--limit` is 1..100, output adds a 30 KiB cap, and stale
+  files downgrade confidence with a reuse-specific header.
+- Phase 2 proposal mode: `--propose "<signature>"` with optional `--callees`
+  matches indexed canonical symbols without creating a file. Proposal runs are
+  journaled as `mode=propose` and can be judged.
+- Phase 3 allowlist: a current memory note keyed
+  `reuse-allow/<target>-><canonical>` suppresses an intentional pair; stale
+  refs invalidate the note, High candidates are never suppressed, and
+  `--show-suppressed` exposes the count. MCP allowlist writes require
+  `confirm=true`.
+- Phase 4 coverage: `--coverage class,unresolved,tests` adds D5 class-shape,
+  D1L unresolved-call, and DT test/production detectors, off by default.
+- Security hardening: journal pruning rejects symlinks and rewrites atomically;
+  MCP `mem_import` rejects traversal paths and `reuse-allow/` keys; allowlist
+  writes reject `--global`; judge and reuse output escape bidi/format controls.
+- Reuse quality fixes: stale/unknown freshness caps every tier at Low; D3 is
+  capped at Medium; scan output sorts by confidence first; D2 indexes name
+  tokens with a generic-token stoplist; coverage requires shared class methods,
+  rejects paths, and uses deterministic canonical selection.
+- Phase 5 judge: `--judge` restores optional local `eg-judge` arbitration with
+  a 15 s deadline, process-group termination, environment clearing, a 64 KiB
+  stdin/stdout caps, path containment, and a closed verdict whitelist. Source
+  is passed through stdin, never argv. Any failure leaves static output
+  unchanged and emits one stderr note.
+- `tests/scripts/reuse_oracle.py` adds McNemar discordant counts, p-value,
+  power, and MDD against a baseline prediction file.
+- Path typos and absolute paths are rejected explicitly; file, directory,
+  `file:line`, and unique symbol scopes resolve before the scan. Directory
+  matches stop at a path-component boundary, and ambiguous bare names list
+  their candidates with exit 2.
+- Freshness distinguishes `fresh`, `stale`, and `unknown` (new file, 16 MiB
+  hash budget, walk/stat/unsafe path, or deleted file). Unknown pairs downgrade
+  to `low`; empty scopes emit `eg: freshness unknown (<reason>)`.
+- Caller counts are distinct production callers (`COUNT(DISTINCT src_id)`,
+  self/test excluded), shared by `eg search` and `eg reuse`.
+- `mem touch` and `mem write --touch` use `max(anchored_at, created_at)` for
+  ref staleness; `[stale-ref] [modified-ref]` clears after verification.
+- The Phase 1 surface temporarily removed `--judge`; Phase 5 restores it with
+  the hardened protocol above.
+- Reuse journal lines carry `mode`, `truncated`, and typed `reuse` counts;
+  dashboard candidates carry `confidence` and `reasons`. `guarded_out` now
+  counts explicit guard rejections instead of a hardcoded zero.
+- `eg reuse --explain` appends `detector=D#; reasons=[...]`, with candidate
+  reasons covering caller-callee, same-name subsets, zero-name, size
+  imbalance, stale/unknown freshness, and unsafe paths. CLI, MCP, dashboard
+  JSON, and journal candidate IDs escape control characters.
+- Empty reuse output is `eg: reuse — 0 duplication candidate(s) found`.
+
+## [1.0.5] - 2026-11-12
+
+### Added
+- Unicode-aware project memory: `memories_fts_v2` folds Vietnamese diacritics
+  (`remove_diacritics 2`), maps `đ` to `d`, and keeps the legacy ASCII index so
+  1.0.4 continues to read and write. Reads use the new index only after a clean
+  reconcile and fall back to legacy otherwise.
+- `mem query --since/--until` half-open UTC windows (`YYYY-MM-DD`,
+  `YYYY-MM-DDTHH:MM:SSZ`, or `@unix-seconds`), also on `mem export`.
+- `mem query --explain` causal `why:` labels without scores or note bodies;
+  `--local` project scope; `--legacy` diagnostic override.
+- `eg mem reindex` rebuilds the derived Unicode index; the write open repairs
+  rows written by older binaries in 5,000-row chunks.
+- `mem export --scan` advisory suspected-secret report on stderr.
+- Suspected-secret detection now uses provider prefixes, length bounds, and
+  token boundaries, so ordinary words such as `task-1` are accepted.
+
+### Changed
+- `mem touch` help now states that it refreshes `anchored_at`; `mem write
+  --touch` refreshes `created_at` (last assertion). The architecture page
+  defines both timestamps.
 
 ## [1.0.4] - 2026-11-11
 
@@ -223,7 +355,7 @@ changes bump the minor while 0.x is unstable.
 
 - **Official Open-Source Release**: `engram` (`eg`) reaches v1.0.0 with unified single native binary architecture.
 - **USP 1: Sub-2ms Deterministic Graph Navigation**: Tree-sitter AST indexing for Python, TypeScript, JavaScript, and Rust with SQLite FTS5 search and content-addressed incremental builds.
-- **USP 2: Real-Time Anti-Reinvention Engine**: Pre-write interface discovery with caller weighting and post-edit duplicate detection across 4 calibrated detectors.
+- **USP 2: Real-Time Anti-Reinvention Engine**: Pre-write interface discovery with caller weighting and post-edit duplicate detection across 4 structural detectors.
 - **USP 3: Zero-Token Layered Memory**: Code-anchored persistent project and global memory with SQLite BM25 + recency/ref fusion.
 - **Native Web Dashboard & TUI Monitor**: In-process HTTP SSE dashboard and terminal streaming monitor with zero Python dependencies.
 - **Model Context Protocol (MCP)**: Conforming stdio server for Claude, Cursor, Antigravity, Grok, Zcode, and OpenCode.

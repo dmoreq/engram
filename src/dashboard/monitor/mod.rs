@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -34,17 +34,44 @@ pub fn stream_monitor(
     errors_only: bool,
     local: bool,
 ) -> Result<()> {
-    let log_path = resolve_monitor_log_path(root, local);
+    let (log_path, gate_root) = resolve_monitor_log_path(root, local)?;
+    let effective_root = gate_root.as_deref().or(root);
+    // The monitor is global exactly when the resolver found no repo root: the
+    // journal is the machine-wide log, so scratch stores hide here exactly as
+    // they hide from every dashboard panel. A local session keeps them.
+    let exclude_ephemeral = gate_root.is_none();
 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return stream_linear(&log_path, repo_filter, errors_only);
+        return stream_linear(
+            &log_path,
+            repo_filter,
+            errors_only,
+            effective_root,
+            exclude_ephemeral,
+            local,
+        );
     }
 
     let Some(guard) = RawModeGuard::enter() else {
-        return stream_linear(&log_path, repo_filter, errors_only);
+        return stream_linear(
+            &log_path,
+            repo_filter,
+            errors_only,
+            effective_root,
+            exclude_ephemeral,
+            local,
+        );
     };
 
-    run_interactive(root, log_path, repo_filter, errors_only, guard)
+    run_interactive(
+        effective_root,
+        log_path,
+        repo_filter,
+        errors_only,
+        exclude_ephemeral,
+        local,
+        guard,
+    )
 }
 
 struct RawModeGuard {
@@ -95,10 +122,18 @@ fn run_interactive(
     log_path: PathBuf,
     repo_filter: Option<&str>,
     errors_only: bool,
+    exclude_ephemeral: bool,
+    local: bool,
     _guard: RawModeGuard,
 ) -> Result<()> {
     let repo_filter_owned = repo_filter.map(str::to_string);
-    let mut state = TuiState::new(root, log_path.clone(), repo_filter_owned, errors_only);
+    let mut state = TuiState::new(
+        root,
+        log_path.clone(),
+        repo_filter_owned,
+        errors_only,
+        exclude_ephemeral,
+    );
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -143,8 +178,13 @@ fn run_interactive(
     let (mut cols, mut rows) = get_terminal_size();
     let mut stdout = io::stdout();
     let _ = render_screen(&mut stdout, &state, cols, rows);
+    let mut last_gate = Instant::now();
 
     loop {
+        if last_gate.elapsed() >= Duration::from_secs(5) {
+            monitor_gate(root, local)?;
+            last_gate = Instant::now();
+        }
         let mut need_render = false;
 
         while let Ok(evt) = rx.try_recv() {
@@ -252,15 +292,33 @@ fn get_terminal_size() -> (usize, usize) {
     (80, 24)
 }
 
-fn stream_linear(log_path: &Path, repo_filter: Option<&str>, errors_only: bool) -> Result<()> {
+fn stream_linear(
+    log_path: &Path,
+    repo_filter: Option<&str>,
+    errors_only: bool,
+    root: Option<&Path>,
+    exclude_ephemeral: bool,
+    local: bool,
+) -> Result<()> {
     println!(
         "eg: query monitor (linear streaming) from {}",
         log_path.display()
     );
     let tail_start = file_len(log_path).saturating_sub(4096);
     let mut tail = data::Tail::starting_at(log_path, tail_start);
+    let mut last_gate = Instant::now();
     loop {
-        poll_linear_events(&mut tail, log_path, repo_filter, errors_only);
+        if last_gate.elapsed() >= Duration::from_secs(5) {
+            monitor_gate(root, local)?;
+            last_gate = Instant::now();
+        }
+        poll_linear_events(
+            &mut tail,
+            log_path,
+            repo_filter,
+            errors_only,
+            exclude_ephemeral,
+        );
         thread::sleep(Duration::from_millis(250));
     }
 }
@@ -270,6 +328,7 @@ fn poll_linear_events(
     log_path: &Path,
     repo_filter: Option<&str>,
     errors_only: bool,
+    exclude_ephemeral: bool,
 ) {
     let mut stdout = io::stdout();
     tail.poll(log_path, |event| match event {
@@ -278,7 +337,7 @@ fn poll_linear_events(
         }
         data::TailEvent::Line(line) => {
             if let Some(val) = data::live_event(line) {
-                if is_event_matched(&val, repo_filter, errors_only) {
+                if is_event_matched(&val, repo_filter, errors_only, exclude_ephemeral) {
                     let _ = render::render_event_row(&mut stdout, &val, 78);
                 }
             }
@@ -286,7 +345,18 @@ fn poll_linear_events(
     });
 }
 
-fn is_event_matched(val: &Value, repo_filter: Option<&str>, errors_only: bool) -> bool {
+/// The single event-match predicate for both monitor modes: the TUI state
+/// delegates here, so `--repo`, `--errors`, and the global mode's scratch
+/// exclusion cannot drift between interactive and linear sessions.
+fn is_event_matched(
+    val: &Value,
+    repo_filter: Option<&str>,
+    errors_only: bool,
+    exclude_ephemeral: bool,
+) -> bool {
+    if exclude_ephemeral && crate::journal::liveness::entry_is_ephemeral(val) {
+        return false;
+    }
     if errors_only {
         let code = val.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
         if code < 3 {
@@ -295,9 +365,17 @@ fn is_event_matched(val: &Value, repo_filter: Option<&str>, errors_only: bool) -
     }
     if let Some(rf) = repo_filter {
         if rf != "ALL" {
+            // An absent or empty `repo_name` falls back to the repository
+            // basename, then unattributed — the TUI's stricter resolution.
             let r_name = val
                 .get("repo_name")
                 .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    val.get("repo")
+                        .and_then(Value::as_str)
+                        .and_then(|p| std::path::Path::new(p).file_name().and_then(|n| n.to_str()))
+                })
                 .unwrap_or(crate::repo::UNATTRIBUTED);
             if r_name != rf {
                 return false;
@@ -307,17 +385,51 @@ fn is_event_matched(val: &Value, repo_filter: Option<&str>, errors_only: bool) -
     true
 }
 
-fn resolve_monitor_log_path(root: Option<&Path>, local: bool) -> PathBuf {
+fn monitor_gate(root: Option<&Path>, local: bool) -> Result<()> {
+    if !local {
+        return Ok(());
+    }
+    if let Some(root) = root {
+        crate::db::reject_symlink(&crate::db::eg_dir(root), ".engram directory")?;
+        crate::db::reject_unsafe_journal(root)?;
+        crate::db::reject_tracked_eg_dir(root)?;
+    }
+    Ok(())
+}
+
+fn resolve_monitor_log_path(
+    root: Option<&Path>,
+    local: bool,
+) -> Result<(PathBuf, Option<PathBuf>)> {
     if local {
         if let Some(r) = root {
-            return crate::journal::usage_log_path(r);
+            monitor_gate(root, true)?;
+            return Ok((crate::journal::usage_log_path(r), Some(r.to_path_buf())));
         }
         if let Ok(cwd) = std::env::current_dir() {
             let local_p = crate::journal::usage_log_path(&cwd);
             if local_p.is_file() {
-                return local_p;
+                monitor_gate(Some(&cwd), true)?;
+                return Ok((local_p, Some(cwd)));
+            }
+        }
+        // Running from a subdirectory of a repository: the shared resolver
+        // names the enclosing repo, whose journal is the local log — without
+        // this probe the command silently fell back to the global journal.
+        if let Ok(repo) = crate::repo::RepoRef::resolve(None) {
+            let repo_root = repo.root().to_path_buf();
+            let local_p = crate::journal::usage_log_path(&repo_root);
+            if local_p.is_file() {
+                monitor_gate(Some(&repo_root), true)?;
+                return Ok((local_p, Some(repo_root)));
             }
         }
     }
-    db::global_usage_log_path().unwrap_or_else(|_| PathBuf::from("usage.log"))
+    Ok((
+        db::global_usage_log_path().unwrap_or_else(|_| PathBuf::from("usage.log")),
+        None,
+    ))
 }
+
+#[cfg(test)]
+mod tests;

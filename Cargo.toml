@@ -1,6 +1,6 @@
 [package]
 name = "engram"
-version = "1.0.4"
+version = "1.0.7"
 edition = "2021"
 description = "Local deterministic code graph, real-time anti-reinvention engine, and zero-token persistent memory for AI coding agents."
 license = "MIT OR Apache-2.0"
@@ -13,14 +13,25 @@ keywords = ["code-index", "call-graph", "anti-reinvention", "agent-memory", "mcp
 categories = ["development-tools", "command-line-utilities"]
 rust-version = "1.90"
 include = [
+    "/assets/**",
     "/src/**",
     "/bench/**",
     "/tests/*.rs",
     "/tests/cli/**",
-    "/tests/fixtures/main.rs",
+    "/tests/fixtures/*.rs",
+    "/tests/fixtures/memory/**",
+    "/tests/fixtures/reuse/**",
     "/tests/mcp/**",
     "/tests/bench/**",
+    "/docs/*.md",
+    "/docs/architecture/*.md",
     "/tests/scripts/timing_assert.sh",
+    "/tests/scripts/mem_recall.py",
+    "/tests/scripts/mem_scale.py",
+    "/tests/scripts/reuse_oracle.py",
+    "/tests/scripts/reuse_perf.py",
+    "/tests/scripts/test_reuse_oracle.py",
+    "/tests/scripts/old_binary_compat.sh",
     "/schema/**",
     "/build.rs",
     "/Cargo.toml",

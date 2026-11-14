@@ -28,12 +28,21 @@ pub struct MemRow {
     pub refs: String,
     pub source: String,
     pub created_at: i64,
+    pub anchored_at: i64,
     pub expires_at: i64,
     pub superseded_by: Option<i64>,
 }
 
 pub(super) const MEM_ROW_SQL: &str =
-    "id, key, rev, kind, scope, session, body, tags, refs, source, created_at, expires_at, superseded_by";
+    "id, key, rev, kind, scope, session, body, tags, refs, source, created_at, expires_at, superseded_by, anchored_at";
+
+impl MemRow {
+    /// The freshness anchor: a verified note uses `anchored_at`, otherwise it
+    /// falls back to `created_at`.
+    pub fn anchor(&self) -> i64 {
+        self.anchored_at.max(self.created_at)
+    }
+}
 
 pub(super) fn mem_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MemRow> {
     Ok(MemRow {
@@ -50,6 +59,7 @@ pub(super) fn mem_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MemRow> {
         created_at: r.get(10)?,
         expires_at: r.get(11)?,
         superseded_by: r.get(12)?,
+        anchored_at: r.get(13)?,
     })
 }
 
@@ -163,27 +173,43 @@ pub fn memory_write_batch(
         let hash =
             crate::memory::mem_content_hash(note.kind, note.body, note.tags, note.refs, note.scope)
                 as i64;
-        let fts_text = crate::memory::mem_fts_text(note.key, note.tags, note.body);
+        let fts_legacy = crate::memory::mem_fts_text_legacy(note.key, note.tags, note.body);
+        let fts_unicode = crate::memory::mem_fts_text(note.key, note.tags, note.body);
         let current = current_revision(&tx, note.key)?;
         if let Some(row) = &current {
-            if row.content_hash == hash {
-                stats.skipped += 1;
-                continue;
-            }
-            if !force {
-                stats.conflicts += 1;
-                continue;
+            // An inactive (superseded or expired) row never blocks or dedups:
+            // identical content still appends a revision so the key re-enters
+            // the FTS index, and a conflict is only reported against a live row.
+            if row.is_active(now) {
+                if row.content_hash == hash {
+                    stats.skipped += 1;
+                    continue;
+                }
+                if !force {
+                    stats.conflicts += 1;
+                    continue;
+                }
             }
         }
         let rev = current.as_ref().map_or(1, |row| row.rev + 1);
         insert_revision(&tx, note, now, hash, rev).map_err(map_memory_err)?;
         let new_id = tx.last_insert_rowid();
         if let Some(row) = &current {
-            supersede_current(&tx, new_id, now, row.id)?;
+            // Supersede only a live row: a dead row keeps its original
+            // superseded_by/superseded_at chain (re-stamping it toward a
+            // same-key revision would corrupt the chain it already carries).
+            if row.is_active(now) {
+                supersede_current(&tx, new_id, now, row.id)?;
+            }
         }
         tx.execute(
             "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
-            rusqlite::params![new_id, fts_text],
+            rusqlite::params![new_id, fts_legacy],
+        )
+        .map_err(map_memory_err)?;
+        tx.execute(
+            "INSERT INTO memories_fts_v2(rowid, text) VALUES (?1, ?2)",
+            rusqlite::params![new_id, fts_unicode],
         )
         .map_err(map_memory_err)?;
         stats.imported += 1;
@@ -197,13 +223,27 @@ enum WriteAttempt {
     Retry(rusqlite::Error),
 }
 
-/// The current memory revision row for a key: row id, revision number, and
-/// the revision's content hash. Named so the three i64 columns cannot be
-/// swapped positionally in `try_write_revision`.
+/// The current memory revision row for a key: row id, revision number, the
+/// revision's content hash, and the two lifecycle columns that decide whether
+/// the row can still answer writes and touches. Named so the i64 columns
+/// cannot be swapped positionally in `try_write_revision`.
 struct Revision {
     id: i64,
     rev: i64,
     content_hash: i64,
+    superseded_by: Option<i64>,
+    expires_at: i64,
+}
+
+impl Revision {
+    /// A revision is active while nothing replaced it and its TTL has not
+    /// passed (`expires_at == 0` is durable). An inactive row is read only for
+    /// revision numbering: a re-write must append a revision and restore the
+    /// FTS rows instead of reporting `Duplicate`/`Touched`, and a touch must
+    /// refuse it.
+    fn is_active(&self, now: i64) -> bool {
+        self.superseded_by.is_none() && (self.expires_at == 0 || self.expires_at > now)
+    }
 }
 
 fn try_write_revision(
@@ -214,17 +254,24 @@ fn try_write_revision(
     let hash =
         crate::memory::mem_content_hash(note.kind, note.body, note.tags, note.refs, note.scope)
             as i64;
-    let fts_text = crate::memory::mem_fts_text(note.key, note.tags, note.body);
+    let fts_legacy = crate::memory::mem_fts_text_legacy(note.key, note.tags, note.body);
+    let fts_unicode = crate::memory::mem_fts_text(note.key, note.tags, note.body);
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(map_memory_err)?;
     let current = current_revision(&tx, note.key)?;
     if let Some(row) = &current {
-        if row.content_hash == hash {
+        // An inactive (superseded or expired) row is live only for revision
+        // numbering: identical content must fall through to `insert_revision`
+        // so the key re-enters the FTS index, never return Duplicate/Touched.
+        if row.is_active(now) && row.content_hash == hash {
             if note.touch {
+                // The Touch contract owns `anchored_at`; `mem write --touch`
+                // re-asserts the invocation's TTL policy instead: `created_at`
+                // moves to now and `expires_at` comes from the normalized input.
                 tx.execute(
-                    "UPDATE memories SET created_at = ?1 WHERE id = ?2",
-                    rusqlite::params![now, row.id],
+                    "UPDATE memories SET created_at = ?1, expires_at = ?2 WHERE id = ?3",
+                    rusqlite::params![now, note.expires_at, row.id],
                 )
                 .map_err(map_memory_err)?;
                 tx.commit().map_err(map_memory_err)?;
@@ -248,14 +295,23 @@ fn try_write_revision(
     }
     let new_id = tx.last_insert_rowid();
     if let Some(row) = &current {
-        supersede_current(&tx, new_id, now, row.id)?;
+        // Supersede only a live row; a dead row keeps its original
+        // superseded_by/superseded_at chain (see `memory_write_batch`).
+        if row.is_active(now) {
+            supersede_current(&tx, new_id, now, row.id)?;
+        }
     }
     if let Some(target) = note.supersedes {
         supersede_cross_key(&tx, new_id, now, target)?;
     }
     tx.execute(
         "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
-        rusqlite::params![new_id, fts_text],
+        rusqlite::params![new_id, fts_legacy],
+    )
+    .map_err(map_memory_err)?;
+    tx.execute(
+        "INSERT INTO memories_fts_v2(rowid, text) VALUES (?1, ?2)",
+        rusqlite::params![new_id, fts_unicode],
     )
     .map_err(map_memory_err)?;
     tx.commit().map_err(map_memory_err)?;
@@ -273,8 +329,8 @@ fn insert_revision(
     rev: i64,
 ) -> rusqlite::Result<usize> {
     tx.execute(
-        "INSERT INTO memories(key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO memories(key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at, fts_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 2)",
         rusqlite::params![
             note.key,
             rev,
@@ -294,13 +350,16 @@ fn insert_revision(
 
 fn current_revision(tx: &rusqlite::Transaction<'_>, key: &str) -> Result<Option<Revision>> {
     tx.query_row(
-        "SELECT id, rev, content_hash FROM memories WHERE key = ?1 ORDER BY rev DESC LIMIT 1",
+        "SELECT id, rev, content_hash, superseded_by, expires_at FROM memories
+         WHERE key = ?1 ORDER BY rev DESC LIMIT 1",
         rusqlite::params![key],
         |r| {
             Ok(Revision {
                 id: r.get(0)?,
                 rev: r.get(1)?,
                 content_hash: r.get(2)?,
+                superseded_by: r.get(3)?,
+                expires_at: r.get(4)?,
             })
         },
     )
@@ -327,15 +386,25 @@ fn supersede_current(
         rusqlite::params![old_id],
     )
     .map_err(map_memory_err)?;
+    tx.execute(
+        "DELETE FROM memories_fts_v2 WHERE rowid = ?1",
+        rusqlite::params![old_id],
+    )
+    .map_err(map_memory_err)?;
     Ok(())
 }
 
 /// Cross-key supersession inside the caller's transaction: the target's
 /// current revision becomes superseded and its FTS row leaves the index with
 /// it. Same invariant as same-key supersession; without the FTS delete `mem
-/// query` would return a note that `mem get` calls unknown. An unknown target
-/// rolls the whole write back (exit 1). A replayed identical write never
-/// reaches here, so the side effects do not re-apply.
+/// query` would return a note that `mem get` calls unknown. The pick is
+/// `ORDER BY rev DESC`, stated in SQL like `current_revision` and `memory_get`
+/// instead of borrowed from the `memories_current` partial index's scan
+/// order — after an expired-key re-write, one key can carry two
+/// `superseded_by IS NULL` rows and the highest revision must win under any
+/// planner. An unknown target rolls the whole write back (exit 1). A
+/// replayed identical write never reaches here, so the side effects do not
+/// re-apply.
 fn supersede_cross_key(
     tx: &rusqlite::Transaction<'_>,
     new_id: i64,
@@ -344,7 +413,8 @@ fn supersede_cross_key(
 ) -> Result<()> {
     let target_id: Option<i64> = tx
         .query_row(
-            "SELECT id FROM memories WHERE key = ?1 AND superseded_by IS NULL LIMIT 1",
+            "SELECT id FROM memories WHERE key = ?1 AND superseded_by IS NULL
+             ORDER BY rev DESC LIMIT 1",
             rusqlite::params![target],
             |r| r.get(0),
         )
@@ -359,8 +429,12 @@ fn supersede_cross_key(
 }
 
 /// Refresh `anchored_at = now` only when the active revision still equals
-/// `expected_rev`, in one transaction. `Ok(None)` means the key is gone or the
-/// revision moved; the caller maps that to 409/404.
+/// `expected_rev`, in one transaction. "Active" mirrors `Revision::is_active`:
+/// nothing has superseded the revision and its TTL has not passed — an
+/// expired revision must never be re-anchored into looking current, so the
+/// dashboard touch cannot succeed where `mem touch` refuses. `Ok(None)` means
+/// the key is gone, the revision moved, or the revision went inactive; the
+/// caller maps that to 409/404.
 pub fn memory_touch_if_rev(
     conn: &mut Connection,
     key: &str,
@@ -372,8 +446,9 @@ pub fn memory_touch_if_rev(
         .map_err(map_memory_err)?;
     let updated = tx
         .execute(
-            "UPDATE memories SET anchored_at = ?1 WHERE key = ?2 AND rev = ?3 AND superseded_by IS NULL",
-            rusqlite::params![now, key, expected_rev],
+            "UPDATE memories SET anchored_at = ?1 WHERE key = ?2 AND rev = ?3
+             AND superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?4)",
+            rusqlite::params![now, key, expected_rev, now],
         )
         .map_err(map_memory_err)?;
     if updated == 0 {
@@ -385,7 +460,11 @@ pub fn memory_touch_if_rev(
 
 /// Refresh `anchored_at = now` on the current active revision of `key`,
 /// leaving `created_at` (the authorship date) untouched.
-/// Returns `Ok(Some(rev))` if the active revision was updated, or `Ok(None)` if the key does not exist.
+/// Returns `Ok(Some(rev))` if the active revision was updated, or `Ok(None)`
+/// if the key does not exist or its current revision is inactive (superseded
+/// or expired) — the same inactive-revision predicate
+/// `memory_touch_if_rev` enforces in SQL; a dead key cannot be kept alive by
+/// a touch.
 pub fn memory_touch(conn: &mut Connection, key: &str, now: i64) -> Result<Option<i64>> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -394,6 +473,9 @@ pub fn memory_touch(conn: &mut Connection, key: &str, now: i64) -> Result<Option
     let Some(rev_info) = current else {
         return Ok(None);
     };
+    if !rev_info.is_active(now) {
+        return Ok(None);
+    }
     tx.execute(
         "UPDATE memories SET anchored_at = ?1 WHERE id = ?2",
         rusqlite::params![now, rev_info.id],
@@ -402,3 +484,6 @@ pub fn memory_touch(conn: &mut Connection, key: &str, now: i64) -> Result<Option
     tx.commit().map_err(map_memory_err)?;
     Ok(Some(rev_info.rev))
 }
+
+#[cfg(test)]
+mod tests;

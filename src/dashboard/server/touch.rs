@@ -10,6 +10,7 @@ pub(super) fn handle_memory_touch(
     stream: &mut TcpStream,
     root: Option<&Path>,
     log_path: &Path,
+    global: bool,
     req: &HttpRequest,
 ) -> std::io::Result<()> {
     if let Err((status, message)) = touch_request_allowed(req) {
@@ -51,7 +52,13 @@ pub(super) fn handle_memory_touch(
         );
     }
 
-    let entries = data::read_usage_entries(log_path);
+    let mut entries = data::read_usage_entries(log_path);
+    if global {
+        // Global mode never offers a scratch store for mutation: the read
+        // endpoints already hide these repos, so the touch store list must
+        // agree with what is on screen.
+        entries.retain(|entry| !crate::journal::liveness::entry_is_ephemeral(entry));
+    }
     let Some((store_name, _repo_root, db_path)) = data::resolve_store(root, &entries, store_id)
     else {
         let available: Vec<String> = data::store_ids(root, &entries);
@@ -80,10 +87,18 @@ pub(super) fn handle_memory_touch(
         }
     };
 
+    // The probe mirrors the SQL gate in `memory_touch_if_rev` and the CLI's
+    // `mem touch` (`Revision::is_active`): a superseded or expired revision
+    // is not current, and after an expired-key re-write two rows of one key
+    // can both carry `superseded_by IS NULL`, so the highest revision wins
+    // deterministically.
+    let now = crate::db::unix_now();
     let current_rev: Option<i64> = conn
         .query_row(
-            "SELECT rev FROM memories WHERE key = ?1 AND superseded_by IS NULL LIMIT 1",
-            rusqlite::params![key],
+            "SELECT rev FROM memories WHERE key = ?1 AND superseded_by IS NULL
+             AND (expires_at = 0 OR expires_at > ?2)
+             ORDER BY rev DESC LIMIT 1",
+            rusqlite::params![key, now],
             |r| r.get(0),
         )
         .ok();
@@ -108,7 +123,6 @@ pub(super) fn handle_memory_touch(
         );
     }
 
-    let now = crate::db::unix_now();
     match crate::db::memory_touch_if_rev(&mut conn, key, expected_rev, now) {
         Ok(Some(rev)) => {
             eprintln!(

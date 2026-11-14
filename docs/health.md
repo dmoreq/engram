@@ -112,7 +112,7 @@ Mỗi ngày lúc 09:00, audit sức khỏe engram và báo cáo ngắn.
    Nếu không có note, báo "missed audit run" ở mức critical.
 6. Ghi note hôm nay:
    ENGRAM_NO_JOURNAL=1 ~/.cargo/bin/eg --no-journal mem write --global \
-     --key health/<YYYY-MM-DD> --kind fact --scope session --ttl 2592000 \
+     health/<YYYY-MM-DD> --kind fact --scope session --ttl 2592000 \
      --tags "health audit" \
      --body "status=<status> data=<data_status> checks=<failed-ids|none> window=<days>d baseline=<days>d generated_at=<epoch> standards=1"
    Body chỉ chứa các trường trên. Không chép JSON, path, repo name, hay lời văn tự do.
