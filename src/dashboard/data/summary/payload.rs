@@ -101,6 +101,20 @@ fn rel_pct(errors: usize, calls: usize) -> f64 {
 fn format_aggs(aggs: HashMap<String, RepoAgg>, with_worktree: bool) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
     for (k, v) in aggs {
+        // `null` when the repository never ran a pre-write search: an
+        // unmeasured rate must not render as a perfect one.
+        let search_hit_rate_pct = if v.search_calls > 0 {
+            Some(100.0 * v.search_hit_calls as f64 / v.search_calls as f64)
+        } else {
+            None
+        };
+        let last_reuse_scan = v.last_reuse_scan.map(|s| {
+            json!({
+                "ts": s.ts,
+                "result_count": s.result_count,
+                "limit_capped": s.limit_capped,
+            })
+        });
         let mut entry = json!({
             "display": v.display,
             "calls": v.calls,
@@ -115,7 +129,9 @@ fn format_aggs(aggs: HashMap<String, RepoAgg>, with_worktree: bool) -> BTreeMap<
             "reuse_calls": v.reuse_calls,
             "reuse_errors": v.reuse_errors,
             "reuse_reliability_pct": rel_pct(v.reuse_errors, v.reuse_calls),
-            "reuse_hits": v.reuse_hits,
+            "search_calls": v.search_calls,
+            "search_hit_rate_pct": search_hit_rate_pct,
+            "last_reuse_scan": last_reuse_scan,
             "reuse_saved_tokens": v.reuse_tokens_saved,
             "memory_calls": v.memory_calls,
             "memory_errors": v.memory_errors,
@@ -166,6 +182,31 @@ fn recent_graph_window(entries: &[Value]) -> Vec<Value> {
             row
         })
         .collect()
+}
+
+/// Stamp one journal entry with `repo_main` and `repo_main_name` when it was
+/// recorded in a linked worktree whose `.git` pointer still resolves. Feeds
+/// show the worktree name plus the repository it belongs to, and the summary
+/// window reuses the same stamp so both stay consistent.
+pub(crate) fn annotate_worktree_main(entry: &mut Value) {
+    let Some(repo) = entry.get("repo").and_then(Value::as_str) else {
+        return;
+    };
+    if !entry
+        .get("worktree")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(main) = crate::repo::cached_worktree_main_root(std::path::Path::new(repo)) else {
+        return;
+    };
+    if let Some(name) = main.file_name() {
+        let name = name.to_string_lossy().into_owned();
+        entry["repo_main"] = json!(main.to_string_lossy());
+        entry["repo_main_name"] = json!(name);
+    }
 }
 
 pub(super) fn empty_summary() -> Value {
