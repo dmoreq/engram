@@ -14,7 +14,17 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
-## [Unreleased]
+## [1.0.7] - 2026-11-14
+
+### Added
+- The dashboard header carries the brand logo with a theme-aware pair:
+  `/logo.svg` (dark badge) on dark and the new `/logo-light.svg` (white
+  badge on the light token palette) on light, toggled in CSS with no
+  JavaScript involvement; the favicon stays theme-independent.
+- Brand SVG assets (dashboard favicon, dashboard logo, repo-root icon and
+  logo used by the README) now parse as strict XML — the previous
+  `--refs` comment text was an illegal double hyphen inside an XML
+  comment and broke `<img>` rendering of the header logo.
 
 ### Changed
 - `eg usage` savings now count only successful calls (exit 0): empty (exit 1)
