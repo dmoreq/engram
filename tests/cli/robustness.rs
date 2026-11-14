@@ -175,13 +175,13 @@ fn tracked_but_gitignored_sources_are_indexed() {
     let repo = temp_repo("tracked-ignored");
     write(&repo, ".gitignore", "generated/\n");
     write(&repo, "generated/g.py", "def hidden_fn():\n    return 1\n");
-    let out = std::process::Command::new("git")
+    let out = super::common::stripped_git()
         .args(["init", "-q"])
         .current_dir(&repo)
         .output()
         .unwrap();
     assert!(out.status.success());
-    let out = std::process::Command::new("git")
+    let out = super::common::stripped_git()
         .args(["add", "-f", "generated/g.py"])
         .current_dir(&repo)
         .output()

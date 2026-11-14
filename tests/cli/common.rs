@@ -66,7 +66,15 @@ pub(crate) fn stable_repo(name: &str) -> TempRepo {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    let init = Command::new("git")
+    // Strip GIT_* so a hook environment cannot point `git init` at the shared
+    // checkout instead of the fixture (see the note on `git` below).
+    let mut init_command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            init_command.env_remove(key);
+        }
+    }
+    let init = init_command
         .arg("-C")
         .arg(&dir)
         .args(["init", "-q"])
@@ -98,14 +106,31 @@ pub(crate) fn build(repo: &Path) -> (i32, String, String) {
     )
 }
 
-/// Run one git command in a temp repo; fail the test on non-zero exit.
+/// A git command with every `GIT_*` variable stripped, so a hook environment
+/// (`GIT_DIR` exported by `git push`) cannot redirect fixture operations into
+/// the shared checkout's index.
+pub(crate) fn stripped_git() -> Command {
+    let mut command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
+/// Run one git command in a temp repo; fail the test on non-zero exit. Every
+/// `GIT_*` variable is stripped so a hook environment (`GIT_DIR` exported by
+/// `git push` onto a linked worktree) cannot redirect `git add -f .engram`
+/// fixtures into the shared checkout's index.
 pub(crate) fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .status()
-        .unwrap();
+    let mut command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let status = command.arg("-C").arg(repo).args(args).status().unwrap();
     assert!(status.success(), "git {args:?} failed");
 }
 

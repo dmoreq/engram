@@ -100,13 +100,23 @@ pub(crate) fn reject_tracked_eg_dir(root: &Path) -> Result<()> {
 /// resolves to the same directory as `.engram/`, but a case-sensitive
 /// pathspec returns no rows and would let the planted index through.
 /// No git, no repository, or a failing git means "not tracked".
+///
+/// Every `GIT_*` variable is stripped from the child: a caller that already
+/// runs inside a git context (a hook with `GIT_DIR` set, a nested checkout)
+/// would otherwise hijack this probe and attribute another repository's
+/// index to `root`, rejecting unrelated directories as tracked.
 fn git_tracked_engram(root: &Path) -> Option<String> {
-    let out = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "-z", "--", ":(icase).engram"])
-        .output()
-        .ok()?;
+        .args(["ls-files", "-z", "--", ":(icase).engram"]);
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let out = command.output().ok()?;
     if !out.status.success() || out.stdout.is_empty() {
         return None;
     }

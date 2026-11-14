@@ -45,6 +45,12 @@ changes bump the minor while 0.x is unstable.
   `bench --threshold` is validated. `eg reuse --judge` previously failed on
   every invocation because the binary had no `--stdin` flag and the
   similarity stdin parser expected the supersede shape.
+- The deep-shared 10k reuse bench budget moves to 800 ms p95: the hosted
+  macOS runner measures 520-537 ms on this bench (local Apple Silicon ~197
+  ms), so the previous 500 ms gate failed CI on main for every merge.
+- git probes (`tracked-engram`, build walk, meta head/dirty) strip `GIT_*`
+  environment variables: an `eg` command inside a git hook inherited the
+  hook's `GIT_DIR` and inspected the hook repository instead of its own.
 
 ## [1.0.7] - 2026-11-14
 

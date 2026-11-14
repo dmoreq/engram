@@ -18,7 +18,7 @@ fn tracked_store_is_reported_not_read() {
     let repo = dir.join("repo");
     crate::db::test_support::make_dir_all(repo.join(".engram")).unwrap();
     crate::db::test_support::write_file(repo.join(".engram/memory.db"), b"attacker").unwrap();
-    let status = std::process::Command::new("git")
+    let status = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&repo)
         .args(["init", "-q"])
@@ -27,7 +27,7 @@ fn tracked_store_is_reported_not_read() {
         crate::db::test_support::remove_tree(&dir);
         return;
     }
-    let added = std::process::Command::new("git")
+    let added = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&repo)
         .args(["add", "-f", ".engram/memory.db"])

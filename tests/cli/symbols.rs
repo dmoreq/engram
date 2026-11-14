@@ -282,7 +282,13 @@ fn usage_journal_creates_gitignore_marker() {
     );
     let marker = fs::read_to_string(repo.join(".engram/.gitignore")).unwrap();
     assert_eq!(marker, "*\n", "tool-owned gitignore marker");
-    let status = Command::new("git")
+    let mut command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let status = command
         .arg("-C")
         .arg(&repo)
         .args(["status", "--porcelain"])

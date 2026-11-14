@@ -33,7 +33,13 @@ fn tracked_index_is_rejected_before_query() {
         assert!(stderr.contains("git-tracked"), "{args:?}: {stderr}");
     }
     // A rejected invocation must not mutate the tracked confinement state.
-    let status = std::process::Command::new("git")
+    let mut command = Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let status = command
         .arg("-C")
         .arg(&repo)
         .args(["status", "--porcelain", "--", ".engram"])
@@ -197,4 +203,23 @@ fn index_derived_control_bytes_are_escaped_in_output() {
     assert!(!same_stderr.contains('\u{1b}'), "{same_stderr}");
     assert!(!same_stderr.contains('\u{7}'), "{same_stderr}");
     assert!(same_stderr.contains("\\x1b[31m"), "{same_stderr}");
+}
+
+/// `eg` invoked from a git hook inherits `GIT_DIR`; the tracked-engram probe
+/// must ignore it and judge the command's own repository, not the hook's
+/// index. Regression: under a pushed hook every audit/memory test saw the
+/// shared engram index and failed with a Security rejection.
+#[test]
+fn eg_survives_a_git_hook_environment() {
+    let repo = temp_repo("hook-env-repo");
+    write(&repo, "a.py", "def hook_probe():\n    return 1\n");
+    build(&repo);
+    let out = eg(&repo)
+        .env("GIT_DIR", env!("CARGO_MANIFEST_DIR").to_string() + "/.git")
+        .args(["audit"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("git-tracked"), "{stderr}");
 }

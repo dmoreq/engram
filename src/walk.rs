@@ -106,7 +106,15 @@ pub fn walk(root: &Path, exts: &[&str]) -> Result<WalkStats> {
 /// paths, repository-relative with forward slashes. `None` when git is
 /// unavailable or the command fails.
 fn git_visible_paths(root: &Path) -> Option<Vec<String>> {
-    let out = std::process::Command::new("git")
+    // A caller inside a git hook carries GIT_DIR; without stripping, the walk
+    // would list another repository's files instead of this root's.
+    let mut command = std::process::Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let out = command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["ls-files", "-co", "--exclude-standard", "-z"])
         .current_dir(root)
@@ -364,13 +372,13 @@ mod tests {
         let dir = crate::db::temp_root("walk-symlink");
         let external = crate::db::temp_root("walk-external");
         write(&dir.join("pkg/a.py"), b"def inside(): pass\n");
-        let status = std::process::Command::new("git")
+        let status = crate::db::test_support::stripped_git()
             .args(["init", "--quiet"])
             .current_dir(&dir)
             .status()
             .unwrap();
         assert!(status.success());
-        let status = std::process::Command::new("git")
+        let status = crate::db::test_support::stripped_git()
             .args(["add", "pkg/a.py"])
             .current_dir(&dir)
             .status()

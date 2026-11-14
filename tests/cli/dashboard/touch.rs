@@ -171,7 +171,13 @@ fn dashboard_touch_global_hides_tmp_stores() {
     // `RepoRef::resolve` climbs to the enclosing work tree, and this
     // gitignored target directory sits inside one: an explicit `.git` stops
     // the climb at the fixture instead of the enclosing checkout's store.
-    let init = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let init = command
         .arg("-C")
         .arg(&real)
         .args(["init", "-q"])

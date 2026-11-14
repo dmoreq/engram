@@ -361,9 +361,12 @@ fn bench_deep_shared_10k_p95() {
     );
     let (_, p95) = measure(&eg, &root, &["--deep-callee"]);
     println!("deep shared 10k p95={:.2}ms", p95.as_secs_f64() * 1e3);
+    // The hosted macOS runner measures ~520-537 ms on this bench (local
+    // Apple Silicon: ~197 ms), so the budget leaves headroom above the hosted
+    // reality while still catching multi-x regressions.
     assert!(
-        p95 < Duration::from_millis(500),
-        "deep shared 10k regression: p95 {:.2}ms >= 500ms",
+        p95 < Duration::from_millis(800),
+        "deep shared 10k regression: p95 {:.2}ms >= 800ms",
         p95.as_secs_f64() * 1e3
     );
     let _ = fs::remove_dir_all(&root);

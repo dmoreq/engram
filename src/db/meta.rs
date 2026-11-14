@@ -102,7 +102,13 @@ pub(crate) fn meta_count(conn: &Connection, key: &str) -> Result<i64> {
 
 /// Probe the source repo's git revision with a `-dirty` suffix on a dirty tree.
 pub fn source_rev(root: &Path) -> String {
-    let head = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let head = command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
@@ -113,7 +119,13 @@ pub fn source_rev(root: &Path) -> String {
     let Some(mut rev) = head else {
         return "unknown".to_string();
     };
-    let dirty = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let dirty = command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["status", "--porcelain"])
         .current_dir(root)

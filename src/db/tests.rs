@@ -20,7 +20,7 @@ fn provenance_gate_rechecks_tracking_state() {
     let dir = temp_root("db-tracked-recheck");
     make_dir_all(dir.join(".engram")).unwrap();
     write_file(dir.join(".engram/index.db"), b"x").unwrap();
-    let init = std::process::Command::new("git")
+    let init = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&dir)
         .args(["init", "-q"])
@@ -30,7 +30,7 @@ fn provenance_gate_rechecks_tracking_state() {
         return;
     }
     reject_tracked_eg_dir(&dir).expect("untracked state is readable");
-    let add = std::process::Command::new("git")
+    let add = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&dir)
         .args(["add", "-f", ".engram/index.db"])
@@ -49,7 +49,7 @@ fn mutation_at_derives_repo_root_for_tracked_gate() {
     let dir = temp_root("db-tracked-mutation");
     make_dir_all(dir.join(".engram")).unwrap();
     write_file(dir.join(".engram/memory.db"), b"x").unwrap();
-    let init = std::process::Command::new("git")
+    let init = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&dir)
         .args(["init", "-q"])
@@ -58,7 +58,7 @@ fn mutation_at_derives_repo_root_for_tracked_gate() {
         remove_tree(&dir);
         return;
     }
-    let add = std::process::Command::new("git")
+    let add = crate::db::test_support::stripped_git()
         .arg("-C")
         .arg(&dir)
         .args(["add", "-f", ".engram/memory.db"])
