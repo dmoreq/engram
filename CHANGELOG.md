@@ -30,7 +30,7 @@ changes bump the minor while 0.x is unstable.
   stay-removed pins for the Preventable LOC tile and the pre-write feed's
   latency column.
 
-## [Unreleased]
+## [1.0.14] - 2026-11-15
 
 ### Fixed
 - Fifth adversarial pass over the lean rebuild: the unified agent table's
