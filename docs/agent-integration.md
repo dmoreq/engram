@@ -199,8 +199,11 @@ endpoint on loopback only. Payload shape is versioned in-band:
   `errors`, `shown`, `p50`, `p95`, `saved_tokens`), `repo_aggs`, `agent_aggs`
   (keyed by canonical repository path / agent slug; `display` carries the
   label; rows carry `search_calls`/`search_hit_rate_pct` — `null` when the
-  row has no searches — `last_reuse_scan` for the newest ok scan, and
-  `memory_read_hit_rate_pct` — `null` when the row has no memory reads), and
+  row has no searches — `last_reuse_scan` for the newest ok scan (with the
+  replaced snapshot as `prev_result_count`/`prev_ts` for the pool delta; a
+  proposal run is never a scan; `limit_capped` is the journaled truncation
+  verdict), `memory_read_hit_rate_pct` — `null` when the row has no memory
+  reads — and `memory_read_hits`), and
   `graph_recent_queries` (last 50 graph calls).
 - `GET /api/reuse` — `candidates[]` (each: `id`, `repo`, `repo_path`,
   `detector`, `symbol`, `canonical`, `overlap_pct` or `null` with
@@ -216,7 +219,9 @@ endpoint on loopback only. Payload shape is versioned in-band:
   runs are not runs), `prewrite_count`, `cache_hit`, `cache_age_ms`,
   `repo_candidate_pools` (display label → full candidate pool before the
   25-per-repo sample cap; repositories the scan could not measure are
-  absent), `degraded` with `errors[]` for gated/unreadable repositories),
+  absent), `resolved_twins` (`resolved` = surfaced pairs absent from the
+  current scan — merged away; `surfaced` = distinct pairs surfaced in the
+  window), `degraded` with `errors[]` for gated/unreadable repositories),
   `prewrite_searches[]`.
 - `GET /api/memories` — `{schema_version, notes[], degraded, errors[]}`. A
   store that cannot be read yields an `errors` entry and `degraded: true`

@@ -204,22 +204,15 @@ fn render_tab_reuse<W: Write>(
     let avg_callers = s.get("avg_callers").and_then(Value::as_f64).unwrap_or(0.0);
 
     let d_counts = s.get("detector_counts");
-    let d1 = d_counts
-        .and_then(|c| c.get("D1"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let d2 = d_counts
-        .and_then(|c| c.get("D2"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let d3 = d_counts
-        .and_then(|c| c.get("D3"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let d4 = d_counts
-        .and_then(|c| c.get("D4"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    // Every detector type present in the sample, matching the web pills —
+    // coverage detectors (D5/D1L/DT) are invisible otherwise.
+    let mut detectors = String::new();
+    if let Some(counts) = d_counts.and_then(Value::as_object) {
+        for (det, count) in counts {
+            let n = count.as_u64().unwrap_or(0);
+            detectors.push_str(&format!(" {det}:{n}"));
+        }
+    }
 
     write!(w, "\r\x1b[2K\x1b[1;32m[ANTI-REINVENTION]\x1b[0m\r\n")?;
     write!(
@@ -228,7 +221,7 @@ fn render_tab_reuse<W: Write>(
     )?;
     write!(
         w,
-        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m caught  Ratio: \x1b[1;32m{avg_callers:.1}\x1b[0m callers  D1:{d1} D2:{d2} D3:{d3} D4:{d4}\r\n"
+        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m caught  Ratio: \x1b[1;32m{avg_callers:.1}\x1b[0m callers{detectors}\r\n"
     )?;
     write!(
         w,

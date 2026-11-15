@@ -34,6 +34,11 @@ pub(super) fn discover_repos(
     } else {
         for e in entries {
             if let Some(r) = e.get("repo").and_then(Value::as_str) {
+                // Dedupe before the stat: a long journal re-probing one root
+                // pays one stat per distinct repository, not per line.
+                if repos.contains_key(r) {
+                    continue;
+                }
                 let p = PathBuf::from(r);
                 if p.join(".engram").join(db_rel).is_file() {
                     repos.entry(r.to_string()).or_insert(p);

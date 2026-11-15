@@ -160,6 +160,8 @@ fn quality_row_folds_structured_judge_counts() {
             r#"{{"tool":"reuse","exit_code":0,"result_count":2,"shown":2,"total":2,"mode":"scan","judged":true,"judge":{{"reviewed":1,"rejected":1,"failed":0}},"repo":"{live}"}}"#
         ),
         format!(r#"{{"tool":"reuse","exit_code":0,"result_count":1,"shown":1,"total":1,"repo":"{live}"}}"#),
+        // Zero-judgeable run: counted as neither a run nor a verdict.
+        format!(r#"{{"tool":"reuse","exit_code":0,"result_count":0,"shown":0,"total":0,"mode":"scan","judged":true,"judge":{{"reviewed":0,"rejected":0,"failed":0}},"repo":"{live}"}}"#),
         format!(r#"{{"tool":"callers","exit_code":0,"result_count":1,"repo":"{live}"}}"#),
     ]
     .join("\n");
@@ -190,5 +192,23 @@ fn usage_cli_counts_only_successful_reuse_scans() {
     let (saved_tokens, reuse_candidates) = calculate_telemetry_totals(&aggs);
     assert_eq!(reuse_candidates, 7, "only the exit-0 scan is counted");
     assert!(saved_tokens > 0, "the ok scan is still priced");
+    remove_tree(&live);
+}
+
+#[test]
+fn usage_cli_discloses_the_savings_basis() {
+    // The basis line names the tool families behind the estimate, so the
+    // token total cannot be quoted as measured savings.
+    let live = temp_root("usage-basis");
+    let repo = live.to_string_lossy().into_owned();
+    let lines = [
+        format!(r#"{{"ts":1700000000,"tool":"callers","exit_code":0,"result_count":2,"shown":2,"total":0,"stale":false,"ambiguous":0,"latency_us":100,"repo":"{repo}"}}"#),
+        format!(r#"{{"ts":1700000001,"tool":"reuse","exit_code":0,"result_count":1,"shown":1,"total":0,"stale":false,"ambiguous":0,"latency_us":100,"repo":"{repo}"}}"#),
+    ]
+    .join("\n");
+    let aggs = aggregate_usage(&lines);
+    let rendered = render_summary(&aggs, false).join("\n");
+    assert!(rendered.contains("Savings basis: graph ~"), "{rendered}");
+    assert!(rendered.contains("reuse ~"), "{rendered}");
     remove_tree(&live);
 }

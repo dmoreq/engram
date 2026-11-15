@@ -97,6 +97,38 @@ pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
     totals
 }
 
+/// Consolidation closure over the retained journal: pair every historically
+/// surfaced twin against the current scan. A surfaced pair absent from the
+/// current index was resolved (merged away); one still present is unresolved
+/// recurrence. Without this, a successful fix removes the card and its own
+/// evidence — the panel could only ever show failures.
+pub(super) struct ResolvedTotals {
+    pub(super) resolved: usize,
+    pub(super) surface_distinct: usize,
+}
+
+pub(super) fn resolved_vs_current(
+    candidates: &[Value],
+    usage: &HashMap<String, (usize, f64)>,
+) -> ResolvedTotals {
+    let current: std::collections::HashSet<String> = candidates
+        .iter()
+        .filter_map(|c| {
+            let repo = c.get("repo_path").and_then(Value::as_str)?;
+            let symbol = c.get("symbol").and_then(Value::as_str)?;
+            let canonical = c.get("canonical").and_then(Value::as_str)?;
+            Some(format!("{repo}|{symbol}->{canonical}"))
+        })
+        .collect();
+    // Usage keys are "{repo}|{symbol}->{canonical}", unique per surfaced pair.
+    let surface_distinct = usage.len();
+    let resolved = usage.keys().filter(|key| !current.contains(*key)).count();
+    ResolvedTotals {
+        resolved,
+        surface_distinct,
+    }
+}
+
 #[cfg(test)]
 mod usage_tests {
     use super::*;
@@ -165,5 +197,21 @@ mod usage_tests {
         assert_eq!(totals.reviewed, 3);
         assert_eq!(totals.rejected, 1);
         assert_eq!(totals.failed, 1);
+    }
+
+    #[test]
+    fn resolved_vs_current_closes_the_consolidation_loop() {
+        // Two pairs surfaced historically; the current scan still shows one.
+        // The absent pair counts as resolved; the present one as recurrence.
+        let candidates = vec![json!({
+            "repo_path": "/r/a", "symbol": "f", "canonical": "g"
+        })];
+        let usage = HashMap::from([
+            ("/r/a|f->g".to_string(), (2usize, 250.0f64)),
+            ("/r/a|h->g".to_string(), (1, 100.0)),
+        ]);
+        let totals = resolved_vs_current(&candidates, &usage);
+        assert_eq!(totals.surface_distinct, 2);
+        assert_eq!(totals.resolved, 1);
     }
 }

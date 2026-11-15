@@ -80,12 +80,15 @@ fn refs_without_an_index_are_unverified_not_broken() {
 #[test]
 fn recall_counts_only_exact_key_reads() {
     let entries = vec![
-        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 10.0 }),
-        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 12.0 }),
+        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 10.0, "exit_code": 0, "result_count": 1 }),
+        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 12.0, "exit_code": 0, "result_count": 1 }),
         // A bare store-wide query cannot be attributed to one note.
-        json!({ "tool": "mem_query", "args": { "terms": "" }, "ts": 13.0 }),
+        json!({ "tool": "mem_query", "args": { "terms": "" }, "ts": 13.0, "exit_code": 0, "result_count": 3 }),
         // A different key must not accrue.
-        json!({ "tool": "mem_get", "args": { "key": "beta" }, "ts": 14.0 }),
+        json!({ "tool": "mem_get", "args": { "key": "beta" }, "ts": 14.0, "exit_code": 0, "result_count": 1 }),
+        // A failed or empty lookup delivered nothing: not a recall.
+        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 15.0, "exit_code": 1, "result_count": 0 }),
+        json!({ "tool": "mem_get", "args": { "key": "alpha" }, "ts": 16.0, "exit_code": 0, "result_count": 0 }),
     ];
     let recalls = aggregate_recalls(&entries);
     assert_eq!(recalls.get("alpha").copied(), Some((2, 12.0)));

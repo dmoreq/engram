@@ -17,7 +17,7 @@
       <img src="/logo.svg" width="140" height="32" alt="Engram" class="header-logo header-logo-dark">
       <h1 id="header-title" class="sr-only">Engram Console</h1>
       <span class="header-subtitle" aria-hidden="true">Console</span>
-      <span id="data-age" class="text-muted" style="font-size:0.75rem; margin-left:0.75rem;"></span>
+      <span id="data-age" class="text-muted" style="font-size:0.75rem; margin-left:0.75rem;" data-tip="header.data_age"></span>
     </div>
     <div class="header-right">
       <span id="live-indicator" class="badge status-ok" style="display: none;"><span class="live-dot"></span>LIVE</span>
@@ -49,8 +49,8 @@
       </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.p50">Median Latency (p50)</div>
-        <div id="metric-p50" class="kpi-value text-success">0.0ms</div>
-        <div id="metric-latency-sub" class="kpi-sub">p95 = 0.0ms &middot; avg = 0.0ms</div>
+        <div id="metric-p50" class="kpi-value text-success">&mdash;</div>
+        <div id="metric-latency-sub" class="kpi-sub">No queries recorded</div>
       </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.tokens_saved">Context Window Token Avoidance</div>
@@ -191,7 +191,7 @@
       </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.judge">Semantic Judge</div>
-        <div class="kpi-value" id="reuse-kpi-judge">0</div>
+        <div class="kpi-value" id="reuse-kpi-judge">&mdash;</div>
         <div class="kpi-sub" id="reuse-kpi-judge-sub">No judged runs in the retained journal</div>
       </div>
     </div>
@@ -311,7 +311,7 @@
     <div class="kpi-strip">
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.recall">Session Recall Rate</div>
-        <div class="kpi-value text-success" id="mem-kpi-recall-pct">0.0%</div>
+        <div class="kpi-value text-success" id="mem-kpi-recall-pct">&mdash;</div>
         <div class="kpi-sub" id="mem-kpi-recall-pct-sub">Sessions recalling memory</div>
       </div>
       <div class="kpi-tile">

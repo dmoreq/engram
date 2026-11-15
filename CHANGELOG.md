@@ -14,6 +14,33 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+### Changed
+- Eighteen-lens adversarial audit over every displayed metric (the six
+  canonical lenses each split into three independent checks). Fixes:
+  Latest Scan no longer mistakes a proposal run for a scan and reads its
+  "truncated" verdict from the journal instead of comparing against
+  `args.limit`; "recalled N×" counts only successful lookups (a failed
+  `mem_get` is not a recall); worktree sub-rows are graph-scoped to match
+  their parent row; the CLI `--quality` judge counters skip zero-judgeable
+  runs, matching the dashboard tile; the memory dossier stops interpolating
+  `scope`/`source`/`kind` into HTML unescaped.
+- Consolidation loop closes on the dashboard: the Latest Scan cell carries
+  a pool delta against the previous scan (Δ badge), and the candidates KPI
+  subtitle reports how many previously surfaced twins are absent from the
+  current scan ("N of M surfaced twins resolved") — a successful merge no
+  longer vanishes silently from the panel.
+- Observability: unmeasured states render an em dash everywhere (latency
+  tile, judge tile, recall tile static placeholders); detector pill
+  tooltips disclose sample-floor provenance; the Search Hit Rate tooltip
+  notes that misses can be healthy; the Anchor Currency tooltip states its
+  freshness is bounded by the last `eg build`; the data-age stamp carries
+  the retained-journal window in its tooltip; the monitor TUI renders every
+  detector type present.
+- Performance: repository discovery stats once per distinct root instead of
+  once per journal line; touch-button `rev` values are number-coerced.
+
 ## [1.0.9] - 2026-11-15
 
 ### Changed

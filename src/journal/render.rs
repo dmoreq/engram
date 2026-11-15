@@ -159,8 +159,13 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
         agg.latencies.push(us.max(0) as u64);
     }
     reuse::fold(fields.reuse, fields.truncated, fields.tool == "reuse", agg);
+    // Judge parity with the dashboard tile: a zero-judgeable run ({0,0,0})
+    // is not a run and must not inflate the CLI quality row either.
     if fields.tool == "reuse" {
-        if let Some(judge) = fields.judge {
+        if let Some(judge) = fields
+            .judge
+            .filter(|j| j.reviewed + j.rejected + j.failed > 0)
+        {
             agg.judge_runs += 1;
             agg.judge_reviewed += judge.reviewed;
             agg.judge_rejected += judge.rejected;
