@@ -284,6 +284,64 @@ mod client_contract_tests {
     }
 
     #[test]
+    fn preventable_loc_tile_stays_removed() {
+        // Merged into the Candidates subtitle ("~N LOC preventable"); the
+        // tile + its tooltip stay gone.
+        assert!(
+            !HTML.contains("reuse-kpi-loc"),
+            "LOC tile must stay removed"
+        );
+        assert!(
+            !JS.contains("'kpi.excess_loc'"),
+            "excess_loc tooltip must stay removed"
+        );
+    }
+
+    #[test]
+    fn prewrite_feed_has_no_latency_column() {
+        // Uniform sub-ms FTS5 latency carries no decision: the column (and
+        // its ghost td) stay removed.
+        let prewrite_section = HTML.split("id=\"prewrite-tbody\"").next().unwrap_or("");
+        let header_end = prewrite_section
+            .rfind("<thead>")
+            .map(|i| &prewrite_section[i..])
+            .unwrap_or("");
+        assert!(
+            !header_end.contains("Latency"),
+            "pre-write feed must not render a Latency column"
+        );
+    }
+
+    #[test]
+    fn thead_column_count_matches_body_cells() {
+        // The round-4 regression class: a rewritten tbody outliving its thead
+        // (4-column header over 5-column body). Every rendered table's
+        // thead must have at least as many th cells as its JS body emits.
+        let tables = [
+            ("agents-tbody", 5usize),
+            ("repos-tbody", 4),
+            ("reuse-repos-tbody", 6),
+            ("mem-repos-tbody", 5),
+            ("prewrite-tbody", 5),
+        ];
+        for (tbody_id, expected) in tables {
+            // Slice from the containing <table> so the thead precedes the id.
+            let before = HTML
+                .split(&format!("id=\"{tbody_id}\""))
+                .next()
+                .unwrap_or("");
+            let table_start = before.rfind("<table").unwrap_or(0);
+            let thead = &before[table_start..];
+            // "<th" would also match "<thead"; count real header cells.
+            let header_cells = thead.matches("<th>").count() + thead.matches("<th ").count();
+            assert_eq!(
+                header_cells, expected,
+                "{tbody_id}: thead columns drifted from the render fn"
+            );
+        }
+    }
+
+    #[test]
     fn worktree_sub_rows_stay_removed() {
         // Per-branch diagnostics folded into the parent row + the "N
         // worktrees" badge; the expandable sub-row system stays gone.

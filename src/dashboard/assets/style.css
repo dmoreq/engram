@@ -241,30 +241,7 @@ th {
 tr.repo-row-item { cursor: pointer; }
 tr:hover td { background: var(--bg-subtle); }
 
-/* Linked-worktree sub-rows: collapsed until the main repository row toggles
-   them open; the chevron tracks the row's aria-expanded state. */
-tr.repo-worktree-row td {
-  background: var(--bg-subtle);
-  border-top: 1px solid var(--border-subtle);
-  font-size: 0.82rem;
-  padding-top: 0.3rem;
-  padding-bottom: 0.3rem;
-}
-tr.repo-worktree-row { display: none; cursor: default; }
-tr.repo-worktree-row.wt-open { display: table-row; }
-tr.repo-worktree-row .wt-sub-name { padding-left: 1.4rem; }
-.wt-chevron {
-  display: inline-block;
-  width: 0;
-  height: 0;
-  margin-right: 0.4rem;
-  vertical-align: middle;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  border-left: 6px solid var(--text-muted);
-  transition: transform 0.15s ease;
-}
-.repo-row-item[aria-expanded="true"] .wt-chevron { transform: rotate(90deg); }
+/* Worktree count badge and feed provenance ("from <main>"). */
 .wt-count { font-size: 0.72rem; margin-left: 0.4rem; }
 .wt-from { font-size: 0.72rem; margin-left: 0.3rem; }
 
@@ -646,25 +623,6 @@ tr.agent-row-item { cursor: pointer; }
 }
 
 .hidden { display: none !important; }
-.live-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--intent-success);
-  margin-right: 0.4rem;
-  animation: pulse 2s infinite;
-}
-.live-dot.live-active {
-  background: var(--intent-success);
-}
-.live-dot.live-reconnecting {
-  background: var(--intent-warning);
-}
-.live-dot.live-paused {
-  background: var(--text-muted);
-  animation: none;
-}
 
 /* Metric Flash Animation on Live Invocations */
 .metric-flash {
@@ -673,11 +631,6 @@ tr.agent-row-item { cursor: pointer; }
 @keyframes metricFlash {
   0% { background-color: var(--border-subtle); }
   100% { background-color: transparent; }
-}
-@keyframes pulse {
-  0% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.9); }
-  100% { opacity: 1; transform: scale(1); }
 }
 
 /* Action recommendation */
@@ -747,10 +700,7 @@ tr.agent-row-item { cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) {
   .metric-flash,
-  .live-dot {
-    animation: none !important;
-  }
-  #eg-tip {
+    #eg-tip {
     transition: none !important;
   }
 }
