@@ -323,6 +323,10 @@ mod client_contract_tests {
             ("reuse-repos-tbody", 6),
             ("mem-repos-tbody", 5),
             ("prewrite-tbody", 5),
+            // The live feeds: the 8-over-7 recent-feed regression shipped
+            // because these two tables were outside the guard.
+            ("recent-tbody", 8),
+            ("tools-tbody", 3),
         ];
         for (tbody_id, expected) in tables {
             // Slice from the containing <table> so the thead precedes the id.
