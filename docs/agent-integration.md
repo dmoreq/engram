@@ -220,9 +220,11 @@ endpoint on loopback only. Payload shape is versioned in-band:
   `repo_candidate_pools` (display label → full candidate pool before the
   25-per-repo sample cap; repositories the scan could not measure are
   absent), `resolved_twins` (`resolved` = surfaced pairs absent from the
-  current scan — merged away; `surfaced` = distinct pairs surfaced in the
-  window), `degraded` with `errors[]` for gated/unreadable repositories),
-  `prewrite_searches[]`.
+  current scan of a sample-complete repository — strong evidence of a merge,
+  not a guarantee; pairs from gated, unreadable, or over-cap repositories
+  are unmeasured and excluded; `surfaced` = distinct pairs surfaced in the
+  window from those same repositories), `degraded` with `errors[]` for
+  gated/unreadable repositories), `prewrite_searches[]`.
 - `GET /api/memories` — `{schema_version, notes[], degraded, errors[]}`. A
   store that cannot be read yields an `errors` entry and `degraded: true`
   instead of an empty list. Each note carries `store`, `store_id` (canonical

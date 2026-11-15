@@ -221,7 +221,7 @@ fn render_tab_reuse<W: Write>(
     )?;
     write!(
         w,
-        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m caught  Ratio: \x1b[1;32m{avg_callers:.1}\x1b[0m callers{detectors}\r\n"
+        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m recorded  Ratio: \x1b[1;32m{avg_callers:.1}\x1b[0m callers{detectors}\r\n"
     )?;
     write!(
         w,
@@ -293,12 +293,13 @@ fn render_tab_memory<W: Write>(
     };
     let reads = sum_calls(crate::dashboard::data::classify, |c| c.mem_read);
     let writes = sum_calls(crate::dashboard::data::classify, |c| c.mem_write);
+    // No memory activity is unmeasured, not a zero ratio.
     let rw_ratio = if writes > 0 {
         format!("{:.1}x", reads as f64 / writes as f64)
     } else if reads > 0 {
         format!("{:.1}x", reads as f64)
     } else {
-        "0.0x".to_string()
+        "—".to_string()
     };
 
     // No tagged session means the metric is unmeasurable, not zero.

@@ -208,6 +208,8 @@ fn dashboard_api_summary_returns_reuse_and_memory_aggs() {
     assert_eq!(scan["result_count"], 3);
     assert_eq!(scan["limit_capped"], false);
     assert!(scan["ts"].is_number());
+    // Single ok scan in the fixture: no baseline serializes as null.
+    assert!(scan["prev_result_count"].is_null());
 
     let agg_b = &json_val["repo_aggs"][&repo_b];
     assert_eq!(agg_b["display"], "repo-b");

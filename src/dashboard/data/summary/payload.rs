@@ -166,17 +166,9 @@ fn format_tool_aggs(tool_aggs: HashMap<String, ToolAgg>) -> BTreeMap<String, Val
     for (k, mut v) in tool_aggs {
         v.latencies
             .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let vn = v.latencies.len();
-        let p50_t = if vn > 0 {
-            v.latencies[(0.50 * vn as f64).ceil() as usize - 1]
-        } else {
-            0.0
-        };
-        let p95_t = if vn > 0 {
-            v.latencies[(0.95 * vn as f64).ceil() as usize - 1]
-        } else {
-            0.0
-        };
+        // No samples serialize as null: an unmeasured percentile is not an
+        // instant tool.
+        let (p50_t, p95_t, _) = compute_percentiles(&mut v.latencies);
         // Success-only inputs: the fold prices a call exactly as the global
         // KPI does, so `sum(tool saved_tokens) == saved_tokens` always holds.
         let saved_tokens =
@@ -329,10 +321,10 @@ pub(super) fn empty_summary() -> Value {
         "schema_version": 2, "generated_at": crate::db::unix_now(),
         "window": "retained_journal",
         "total_calls": 0, "error_count": 0, "reliability_pct": 100.0,
-        "p50_ms": 0.0, "p95_ms": 0.0, "avg_ms": 0.0, "saved_tokens": 0, "saved_dollars": 0.0,
+        "p50_ms": Value::Null, "p95_ms": Value::Null, "avg_ms": Value::Null, "saved_tokens": 0, "saved_dollars": 0.0,
         "saved_tokens_estimated": true, "saved_dollars_estimated": true,
         "graph_calls": 0, "graph_errors": 0, "graph_reliability_pct": 100.0,
-        "graph_p50_ms": 0.0, "graph_p95_ms": 0.0, "graph_avg_ms": 0.0,
+        "graph_p50_ms": Value::Null, "graph_p95_ms": Value::Null, "graph_avg_ms": Value::Null,
         "graph_saved_tokens": 0, "graph_saved_dollars": 0.0,
         "graph_saved_tokens_estimated": true, "graph_saved_dollars_estimated": true,
         "session_count": 0, "memory_session_count": 0, "session_recall_pct": 0.0,
