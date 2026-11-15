@@ -242,24 +242,59 @@ mod client_contract_tests {
     }
 
     #[test]
-    fn judge_tile_reads_the_payload_summary_block() {
+    fn judge_payload_stays_api_only() {
+        // The judge tile was removed (zero judged runs in every real journal
+        // — a permanently unmeasured headline); the structured `judge` block
+        // remains a documented /api/reuse payload field, so the client must
+        // NOT render it anywhere.
         assert!(
-            HTML.contains("id=\"reuse-kpi-judge\""),
-            "judge tile value missing"
+            !HTML.contains("reuse-kpi-judge"),
+            "judge tile must stay removed"
         );
         assert!(
-            HTML.contains("id=\"reuse-kpi-judge-sub\""),
-            "judge tile subtitle missing"
+            !JS.contains("'kpi.judge'"),
+            "judge tooltip must stay removed"
+        );
+    }
+
+    #[test]
+    fn session_recall_kpi_stays_removed() {
+        // Session Recall Rate was removed (needs ENGRAM_SESSION tagging that
+        // zero real journal entries carry); the payload field remains.
+        assert!(
+            !HTML.contains("mem-kpi-recall-pct"),
+            "recall tile must stay removed"
         );
         assert!(
-            JS.contains("const judge = summary.judge || {};"),
-            "judge tile must read the /api/reuse judge block"
+            !JS.contains("'kpi.recall'"),
+            "recall tooltip must stay removed"
+        );
+    }
+
+    #[test]
+    fn live_transport_badge_stays_removed() {
+        assert!(
+            !HTML.contains("live-indicator"),
+            "LIVE badge must stay removed"
         );
         assert!(
-            JS.contains("No judged runs in the retained journal"),
-            "zero-run copy missing"
+            !JS.contains("live-indicator"),
+            "LIVE badge updates must stay removed"
         );
-        assert!(JS.contains("'kpi.judge'"), "judge tooltip copy missing");
+    }
+
+    #[test]
+    fn worktree_sub_rows_stay_removed() {
+        // Per-branch diagnostics folded into the parent row + the "N
+        // worktrees" badge; the expandable sub-row system stays gone.
+        assert!(
+            !JS.contains("expandedWorktrees"),
+            "expansion set must stay removed"
+        );
+        assert!(
+            !JS.contains("repo-worktree-row"),
+            "sub-row class must stay removed"
+        );
     }
 
     #[test]
@@ -269,8 +304,6 @@ mod client_contract_tests {
         for fragment in [
             "id=\"metric-p50\" class=\"kpi-value text-success\">&mdash;",
             "id=\"metric-latency-sub\" class=\"kpi-sub\">No queries recorded",
-            "id=\"reuse-kpi-judge\">&mdash;",
-            "id=\"mem-kpi-recall-pct\">&mdash;",
             "id=\"mem-kpi-currency\">&mdash;",
         ] {
             assert!(
@@ -299,12 +332,12 @@ mod client_contract_tests {
             "resolved count read missing"
         );
         assert!(
-            JS.contains("if (summary.degraded) {"),
-            "reuse degraded banner missing"
+            JS.contains("closure.surfaced"),
+            "surfaced denominator read missing"
         );
         assert!(
-            JS.contains("rejected as distinct' + rate"),
-            "judge rejection-rate template missing"
+            JS.contains("if (summary.degraded) {"),
+            "reuse degraded banner missing"
         );
     }
 
@@ -319,12 +352,12 @@ mod client_contract_tests {
             "reuse view select missing"
         );
         assert!(
-            HTML.contains("<option value=\"recent3\" selected>Top 3</option>"),
-            "memory default view must be Top 3"
+            HTML.contains("<option value=\"recent10\" selected>Top 10 recent</option>"),
+            "memory default view must be Top 10 recent"
         );
         assert!(
-            HTML.contains("<option value=\"used3\" selected>Top 3 by callers</option>"),
-            "reuse default view must be Top 3 by callers"
+            HTML.contains("<option value=\"used10\" selected>Top 10 by callers</option>"),
+            "reuse default view must be Top 10 by callers"
         );
         assert!(
             JS.contains("function viewMemories("),

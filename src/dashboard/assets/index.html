@@ -20,7 +20,6 @@
       <span id="data-age" class="text-muted" style="font-size:0.75rem; margin-left:0.75rem;" data-tip="header.data_age"></span>
     </div>
     <div class="header-right">
-      <span id="live-indicator" class="badge status-ok" style="display: none;"><span class="live-dot"></span>LIVE</span>
       <button class="theme-btn" id="theme-toggle-btn">Theme: Light</button>
     </div>
   </header>
@@ -184,16 +183,6 @@
         <div class="kpi-value text-success" id="reuse-kpi-count">0</div>
         <div class="kpi-sub" id="reuse-kpi-count-sub">Syntactic &amp; structural duplicate twins</div>
       </div>
-      <div class="kpi-tile">
-        <div class="kpi-label" data-tip="kpi.excess_loc">Preventable Excess Code</div>
-        <div class="kpi-value" id="reuse-kpi-loc">~0</div>
-        <div class="kpi-sub">Estimated potential, from sampled candidates</div>
-      </div>
-      <div class="kpi-tile">
-        <div class="kpi-label" data-tip="kpi.judge">Semantic Judge</div>
-        <div class="kpi-value" id="reuse-kpi-judge">&mdash;</div>
-        <div class="kpi-sub" id="reuse-kpi-judge-sub">No judged runs in the retained journal</div>
-      </div>
     </div>
 
     <!-- Anti-Reinvention Workspace & Agent Distribution -->
@@ -220,25 +209,6 @@
         </table>
       </div>
 
-      <div class="card">
-        <div class="card-title">
-          <span>Agent Attribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Pre-write discovery and reuse enforcement by agent</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Agent Identity</th>
-              <th class="text-right">Calls</th>
-              <th class="text-right" data-tip="col.search_hit_rate">Search Hit Rate</th>
-              <th class="text-right" data-tip="col.reuse_tokens_saved">Reuse Tokens Saved</th>
-            </tr>
-          </thead>
-          <tbody id="reuse-agents-tbody">
-            <tr><td colspan="4" class="empty-cell">Loading agents...</td></tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <!-- Filter Bar -->
@@ -262,8 +232,7 @@
 
       <label for="reuse-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
       <select id="reuse-view" class="filter-select" data-tip="view.reuse">
-        <option value="used10">Top 10 by callers</option>
-        <option value="used3" selected>Top 3 by callers</option>
+        <option value="used10" selected>Top 10 by callers</option>
         <option value="all">All</option>
       </select>
     </div>
@@ -294,7 +263,6 @@
             <th>Tool</th>
             <th>Query / Target</th>
             <th class="text-right" data-tip="col.results_shown">Results shown</th>
-            <th class="text-right">Latency</th>
           </tr>
         </thead>
         <tbody id="prewrite-tbody">
@@ -309,11 +277,6 @@
     <div id="data-error-memory" class="hidden" role="status"></div>
     <!-- Memory KPI Strip (4 Core KPIs) -->
     <div class="kpi-strip">
-      <div class="kpi-tile">
-        <div class="kpi-label" data-tip="kpi.recall">Session Recall Rate</div>
-        <div class="kpi-value text-success" id="mem-kpi-recall-pct">&mdash;</div>
-        <div class="kpi-sub" id="mem-kpi-recall-pct-sub">Sessions recalling memory</div>
-      </div>
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.currency">Anchor Currency Rate</div>
         <div class="kpi-value text-success" id="mem-kpi-currency">&mdash;</div>
@@ -344,25 +307,6 @@
         </table>
       </div>
 
-      <div class="card">
-        <div class="card-title">
-          <span>Agent Memory Attribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Agent memory lookups, operations, and reliability</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Agent Identity</th>
-              <th class="text-right">Calls</th>
-              <th class="text-right">Reads / Writes</th>
-              <th>Reliability</th>
-            </tr>
-          </thead>
-          <tbody id="mem-agents-tbody">
-            <tr><td colspan="4" class="empty-cell">Loading agents...</td></tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <!-- Action Center for Broken & Modified References -->
@@ -405,8 +349,7 @@
 
       <label for="mem-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
       <select id="mem-view" class="filter-select" data-tip="view.memory">
-        <option value="recent10">Top 10 recent</option>
-        <option value="recent3" selected>Top 3</option>
+        <option value="recent10" selected>Top 10 recent</option>
         <option value="used">Most used</option>
         <option value="all">All</option>
       </select>

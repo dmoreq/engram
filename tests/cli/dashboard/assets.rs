@@ -54,46 +54,22 @@ fn dashboard_asset_memory_store_filter_matches_option_and_never_appends() {
 }
 
 #[test]
-fn dashboard_asset_worktree_expansion_survives_renders() {
+fn dashboard_asset_unified_agent_table_keyboard_accessible() {
+    // The three per-tab agent tables collapsed into one unified attribution
+    // table; its rows keep the keyboard contract.
+    let body = fn_body("renderAgentsTable");
     assert!(
-        APP_JS.contains("const expandedWorktrees = new Set()"),
-        "the expansion set must exist at module level"
-    );
-    let body = fn_body("renderReposTable");
-    // The set is read while rebuilding rows (aria-expanded + wt-open), not
-    // only written by the toggle — that read is what survives SSE renders.
-    assert!(
-        body.contains("expandedWorktrees.has(label)"),
-        "renderReposTable must re-apply persisted expansion: {body}"
+        body.contains("tr.tabIndex = 0"),
+        "rows must be focusable: {body}"
     );
     assert!(
-        body.contains("wt-open"),
-        "open rows re-apply the wt-open class: {body}"
+        body.contains("onkeydown"),
+        "rows must handle keydown: {body}"
     );
     assert!(
-        body.contains("expandedWorktrees.add(label)")
-            && body.contains("expandedWorktrees.delete(label)"),
-        "the toggle must persist expansion changes: {body}"
+        body.contains("preventDefault()"),
+        "Enter/Space must preventDefault: {body}"
     );
-}
-
-#[test]
-fn dashboard_asset_agent_tables_keyboard_accessible() {
-    for name in ["renderReuseAgentsTable", "renderMemoryAgentsTable"] {
-        let body = fn_body(name);
-        assert!(
-            body.contains("tr.tabIndex = 0"),
-            "{name}: rows must be focusable: {body}"
-        );
-        assert!(
-            body.contains("onkeydown"),
-            "{name}: rows must handle keydown: {body}"
-        );
-        assert!(
-            body.contains("preventDefault()"),
-            "{name}: Enter/Space must preventDefault: {body}"
-        );
-    }
 }
 
 #[test]
