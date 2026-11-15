@@ -73,23 +73,25 @@ fn dashboard_reuse_api_reports_per_repo_pools() {
     assert!(pools.is_object(), "{resp}");
     // The fixture's own row: its label is the path basename, and its pool
     // must be present and non-empty. Other rows (e.g. the working directory's
-    // own index) may coexist and are ignored here.
-    let fixture_label = std::path::Path::new(&repo_str)
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let pool = pools[&fixture_label]
+    // own index) may coexist and are ignored here. Pools are keyed by the
+    // canonical repository PATH — collision-proof where labels are not.
+    let pool = pools[&repo_str]
         .as_u64()
-        .unwrap_or_else(|| panic!("fixture pool missing for {fixture_label}: {pools}"));
+        .unwrap_or_else(|| panic!("fixture pool missing for {repo_str}: {pools}"));
     assert!(pool >= 1, "{pools}");
     // The sampled list never exceeds the pool it was drawn from.
     let candidates = json_val["candidates"].as_array().unwrap();
     let sampled = candidates
         .iter()
-        .filter(|c| c["repo"] == fixture_label)
+        .filter(|c| c["repo_path"] == repo_str)
         .count() as u64;
     assert_eq!(sampled, pool.min(25), "{candidates:?}");
+
+    // JSON contract for the closure line: the client reads exactly these
+    // keys (a drift blanks the subtitle instead of erroring).
+    let closure = &json_val["summary"]["resolved_twins"];
+    assert!(closure["resolved"].is_u64(), "{closure}");
+    assert!(closure["surfaced"].is_u64(), "{closure}");
 
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&log_dir);

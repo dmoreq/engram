@@ -263,6 +263,49 @@ mod client_contract_tests {
     }
 
     #[test]
+    fn unmeasured_states_ship_em_dash_placeholders() {
+        // A static placeholder that ships a number fabricates a measurement
+        // before any fetch; every tile starts unmeasured.
+        for fragment in [
+            "id=\"metric-p50\" class=\"kpi-value text-success\">&mdash;",
+            "id=\"metric-latency-sub\" class=\"kpi-sub\">No queries recorded",
+            "id=\"reuse-kpi-judge\">&mdash;",
+            "id=\"mem-kpi-recall-pct\">&mdash;",
+            "id=\"mem-kpi-currency\">&mdash;",
+        ] {
+            assert!(
+                HTML.contains(fragment),
+                "placeholder must ship unmeasured: {fragment}"
+            );
+        }
+        // A null percentile (calls without latency samples) reads as
+        // unmeasured too, not as a 0.0ms instant tool.
+        assert!(
+            JS.contains("p50 === null || p50 === undefined"),
+            "null percentile guard missing"
+        );
+    }
+
+    #[test]
+    fn resolved_twins_and_degraded_banner_are_wired() {
+        // The backend emits `resolved`/`surfaced`; the client must read the
+        // same keys — a drift silently blanks the closure line.
+        assert!(JS.contains("closure.surfaced"), "resolved_twins key drift");
+        assert!(
+            JS.contains("closure.resolved"),
+            "resolved count read missing"
+        );
+        assert!(
+            JS.contains("if (summary.degraded) {"),
+            "reuse degraded banner missing"
+        );
+        assert!(
+            JS.contains("rejected as distinct' + rate"),
+            "judge rejection-rate template missing"
+        );
+    }
+
+    #[test]
     fn list_views_are_collapsible_and_deterministic() {
         assert!(
             HTML.contains("id=\"mem-view\""),

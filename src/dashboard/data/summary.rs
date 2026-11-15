@@ -262,16 +262,20 @@ impl SummaryState {
     }
 }
 
-fn compute_percentiles(latencies: &mut [f64]) -> (f64, f64, f64) {
+/// `None` when there are no samples: an unmeasured percentile must serialize
+/// as null, never as a fabricated 0.0ms.
+type PercentileTriple = (Option<f64>, Option<f64>, Option<f64>);
+
+fn compute_percentiles(latencies: &mut [f64]) -> PercentileTriple {
     if latencies.is_empty() {
-        return (0.0, 0.0, 0.0);
+        return (None, None, None);
     }
     latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = latencies.len();
     let p50 = latencies[(0.50 * n as f64).ceil() as usize - 1];
     let p95 = latencies[(0.95 * n as f64).ceil() as usize - 1];
     let avg = latencies.iter().sum::<f64>() / n as f64;
-    (p50, p95, avg)
+    (Some(p50), Some(p95), Some(avg))
 }
 
 /// Aggregation key for one entry: a linked worktree folds into its main

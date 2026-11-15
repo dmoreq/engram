@@ -199,7 +199,7 @@ pub fn collect_reuse_candidates(
     // the current scan. A surfaced pair absent from the current index was
     // resolved (merged away) — the improvement the surfaced N× badge can
     // never show on its own.
-    let resolved = usage::resolved_vs_current(&candidates_json, &usage);
+    let resolved = usage::resolved_vs_current(&candidates_json, &usage, &repo_pools);
 
     let prewrite_searches = collect_prewrite_searches(entries);
     let prewrite_count = entries
@@ -234,6 +234,11 @@ pub fn collect_reuse_candidates(
     Ok((candidates_json, summary, prewrite_searches))
 }
 
+/// Per-repository sample cap for the dashboard scan: a pool at or below the
+/// cap means the sample is complete, so an absent surfaced pair genuinely
+/// proves a resolution. Above the cap, absence proves nothing.
+pub(super) const SAMPLE_CAP: usize = 25;
+
 fn collect_repo_candidates(
     r_name: &str,
     r_root: &Path,
@@ -258,14 +263,17 @@ fn collect_repo_candidates(
             Err(_) => return 0,
         };
     let (candidates, total, _) =
-        match crate::query::reuse::analyze_corpus(&conn, None, None, 25, false) {
+        match crate::query::reuse::analyze_corpus(&conn, None, None, SAMPLE_CAP, false) {
             Ok(res) => res,
             Err(_) => return 0,
         };
     for c in candidates {
         out.push(format_candidate_json(r_name, r_root, &conn, &c));
     }
-    pools.insert(r_name.to_string(), total);
+    // Pools are keyed by the repository PATH (the same key the summary's
+    // repo_aggs uses), never by display label: two same-basename checkouts
+    // must not read each other's pools.
+    pools.insert(r_root.to_string_lossy().into_owned(), total);
     total
 }
 
