@@ -240,7 +240,7 @@ function loadSummaryData() {
       // Render Repositories Table
       renderReposTable(data.repo_aggs || {});
       // Render Agents Table
-      renderAgentsTable(data.agent_aggs || {}, totalCalls);
+      renderAgentsTable(data.agent_aggs || {});
       // Render Anti-Reinvention Repos & Agents
       renderReuseReposTable(data.repo_aggs || {});
       // Render Memory Repos & Agents
@@ -598,7 +598,7 @@ function renderReposTable(repoAggs) {
   }
 }
 
-function renderAgentsTable(agentAggs, totalCalls) {
+function renderAgentsTable(agentAggs) {
   const tbody = document.getElementById('agents-tbody');
   const select = document.getElementById('agent-filter');
   if (!tbody) return;
@@ -648,7 +648,8 @@ function renderAgentsTable(agentAggs, totalCalls) {
     const calls = aData.calls;
     const saved = aData.saved;
     const pct = (calls / maxCalls) * 100.0;
-    const share = totalCalls ? (calls / totalCalls * 100.0) : 0.0;
+    const total = entries.reduce((acc, [_, aData]) => acc + (aData.calls || 0), 0);
+    const share = total ? (calls / total * 100.0) : 0.0;
     const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
 
     tr.innerHTML =
@@ -822,7 +823,7 @@ function renderMemoryReposTable(repoAggs) {
     .filter(([_, rData]) => (rData.memory_calls || 0) > 0);
 
   if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No memory workspace activity recorded</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No memory workspace activity recorded</td></tr>';
     return;
   }
 
@@ -915,8 +916,8 @@ function renderToolsTable(toolAggs, totalCalls) {
     const tr = document.createElement('tr');
     const calls = tData.calls;
     const pct = (calls / maxCalls) * 100.0;
-    // A zero p50 in the payload means "no latency samples", not an instant tool.
-    const p50Str = tData.p50 ? tData.p50.toFixed(1) + 'ms' : '—';
+    // Payload null = no latency samples; a measured near-zero stays numeric.
+    const p50Str = tData.p50 === null || tData.p50 === undefined ? '—' : tData.p50.toFixed(1) + 'ms';
     const share = totalCalls ? (calls / totalCalls * 100.0) : 0.0;
     const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
 
@@ -1052,6 +1053,7 @@ function createRecentRow(q) {
     '<td>' + agentTagHtml(aName) + '</td>' +
     '<td><code>' + escapeHtml(q.tool || '—') + '</code></td>' +
     '<td class="text-right num-col">' + (q.shown || q.result_count || 0) + '</td>' +
+    '<td class="text-right num-col">' + latStr + '</td>' +
     '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
     '<td class="args-cell" title="' + escapeHtml(argsRaw) + '"><code>' + escapeHtml(argsHuman) + '</code></td>';
 
@@ -1647,9 +1649,9 @@ function escapeHtml(str) {
 
 // Hover help. One copy table, one shared node, delegated listeners.
 const TIP = {
-  'kpi.graph_queries': 'Code lookups agents ran against the index instead of reading files.',
+  'kpi.graph_queries': 'Code lookups agents ran against the index instead of reading files, including eg build index refreshes.',
   'kpi.p50': 'Half of all queries finished faster than this.',
-  'kpi.tokens_saved': 'Estimated tokens an agent avoided spending on source reads (coefficients, not a measurement).',
+  'kpi.tokens_saved': 'Estimated tokens an agent avoided spending on source reads, including eg build re-runs (coefficients, not a measurement).',
   'kpi.candidates': 'Functions that look like near-copies of another function.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
@@ -1662,6 +1664,7 @@ const TIP = {
   'col.candidates_sample': 'Duplicate twins per repository: shown is the top-overlap sample (at most 25); after the slash is the repository\u2019s full candidate pool. "\u2014" when the repository was not scanned.',
   'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Truncated" is the journaled verdict that results were cut from a larger pool. The Δ badge compares against the previous scan in the window.',
   'col.results_shown': 'Results the search or scan showed to the agent.',
+  'col.reuse_calls': 'Anti-reinvention surface calls by this agent: pre-write searches plus full eg reuse scans.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
   'col.memory_hit_rate': 'Share of memory reads that returned at least one item (query results, exact-key gets, exported rows). Failed reads count against the rate. "—" when the row has no reads.',
   'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4/D5/D1L/DT show their evidence class instead of a percentage.',
