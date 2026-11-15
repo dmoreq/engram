@@ -105,13 +105,21 @@ fn render_tab_graph<W: Write>(
     } else {
         0.0
     };
-    let rel_pct = s
-        .get("graph_reliability_pct")
-        .and_then(Value::as_f64)
-        .unwrap_or(100.0);
+    // Zero graph calls is unmeasured, not a perfect score — parity with the
+    // web tile's em-dash rule.
+    let rel_str = if graph_calls == 0 {
+        "—".to_string()
+    } else {
+        let rel_pct = s
+            .get("graph_reliability_pct")
+            .and_then(Value::as_f64)
+            .unwrap_or(100.0);
+        format!("{rel_pct:.1}%")
+    };
     let graph_errors = s.get("graph_errors").and_then(Value::as_u64).unwrap_or(0);
-    let p50 = s.get("graph_p50_ms").and_then(Value::as_f64).unwrap_or(0.0);
-    let p95 = s.get("graph_p95_ms").and_then(Value::as_f64).unwrap_or(0.0);
+    // Null percentiles mean no latency samples: unmeasured, not instant.
+    let p50 = s.get("graph_p50_ms").and_then(Value::as_f64);
+    let p95 = s.get("graph_p95_ms").and_then(Value::as_f64);
     let saved_tokens = s
         .get("graph_saved_tokens")
         .and_then(Value::as_u64)
@@ -120,15 +128,21 @@ fn render_tab_graph<W: Write>(
         .get("graph_saved_dollars")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+    let p50_str = p50
+        .map(|v| format!("{v:.1}ms"))
+        .unwrap_or_else(|| "—".to_string());
+    let p95_str = p95
+        .map(|v| format!("{v:.1}ms"))
+        .unwrap_or_else(|| "—".to_string());
 
     write!(w, "\r\x1b[2K\x1b[1;36m[GRAPH]\x1b[0m\r\n")?;
     write!(
         w,
-        "\r\x1b[2K  Calls: \x1b[1;32m{graph_calls}\x1b[0m ({graph_pct:.1}%)  Rel: \x1b[1;32m{rel_pct:.1}%\x1b[0m ok  Errors: \x1b[33m{graph_errors}\x1b[0m\r\n"
+        "\r\x1b[2K  Calls: \x1b[1;32m{graph_calls}\x1b[0m ({graph_pct:.1}%)  Rel: {rel_str} ok  Errors: \x1b[33m{graph_errors}\x1b[0m\r\n"
     )?;
     write!(
         w,
-        "\r\x1b[2K  Speed: p50=\x1b[32m{p50:.1}ms\x1b[0m · p95=\x1b[32m{p95:.1}ms\x1b[0m  Tokens: ~\x1b[1;32m{saved_tokens}\x1b[0m (${saved_dollars:.2})\r\n"
+        "\r\x1b[2K  Speed: p50=\x1b[32m{p50_str}\x1b[0m · p95=\x1b[32m{p95_str}\x1b[0m  Tokens: ~\x1b[1;32m{saved_tokens}\x1b[0m (${saved_dollars:.2})\r\n"
     )?;
     write!(
         w,

@@ -192,7 +192,7 @@ endpoint on loopback only. Payload shape is versioned in-band:
 
 - `GET /api/summary` — `schema_version: 2`, `generated_at` (unix),
   `window: "retained_journal"` (current log + one rotated generation),
-  `total_calls`, `error_count`, `reliability_pct`, `p50_ms/p95_ms/avg_ms`,
+  `total_calls`, `error_count`, `reliability_pct`, `p50_ms/p95_ms/avg_ms` (`null` when there are no latency samples),
   `saved_tokens`/`saved_dollars` with `saved_tokens_estimated: true` (and the
   `graph_*` variants), `session_count`/`memory_session_count`/
   `session_recall_pct` (tagged sessions only), `tool_aggs` (per tool: `calls`,
