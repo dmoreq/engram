@@ -210,6 +210,10 @@ fn search_hit_rate_is_null_without_searches() {
     assert_eq!(row["search_calls"], 0);
     assert!(row["search_hit_rate_pct"].is_null());
     assert!(row["last_reuse_scan"].is_null());
+    // No latency samples: percentiles serialize as null, never 0.0ms.
+    assert!(summary["graph_p50_ms"].is_null());
+    assert!(summary["graph_p95_ms"].is_null());
+    assert!(summary["graph_avg_ms"].is_null());
     crate::db::test_support::remove_tree(std::path::Path::new(&repo));
 }
 

@@ -39,20 +39,17 @@ function memorySelectionId(m) { return (m.store_id || m.store) + ':' + m.key + '
 
 // Worktree rows the user expanded, keyed by repo display label, so SSE
 // re-renders rebuild rows without collapsing the open branches.
-const expandedWorktrees = new Set();
 
 // Collapsed list views. "Recent" means latest activity: created, verified, or
 // recalled. Reuse has no per-candidate timestamp in the payload, so its
 // ranking is call-site usage only; nothing here claims recency it cannot know.
 const MEMORY_VIEWS = {
   recent10: { label: 'Top 10 recent', limit: 10, sort: 'activity' },
-  recent3: { label: 'Top 3 recent', limit: 3, sort: 'activity' },
   used: { label: 'Most used', limit: 10, sort: 'used' },
   all: { label: 'All', limit: 0, sort: 'activity' },
 };
 const REUSE_VIEWS = {
   used10: { label: 'Top 10 by callers', limit: 10 },
-  used3: { label: 'Top 3 by callers', limit: 3 },
   all: { label: 'All', limit: 0 },
 };
 let memView = 'recent3';
@@ -63,7 +60,7 @@ function memoryActivity(m) {
 }
 
 function viewMemories(items) {
-  const spec = MEMORY_VIEWS[memView] || MEMORY_VIEWS.recent3;
+  const spec = MEMORY_VIEWS[memView] || MEMORY_VIEWS.recent10;
   const sorted = items.slice().sort((a, b) => {
     if (spec.sort === 'used') {
       const used = (b.recall_count || 0) - (a.recall_count || 0);
@@ -82,7 +79,7 @@ function viewMemories(items) {
 }
 
 function viewReuseCandidates(items) {
-  const spec = REUSE_VIEWS[reuseView] || REUSE_VIEWS.used3;
+  const spec = REUSE_VIEWS[reuseView] || REUSE_VIEWS.used10;
   const sorted = items.slice().sort((a, b) => {
     const callers = (b.canonical_callers || 0) - (a.canonical_callers || 0);
     if (callers !== 0) return callers;
@@ -161,7 +158,6 @@ function switchTab(tab) {
     renderPrewriteTable();
     if (latestSummaryData) {
       renderReuseReposTable(latestSummaryData.repo_aggs || {});
-      renderReuseAgentsTable(latestSummaryData.agent_aggs || {});
     }
     loadReuseData();
     loadSummaryData();
@@ -170,7 +166,6 @@ function switchTab(tab) {
     renderMemoryList();
     if (latestSummaryData) {
       renderMemoryReposTable(latestSummaryData.repo_aggs || {});
-      renderMemoryAgentsTable(latestSummaryData.agent_aggs || {});
     }
     loadMemoriesData();
     loadSummaryData();
@@ -227,7 +222,7 @@ function loadSummaryData() {
         if (totalCalls === 0 || p95 === null || p95 === undefined) {
           latSubEl.textContent = 'No measured queries';
         } else {
-          latSubEl.textContent = 'p95 = ' + p95.toFixed(1) + 'ms · avg = ' + avg.toFixed(1) + 'ms';
+          latSubEl.textContent = 'p95 = ' + p95.toFixed(1) + 'ms';
         }
       }
 
@@ -249,10 +244,8 @@ function loadSummaryData() {
       renderAgentsTable(data.agent_aggs || {}, totalCalls);
       // Render Anti-Reinvention Repos & Agents
       renderReuseReposTable(data.repo_aggs || {});
-      renderReuseAgentsTable(data.agent_aggs || {});
       // Render Memory Repos & Agents
       renderMemoryReposTable(data.repo_aggs || {});
-      renderMemoryAgentsTable(data.agent_aggs || {});
       // Render Tools Table
       renderToolsTable(data.tool_aggs || {}, totalCalls);
       // Render Recent Queries (Graph only); re-apply active filters so a
@@ -301,33 +294,13 @@ function loadReuseData() {
         const resolvedNote = (closure.surfaced || 0) > 0
           ? ' · ' + (closure.resolved || 0) + ' of ' + closure.surfaced + ' surfaced twins resolved (sample-complete repos)'
           : '';
+        const locNote = summary.preventable_loc
+          ? ' · ~' + summary.preventable_loc.toLocaleString() + ' LOC preventable'
+          : '';
         if (totalCandidates > reuseCandidates.length) {
-          kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + resolvedNote + cacheNote;
+          kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + locNote + resolvedNote + cacheNote;
         } else {
-          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + resolvedNote + cacheNote;
-        }
-      }
-
-      const kpiLoc = document.getElementById('reuse-kpi-loc');
-      if (kpiLoc) kpiLoc.textContent = '~' + (summary.preventable_loc || 0).toLocaleString() + ' LOC';
-
-      const judge = summary.judge || {};
-      const kpiJudge = document.getElementById('reuse-kpi-judge');
-      const kpiJudgeSub = document.getElementById('reuse-kpi-judge-sub');
-      if (kpiJudge) {
-        // No judged run in the window is unmeasured, not a zero verdict count.
-        kpiJudge.textContent = judge.runs ? (judge.reviewed || 0).toLocaleString() : '—';
-      }
-      if (kpiJudgeSub) {
-        if (!judge.runs) {
-          kpiJudgeSub.textContent = 'No judged runs in the retained journal';
-        } else {
-          const reviewed = judge.reviewed || 0;
-          const rejected = judge.rejected || 0;
-          // Calibration signal: how often the judge overruled the lexical tier.
-          const rate = reviewed ? ' (' + (100.0 * rejected / reviewed).toFixed(1) + '%)' : '';
-          kpiJudgeSub.textContent = rejected + ' rejected as distinct' + rate
-            + ((judge.failed || 0) ? ' · ' + judge.failed + ' failed' : '');
+          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + locNote + cacheNote;
         }
       }
 
@@ -385,28 +358,7 @@ function loadMemoriesData() {
 function updateMemoryKpis() {
   const currentNotes = allMemories.filter(m => m.is_current);
 
-  // KPI 1: Session Recall Rate
-  // The rate only means something when callers tag their sessions: without a
-  // tag every run collapses into the synthetic `default` bucket.
-  const taggedSessions = latestSummaryData ? (latestSummaryData.session_count || 0) : 0;
-  const recallPct = taggedSessions === 0
-    ? '—'
-    : (latestSummaryData ? (latestSummaryData.session_recall_pct || 0.0).toFixed(1) + '%' : '0.0%');
-  const recallEl = document.getElementById('mem-kpi-recall-pct');
-  if (recallEl) recallEl.textContent = recallPct;
-  const recallSubEl = document.getElementById('mem-kpi-recall-pct-sub');
-  if (recallSubEl) {
-    if (taggedSessions === 0) {
-      recallSubEl.textContent = 'Set ENGRAM_SESSION to measure';
-    } else {
-      const memSessions = latestSummaryData ? (latestSummaryData.memory_session_count || 0) : 0;
-      const totalSessions = latestSummaryData ? (latestSummaryData.session_count || 0) : 0;
-      recallSubEl.textContent = memSessions + ' of ' + totalSessions + ' sessions'
-        + (totalSessions < 5 ? ' — low sample; set ENGRAM_SESSION on agent runs' : '');
-    }
-  }
-
-  // KPI 2: Anchor Currency Rate
+  // KPI: Anchor Currency Rate
   const notesWithRefs = currentNotes.filter(m => m.refs && m.refs.length > 0);
   let validCount = 0;
   let modifiedCount = 0;
@@ -589,16 +541,11 @@ function renderReposTable(repoAggs) {
     }
 
     const worktrees = Object.entries(rData.worktrees || {});
-    const expandable = worktrees.length > 0;
 
     const tr = document.createElement('tr');
     tr.className = 'repo-row-item';
     tr.tabIndex = 0;
     tr.setAttribute('role', 'row');
-    if (expandable) {
-      // Expanded state survives SSE re-renders via the expandedWorktrees set.
-      tr.setAttribute('aria-expanded', expandedWorktrees.has(label) ? 'true' : 'false');
-    }
 
     const calls = rData.calls;
     const errs = rData.errors || 0;
@@ -607,29 +554,27 @@ function renderReposTable(repoAggs) {
     const lastStr = rData.last_ts ? new Date(rData.last_ts * 1000).toLocaleString() : '—';
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
-    const relClass = errs === 0 ? 'status-ok' : 'status-err';
-    const chevron = expandable
-      ? '<span class="wt-chevron" aria-hidden="true"></span>'
-      : '';
-    const wtCount = expandable
+    const wtCount = worktrees.length
       ? '<span class="text-muted wt-count">' + worktrees.length + (worktrees.length === 1 ? ' worktree' : ' worktrees') + '</span>'
       : '';
+    // Quiet healthy rows: a failing row is the signal, a perfect one is noise.
+    const statusCell = errs === 0
+      ? ''
+      : '<span class="badge status-err">' + rel.toFixed(1) + '% (' + errs + ' err)</span>';
 
     tr.innerHTML =
       '<td>' +
-      '  <div class="repo-name-wrap">' + chevron +
+      '  <div class="repo-name-wrap">' +
       '    <strong class="repo-filter-label" role="button" tabindex="0" title="Filter telemetry by ' + escapeHtml(label) + '">' + escapeHtml(label) + '</strong> ' + wtBadge + wtCount + '</div>' +
       '  <div class="row-track"><div class="row-track-fill" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>' +
+      '<td>' + statusCell + '</td>' +
       '<td class="text-muted num-col">' + lastStr + '</td>';
 
     tbody.appendChild(tr);
 
-    // The repository label is its own filter trigger: activating it filters
-    // without also firing the row's worktree toggle (stopPropagation), and
-    // keyboard users get Enter/Space on it like on the row itself.
+    // The repository label is its own filter trigger; the row filters too.
     const labelTarget = tr.querySelector('.repo-filter-label');
     if (labelTarget) {
       labelTarget.onclick = (ev) => { ev.stopPropagation(); filterByRepo(label); };
@@ -641,49 +586,8 @@ function renderReposTable(repoAggs) {
         }
       };
     }
-
-    // Linked-worktree sub-rows stay collapsed until the main row is clicked;
-    // the repository filter dropdown still scopes the feed to the main repo.
-    const subRows = worktrees.map(([wtName, wtData]) => {
-      const wtCalls = wtData.calls || 0;
-      const wtErrs = wtData.errors || 0;
-      // Zero calls is unmeasured, not a perfect score.
-      const wtRelCell = wtCalls === 0
-        ? '<span class="text-muted">—</span>'
-        : '<span class="badge ' + (wtErrs === 0 ? 'status-ok' : 'status-err') + '">'
-          + (100.0 * (wtCalls - wtErrs) / wtCalls).toFixed(1) + '% (' + wtErrs + ' err)</span>';
-      const wtLast = wtData.last_ts ? new Date(wtData.last_ts * 1000).toLocaleString() : '—';
-      const sub = document.createElement('tr');
-      sub.className = 'repo-worktree-row';
-      sub.setAttribute('data-parent', label);
-      sub.innerHTML =
-        '<td><div class="repo-name-wrap wt-sub-name"><span class="badge badge-wt">worktree</span> ' + escapeHtml(wtName) + '</div></td>' +
-        '<td class="text-right num-col">' + wtCalls.toLocaleString() + '</td>' +
-        '<td>' + wtRelCell + '</td>' +
-        '<td class="text-muted num-col">' + wtLast + '</td>';
-      tbody.appendChild(sub);
-      return sub;
-    });
-
-    if (expandable) {
-      // Re-apply the persisted expansion so a rebuild does not collapse open
-      // branches; aria-expanded was already stamped from the set above.
-      if (expandedWorktrees.has(label)) {
-        subRows.forEach(sub => sub.classList.add('wt-open'));
-      }
-      const toggle = () => {
-        const open = tr.getAttribute('aria-expanded') !== 'true';
-        tr.setAttribute('aria-expanded', String(open));
-        subRows.forEach(sub => sub.classList.toggle('wt-open', open));
-        if (open) { expandedWorktrees.add(label); } else { expandedWorktrees.delete(label); }
-        announce((open ? 'Expanded ' : 'Collapsed ') + worktrees.length + ' worktrees of ' + label);
-      };
-      tr.onclick = toggle;
-      tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
-    } else {
-      tr.onclick = () => filterByRepo(label);
-      tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); filterByRepo(label); } };
-    }
+    tr.onclick = () => filterByRepo(label);
+    tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); filterByRepo(label); } };
   });
   if (select) {
     if (curRepoVal && Array.from(select.options).some(o => o.value === curRepoVal)) {
@@ -700,16 +604,21 @@ function renderAgentsTable(agentAggs, totalCalls) {
   const select = document.getElementById('agent-filter');
   if (!tbody) return;
 
-  const entries = Object.entries(agentAggs).map(([aName, aData]) => {
-    const calls = aData.graph_calls !== undefined ? aData.graph_calls : aData.calls;
-    const errs = aData.graph_errors !== undefined ? aData.graph_errors : (aData.errors || 0);
-    const saved = aData.graph_saved_tokens !== undefined ? aData.graph_saved_tokens : (aData.saved_tokens || 0);
-    const rel = aData.graph_reliability_pct !== undefined ? aData.graph_reliability_pct : (aData.reliability_pct || (calls ? 100.0 * (calls - errs) / calls : 100.0));
-    return [aName, { ...aData, calls, errors: errs, saved_tokens: saved, reliability_pct: rel }];
-  }).filter(([_, aData]) => aData.calls > 0);
+  // One unified attribution table for all three pillars: per-agent adoption
+  // and savings without three restatements of the same agent list.
+  const entries = Object.entries(agentAggs)
+    .map(([aName, aData]) => [aName, {
+      graphCalls: aData.graph_calls || 0,
+      reuseCalls: aData.reuse_calls || 0,
+      reads: aData.memory_reads || 0,
+      writes: aData.memory_writes || 0,
+      saved: aData.tokens_saved || 0,
+      calls: aData.calls || 0,
+    }])
+    .filter(([_, aData]) => aData.calls > 0);
 
   if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No agent graph navigation recorded</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No agent activity recorded</td></tr>';
     return;
   }
 
@@ -738,21 +647,19 @@ function renderAgentsTable(agentAggs, totalCalls) {
     tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); filterByAgent(aName); } };
 
     const calls = aData.calls;
-    const errs = aData.errors || 0;
-    const rel = aData.reliability_pct;
-    const saved = aData.saved_tokens || 0;
+    const saved = aData.saved;
     const pct = (calls / maxCalls) * 100.0;
     const share = totalCalls ? (calls / totalCalls * 100.0) : 0.0;
     const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
-    const relClass = errs === 0 ? 'status-ok' : 'status-err';
 
     tr.innerHTML =
       '<td>' +
       '  <div class="repo-name-wrap">' + agentTagHtml(aName) + ' <span class="text-muted" style="font-size: 0.75rem;">(' + shareStr + ')</span></div>' +
       '  <div class="row-track"><div class="row-track-fill row-track-fill-agent" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
-      '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>' +
+      '<td class="text-right num-col">' + aData.graphCalls.toLocaleString() + '</td>' +
+      '<td class="text-right num-col">' + aData.reuseCalls.toLocaleString() + '</td>' +
+      '<td class="text-right num-col text-muted">' + aData.reads.toLocaleString() + ' r · ' + aData.writes.toLocaleString() + ' w</td>' +
       '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
 
     tbody.appendChild(tr);
@@ -855,9 +762,10 @@ function renderReuseReposTable(repoAggs) {
     const wt = rData.worktree;
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
-    const label = rData.display || rName;
-    const sampled = candidateCounts[label];
-    const pool = reusePools[label];
+    // Sample/pool maps are keyed by the repository PATH (the repo_aggs key),
+    // collision-proof where display labels escalate. Absent pool = unmeasured.
+    const sampled = candidateCounts[rName];
+    const pool = reusePools[rName];
     // Sampled / pool: the top-overlap count actually shown next to the
     // repository's full candidate pool. Absent pool = unmeasured scan.
     const candCell = pool === undefined
@@ -875,54 +783,6 @@ function renderReuseReposTable(repoAggs) {
       '<td class="text-right num-col">' + searchHitRateCell(rData) + '</td>' +
       '<td class="text-right num-col">' + candCell + '</td>' +
       '<td class="text-right num-col">' + lastScanCell(rData) + '</td>' +
-      '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
-
-    tbody.appendChild(tr);
-  });
-}
-
-function renderReuseAgentsTable(agentAggs) {
-  const tbody = document.getElementById('reuse-agents-tbody');
-  if (!tbody) return;
-
-  const entries = Object.entries(agentAggs)
-    .filter(([_, aData]) => (aData.reuse_calls || 0) > 0);
-
-  if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No agent anti-reinvention activity recorded</td></tr>';
-    return;
-  }
-
-  const totalReuseCalls = entries.reduce((acc, [_, aData]) => acc + (aData.reuse_calls || 0), 0);
-  entries.sort((a, b) => (b[1].reuse_calls || 0) - (a[1].reuse_calls || 0));
-  const maxCalls = entries[0][1].reuse_calls || 1;
-
-  tbody.innerHTML = '';
-  entries.forEach(([aName, aData]) => {
-    const tr = document.createElement('tr');
-    tr.className = 'agent-row-item';
-    tr.tabIndex = 0;
-    tr.setAttribute('role', 'row');
-    const openTelemetryAgent = () => {
-      switchTab('telemetry');
-      filterByAgent(aName);
-    };
-    tr.onclick = openTelemetryAgent;
-    tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTelemetryAgent(); } };
-
-    const calls = aData.reuse_calls || 0;
-    const saved = aData.reuse_saved_tokens || 0;
-    const pct = (calls / maxCalls) * 100.0;
-    const share = totalReuseCalls ? (calls / totalReuseCalls * 100.0) : 0.0;
-    const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
-
-    tr.innerHTML =
-      '<td>' +
-      '  <div class="repo-name-wrap">' + agentTagHtml(aName) + ' <span class="text-muted" style="font-size: 0.75rem;">(' + shareStr + ')</span></div>' +
-      '  <div class="row-track"><div class="row-track-fill row-track-fill-agent" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
-      '</td>' +
-      '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td class="text-right num-col">' + searchHitRateCell(aData) + '</td>' +
       '<td class="text-right num-col text-muted">~' + saved.toLocaleString() + '</td>';
 
     tbody.appendChild(tr);
@@ -1006,58 +866,6 @@ function renderMemoryReposTable(repoAggs) {
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
       '<td class="text-right num-col text-muted">' + reads.toLocaleString() + ' r · ' + writes.toLocaleString() + ' w</td>' +
       '<td class="text-right num-col">' + hitRate + '</td>' +
-      '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>';
-
-    tbody.appendChild(tr);
-  });
-}
-
-function renderMemoryAgentsTable(agentAggs) {
-  const tbody = document.getElementById('mem-agents-tbody');
-  if (!tbody) return;
-
-  const entries = Object.entries(agentAggs)
-    .filter(([_, aData]) => (aData.memory_calls || 0) > 0);
-
-  if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No agent memory activity recorded</td></tr>';
-    return;
-  }
-
-  const totalMemCalls = entries.reduce((acc, [_, aData]) => acc + (aData.memory_calls || 0), 0);
-  entries.sort((a, b) => (b[1].memory_calls || 0) - (a[1].memory_calls || 0));
-  const maxCalls = entries[0][1].memory_calls || 1;
-
-  tbody.innerHTML = '';
-  entries.forEach(([aName, aData]) => {
-    const tr = document.createElement('tr');
-    tr.className = 'agent-row-item';
-    tr.tabIndex = 0;
-    tr.setAttribute('role', 'row');
-    const openTelemetryAgent = () => {
-      switchTab('telemetry');
-      filterByAgent(aName);
-    };
-    tr.onclick = openTelemetryAgent;
-    tr.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTelemetryAgent(); } };
-
-    const calls = aData.memory_calls || 0;
-    const errs = aData.memory_errors || 0;
-    const reads = aData.memory_reads || 0;
-    const writes = aData.memory_writes || 0;
-    const rel = aData.memory_reliability_pct !== undefined ? aData.memory_reliability_pct : (calls ? 100.0 * (calls - errs) / calls : 100.0);
-    const pct = (calls / maxCalls) * 100.0;
-    const share = totalMemCalls ? (calls / totalMemCalls * 100.0) : 0.0;
-    const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
-    const relClass = errs === 0 ? 'status-ok' : 'status-err';
-
-    tr.innerHTML =
-      '<td>' +
-      '  <div class="repo-name-wrap">' + agentTagHtml(aName) + ' <span class="text-muted" style="font-size: 0.75rem;">(' + shareStr + ')</span></div>' +
-      '  <div class="row-track"><div class="row-track-fill row-track-fill-agent" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
-      '</td>' +
-      '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
-      '<td class="text-right num-col text-muted">' + reads.toLocaleString() + ' r · ' + writes.toLocaleString() + ' w</td>' +
       '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>';
 
     tbody.appendChild(tr);
@@ -1847,9 +1655,6 @@ const TIP = {
   'kpi.p50': 'Half of all queries finished faster than this.',
   'kpi.tokens_saved': 'Estimated tokens an agent avoided spending on source reads (coefficients, not a measurement).',
   'kpi.candidates': 'Functions that look like near-copies of another function.',
-  'kpi.excess_loc': 'Estimated deletable lines, extrapolated from the sampled candidates.',
-  'kpi.judge': 'Gray-zone candidates the local semantic judge reviewed. Rejected means the judge called the pair distinct.',
-  'kpi.recall': 'Share of tagged sessions (ENGRAM_SESSION set) whose calls read memory (query, get, or export). Untagged sessions are not measured.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
   'col.p50': 'Half of runs were faster than this.',
@@ -1863,13 +1668,13 @@ const TIP = {
   'col.results_shown': 'Results the search or scan showed to the agent.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
   'col.memory_hit_rate': 'Share of memory reads that returned at least one item (query results, exact-key gets, exported rows). Failed reads count against the rate. "—" when the row has no reads.',
-  'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4 show their evidence class instead of a percentage.',
+  'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4/D5/D1L/DT show their evidence class instead of a percentage.',
   'card.callers': 'Call sites using the canonical helper.',
   'card.confidence': 'Static confidence tier; stale or unknown freshness caps it at low.',
   'card.usage': 'How many eg reuse runs in the retained journal surfaced this candidate, and when the last one ran.',
   'card.recalled': 'Exact-key mem_get recalls in the retained journal.',
   'card.verified': 'Last Verify (anchor) timestamp; the creation date never changes.',
-  'view.memory': 'Collapse the note list: Top 10 or 3 by latest activity (created, verified, or recalled), most recalled, or all notes.',
+  'view.memory': 'Collapse the note list: Top 10 by latest activity (created, verified, or recalled), most used, or all notes.',
   'view.reuse': 'Collapse the candidate list by canonical call-site usage, or show all sampled candidates.',
   'card.loc_saving': 'Lines removed if the duplicate is merged away.',
   'det.all': 'Show every detection rule. Pill counts are sample floors from the per-repo scan (at most 25 candidates each), not corpus totals.',
@@ -2033,32 +1838,18 @@ function refreshVisibleData() {
 }
 
 function initEventSource() {
-  const liveBadge = document.getElementById('live-indicator');
-  if (liveBadge) liveBadge.style.display = 'inline-block';
   let isDocumentVisible = !document.hidden;
 
   const source = new EventSource('/events');
 
   source.onopen = function () {
-    const dot = document.querySelector('.live-dot');
-    if (dot) dot.className = 'live-dot live-active';
-    if (liveBadge) {
-      liveBadge.title = 'Live stream connected';
-      liveBadge.className = 'badge status-ok';
-      liveBadge.lastChild.nodeValue = 'LIVE';
-    }
     // Events missed while disconnected are covered by a full refetch.
     refreshVisibleData();
   };
 
   source.onerror = function () {
-    const dot = document.querySelector('.live-dot');
-    if (dot) dot.className = 'live-dot live-reconnecting';
-    if (liveBadge) {
-      liveBadge.title = 'Reconnecting to live stream...';
-      liveBadge.className = 'badge status-warn';
-      liveBadge.lastChild.nodeValue = 'RECONNECTING';
-    }
+    // The fallback poll keeps every panel fresh while SSE reconnects; the
+    // removed transport badge carried no data-state information.
   };
 
   source.addEventListener('reset', function () {
