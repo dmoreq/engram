@@ -203,7 +203,7 @@ endpoint on loopback only. Payload shape is versioned in-band:
   replaced snapshot as `prev_result_count`/`prev_ts` for the pool delta; a
   proposal run is never a scan; `limit_capped` is the journaled truncation
   verdict), `memory_read_hit_rate_pct` — `null` when the row has no memory
-  reads — and `memory_read_hits`), and
+  reads), and
   `graph_recent_queries` (last 50 graph calls).
 - `GET /api/reuse` — `candidates[]` (each: `id`, `repo`, `repo_path`,
   `detector`, `symbol`, `canonical`, `overlap_pct` or `null` with
@@ -217,7 +217,7 @@ endpoint on loopback only. Payload shape is versioned in-band:
   `detector_counts_estimated: true` — every detector type present in the
   sample, `judge` (`runs`/`reviewed`/`rejected`/`failed`; zero-judgeable
   runs are not runs), `prewrite_count`, `cache_hit`, `cache_age_ms`,
-  `repo_candidate_pools` (display label → full candidate pool before the
+  `repo_candidate_pools` (canonical repository path → full candidate pool before the
   25-per-repo sample cap; repositories the scan could not measure are
   absent), `resolved_twins` (`resolved` = surfaced pairs absent from the
   current scan of a sample-complete repository — strong evidence of a merge,

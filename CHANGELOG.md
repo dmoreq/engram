@@ -30,6 +30,35 @@ changes bump the minor while 0.x is unstable.
   stay-removed pins for the Preventable LOC tile and the pre-write feed's
   latency column.
 
+## [1.0.14] - 2026-11-15
+
+### Fixed
+- Fifth adversarial pass over the lean rebuild: the unified agent table's
+  Tokens Saved column read a nonexistent payload key (`tokens_saved`; the
+  field is `saved_tokens`) and rendered ~0 for every agent; the card
+  carried a stale 4-column graph-only header over the 5-pillar body; the
+  pre-write feed kept a ghost latency cell after its header column was
+  removed; the resolved-twins denominator counted over-cap repositories
+  whose sample cannot prove absence (both sides of the fraction are now
+  sample-complete-gated); the memory repos table still rendered always-on
+  reliability badges.
+- Monitor TUI parity: the memory tab drops the permanently "—" Session
+  Recall line, the Reuse tab gates its ratio and preventable-LOC
+  projection behind a measured scan, and the ratio carries the estimate
+  marker.
+
+### Changed
+- Recent-feed column wording matches its capped semantics ("shown to the
+  agent"); KPI tooltips disclose that `eg build` counts inside the graph
+  tile; `repo_candidate_pools` is documented as path-keyed.
+
+### Added
+- Thead-vs-body column-count parity guard over every rendered table — the
+  regression class that shipped twice (recent feed 8-over-7, agent card
+  4-over-5) now fails CI instead of the user's eyes.
+
+## [1.0.12] - 2026-11-15
+
 ## [1.0.12] - 2026-11-15
 
 ### Changed

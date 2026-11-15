@@ -217,6 +217,27 @@ fn render_tab_reuse<W: Write>(
     let prewrite_count = s.get("prewrite_count").and_then(Value::as_u64).unwrap_or(0);
     let avg_callers = s.get("avg_callers").and_then(Value::as_f64).unwrap_or(0.0);
 
+    // Unmeasured scan (no candidates, no pool): the ratio and projection
+    // would render fabricated zeros, so the line states the emptiness.
+    let scan_measured = total_cands > 0;
+    let ratio_str = if scan_measured {
+        let est = s
+            .get("avg_callers_estimated")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if est {
+            format!("~{avg_callers:.1} callers")
+        } else {
+            format!("{avg_callers:.1} callers")
+        }
+    } else {
+        "—".to_string()
+    };
+    let prev_loc_str = if scan_measured {
+        format!("~{prev_loc} LOC")
+    } else {
+        "—".to_string()
+    };
     let d_counts = s.get("detector_counts");
     // Every detector type present in the sample, matching the web pills —
     // coverage detectors (D5/D1L/DT) are invisible otherwise.
@@ -235,7 +256,7 @@ fn render_tab_reuse<W: Write>(
     )?;
     write!(
         w,
-        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m recorded  Ratio: \x1b[1;32m{avg_callers:.1}\x1b[0m callers{detectors}\r\n"
+        "\r\x1b[2K  Pre-writes: \x1b[1;32m{prewrite_count}\x1b[0m recorded  Ratio: {ratio_str}  Preventable: {prev_loc_str}{detectors}\r\n"
     )?;
     write!(
         w,
@@ -316,23 +337,10 @@ fn render_tab_memory<W: Write>(
         "—".to_string()
     };
 
-    // No tagged session means the metric is unmeasurable, not zero.
-    let has_sessions = s.get("session_count").and_then(Value::as_u64).unwrap_or(0) > 0;
-    let recall = if has_sessions {
-        format!(
-            "{:.1}%",
-            s.get("session_recall_pct")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-        )
-    } else {
-        "—".to_string()
-    };
-
     write!(w, "\r\x1b[2K\x1b[1;35m[MEMORY]\x1b[0m\r\n")?;
     write!(
         w,
-        "\r\x1b[2K  R:W Ratio: \x1b[1;32m{rw_ratio}\x1b[0m ({reads}r/{writes}w)  Session Recall: \x1b[1;32m{recall}\x1b[0m\r\n"
+        "\r\x1b[2K  R:W Ratio: \x1b[1;32m{rw_ratio}\x1b[0m ({reads}r/{writes}w)\r\n"
     )?;
     write!(
         w,
