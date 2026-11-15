@@ -14,6 +14,15 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [1.1.0] - 2026-11-15
+
+### Changed
+- Repository maintenance release: git history consolidated to one commit per
+  release (merge commits and process bookkeeping removed; every release
+  tag still resolves to the exact same tree), merged branches and a stale
+  linked worktree removed, and the changelog section ordering corrected.
+  No functional changes.
+
 ## [1.0.15] - 2026-11-15
 
 ### Added
