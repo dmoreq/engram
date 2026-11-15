@@ -102,6 +102,13 @@ pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
 /// current index was resolved (merged away); one still present is unresolved
 /// recurrence. Without this, a successful fix removes the card and its own
 /// evidence — the panel could only ever show failures.
+///
+/// Only repositories whose scan is COMPLETE count: `measured_pools` maps the
+/// scanned root path to its pool, and a pool above the sample cap means the
+/// 25-candidate sample cannot prove absence — such pairs are unmeasured, not
+/// resolved. Repos absent from the map (gated, unreadable, deleted index)
+/// are equally unmeasured.
+#[derive(Debug)]
 pub(super) struct ResolvedTotals {
     pub(super) resolved: usize,
     pub(super) surface_distinct: usize,
@@ -110,6 +117,7 @@ pub(super) struct ResolvedTotals {
 pub(super) fn resolved_vs_current(
     candidates: &[Value],
     usage: &HashMap<String, (usize, f64)>,
+    measured_pools: &std::collections::BTreeMap<String, usize>,
 ) -> ResolvedTotals {
     let current: std::collections::HashSet<String> = candidates
         .iter()
@@ -120,9 +128,20 @@ pub(super) fn resolved_vs_current(
             Some(format!("{repo}|{symbol}->{canonical}"))
         })
         .collect();
-    // Usage keys are "{repo}|{symbol}->{canonical}", unique per surfaced pair.
-    let surface_distinct = usage.len();
-    let resolved = usage.keys().filter(|key| !current.contains(*key)).count();
+    let mut resolved = 0usize;
+    let mut surface_distinct = 0usize;
+    for key in usage.keys() {
+        let Some(repo) = key.split('|').next() else {
+            continue;
+        };
+        let Some(pool) = measured_pools.get(repo) else {
+            continue;
+        };
+        surface_distinct += 1;
+        if *pool <= super::SAMPLE_CAP && !current.contains(key) {
+            resolved += 1;
+        }
+    }
     ResolvedTotals {
         resolved,
         surface_distinct,
@@ -201,8 +220,9 @@ mod usage_tests {
 
     #[test]
     fn resolved_vs_current_closes_the_consolidation_loop() {
-        // Two pairs surfaced historically; the current scan still shows one.
-        // The absent pair counts as resolved; the present one as recurrence.
+        // Two pairs surfaced historically in a sample-complete repo (pool 2
+        // <= cap); the current scan still shows one. The absent pair counts
+        // as resolved; the present one as recurrence.
         let candidates = vec![json!({
             "repo_path": "/r/a", "symbol": "f", "canonical": "g"
         })];
@@ -210,8 +230,31 @@ mod usage_tests {
             ("/r/a|f->g".to_string(), (2usize, 250.0f64)),
             ("/r/a|h->g".to_string(), (1, 100.0)),
         ]);
-        let totals = resolved_vs_current(&candidates, &usage);
+        let pools = std::collections::BTreeMap::from([("/r/a".to_string(), 2usize)]);
+        let totals = resolved_vs_current(&candidates, &usage, &pools);
         assert_eq!(totals.surface_distinct, 2);
         assert_eq!(totals.resolved, 1);
+    }
+
+    #[test]
+    fn resolved_skips_unmeasured_and_incomplete_samples() {
+        // A pool above the sample cap cannot prove absence (the twin may be
+        // ranked below the cut), and a repo missing from the measured set
+        // (gated, unreadable, deleted index) measures nothing at all: both
+        // must stay out of the resolved count instead of faking closure.
+        let candidates = vec![json!({
+            "repo_path": "/r/big", "symbol": "f", "canonical": "g"
+        })];
+        let usage = HashMap::from([
+            ("/r/big|f->g".to_string(), (1usize, 100.0f64)),
+            ("/r/gone|h->g".to_string(), (1, 100.0)),
+        ]);
+        let pools = std::collections::BTreeMap::from([
+            ("/r/big".to_string(), 200usize),
+            ("/r/other".to_string(), 1usize),
+        ]);
+        let totals = resolved_vs_current(&candidates, &usage, &pools);
+        assert_eq!(totals.resolved, 0, "{totals:?}");
+        assert_eq!(totals.surface_distinct, 1, "only the sampled repo counts");
     }
 }

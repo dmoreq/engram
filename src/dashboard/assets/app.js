@@ -212,20 +212,22 @@ function loadSummaryData() {
 
       const p50El = document.getElementById('metric-p50');
       if (p50El) {
-        // Latency without samples is unmeasured, not instant: match the
-        // reliability tile's em-dash rule.
+        // A null percentile means no latency samples: unmeasured, not
+        // instant. Legacy latency-less lines can produce it with calls > 0.
         const p50 = data.graph_p50_ms !== undefined ? data.graph_p50_ms : data.p50_ms;
-        p50El.textContent = totalCalls === 0 ? '—' : (p50 || 0.0).toFixed(1) + 'ms';
+        p50El.textContent = (p50 === null || p50 === undefined || totalCalls === 0)
+          ? '—'
+          : p50.toFixed(1) + 'ms';
       }
 
       const latSubEl = document.getElementById('metric-latency-sub');
       if (latSubEl) {
-        if (totalCalls === 0) {
-          latSubEl.textContent = 'No queries recorded';
+        const p95 = data.graph_p95_ms !== undefined ? data.graph_p95_ms : data.p95_ms;
+        const avg = data.graph_avg_ms !== undefined ? data.graph_avg_ms : data.avg_ms;
+        if (totalCalls === 0 || p95 === null || p95 === undefined) {
+          latSubEl.textContent = 'No measured queries';
         } else {
-          const p95 = data.graph_p95_ms !== undefined ? data.graph_p95_ms : data.p95_ms;
-          const avg = data.graph_avg_ms !== undefined ? data.graph_avg_ms : data.avg_ms;
-          latSubEl.textContent = 'p95 = ' + (p95 || 0.0).toFixed(1) + 'ms · avg = ' + (avg || 0.0).toFixed(1) + 'ms';
+          latSubEl.textContent = 'p95 = ' + p95.toFixed(1) + 'ms · avg = ' + avg.toFixed(1) + 'ms';
         }
       }
 
@@ -296,8 +298,8 @@ function loadReuseData() {
         // Consolidation closure: surfaced twins absent from the current scan
         // were merged away — the improvement the recurrence badge cannot show.
         const closure = summary.resolved_twins || {};
-        const resolvedNote = (closure.surface_distinct || 0) > 0
-          ? ' · ' + (closure.resolved || 0) + ' of ' + closure.surface_distinct + ' surfaced twins resolved'
+        const resolvedNote = (closure.surfaced || 0) > 0
+          ? ' · ' + (closure.resolved || 0) + ' of ' + closure.surfaced + ' surfaced twins resolved (sample-complete repos)'
           : '';
         if (totalCandidates > reuseCandidates.length) {
           kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + resolvedNote + cacheNote;
@@ -780,7 +782,9 @@ function filterByAgent(agentName) {
 function reuseCandidateCountsByRepo() {
   const counts = {};
   reuseCandidates.forEach(c => {
-    const repo = c.repo || '(unattributed)';
+    // repo_path is the scanned root — collision-proof where the display
+    // label is not (two same-basename checkouts escalate their labels).
+    const repo = c.repo_path || c.repo || '(unattributed)';
     counts[repo] = (counts[repo] || 0) + 1;
   });
   return counts;
@@ -803,13 +807,17 @@ function lastScanCell(rData) {
     + (scan.limit_capped ? ' <span class="text-muted" style="font-size: 0.72rem;">(truncated)</span>' : '');
   // Pool delta vs the previous scan: the consolidation-loop trend. A drop
   // means twins were merged away; a rise means new duplication accreted.
+  // The badge titles the baseline date — a stale baseline is not a trend.
   let delta = '';
   if (scan.prev_result_count !== undefined && scan.prev_result_count !== null) {
     const d = scan.result_count - scan.prev_result_count;
     if (d !== 0) {
       const sign = d > 0 ? '+' : '−';
       const cls = d > 0 ? 'status-warn' : 'status-ok';
-      delta = ' <span class="badge ' + cls + '" style="font-size:0.7rem;">Δ ' + sign + Math.abs(d).toLocaleString() + '</span>';
+      const baseline = scan.prev_ts
+        ? ' vs previous scan ' + new Date(scan.prev_ts * 1000).toLocaleDateString()
+        : '';
+      delta = ' <span class="badge ' + cls + '" style="font-size:0.7rem;" title="Pool change' + baseline + '">Δ ' + sign + Math.abs(d).toLocaleString() + '</span>';
     }
   }
   return '<span class="text-muted" style="font-size: 0.72rem;">' + when + ' ·</span> ' + size + delta;
@@ -982,7 +990,7 @@ function renderMemoryReposTable(repoAggs) {
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
     const relClass = errs === 0 ? 'status-ok' : 'status-err';
-    // Recall effectiveness: share of ok reads that returned content. No
+    // Recall effectiveness: share of reads that returned content. No
     // reads at all is unmeasured, not a zero rate.
     const hitRate = reads === 0
       ? '<span class="text-muted">—</span>'
@@ -1620,7 +1628,7 @@ function renderMemoryDossier(m) {
 
   const kindClass = 'badge status-' + (m.kind === 'decision' ? 'ambig' : m.kind === 'gotcha' ? 'warn' : m.kind === 'fact' ? 'ok' : 'err');
   const dateStr = m.created_at ? new Date(m.created_at * 1000).toLocaleString() : '—';
-  const lastRecalledStr = m.last_recalled_ts ? new Date(m.last_recalled_ts * 1000).toLocaleString() : 'Never queried in current session';
+  const lastRecalledStr = m.last_recalled_ts ? new Date(m.last_recalled_ts * 1000).toLocaleString() : 'Never recalled in the retained journal';
 
   let tagsHtml = '';
   if (m.tags && m.tags.length) {
@@ -1845,7 +1853,7 @@ const TIP = {
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
   'col.p50': 'Half of runs were faster than this.',
-  'col.items': 'Results returned by the query.',
+  'col.items': 'Results shown to the agent by the query.',
   'col.reliability': 'Share of runs that finished without error.',
   'col.tokens_saved': 'Estimated tokens avoided instead of reading files (coefficients, not a measurement).',
   'col.reuse_tokens_saved': 'Estimated tokens avoided by search and reuse calls (coefficients, not a measurement).',

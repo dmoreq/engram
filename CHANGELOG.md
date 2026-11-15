@@ -14,6 +14,31 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+### Fixed
+- Second adversarial round (verification of the 18-lens wave itself): the
+  "N of M surfaced twins resolved" subtitle never rendered — the backend
+  emits `surfaced` while the client read `surface_distinct`; and the count
+  itself reported false resolutions (pairs from gated, unreadable, or
+  over-cap repositories were counted merged with no merge happening).
+  Resolution now counts only sample-complete repositories (pool ≤ the
+  25-candidate cap), pools are keyed by repository path so same-basename
+  checkouts cannot read each other's pools, and the subtitle is pinned by
+  an end-to-end JSON contract test.
+- The memory dossier's "Never queried in current session" claim ships
+  corrected to "Never recalled in the retained journal" (the counter
+  derives from the journal window, not the session).
+- The Δ badge titles its baseline date; a null percentile (calls without
+  latency samples) renders an em dash instead of 0.0ms; the monitor TUI
+  says "recorded" instead of "caught" and shows an em dash ratio with no
+  memory activity.
+
+### Added
+- Contract pins: resolved_twins JSON keys end-to-end, judge rejection-rate
+  template, reuse degraded banner, monitor detector line with coverage
+  detectors, em-dash static placeholders, single-scan null baseline.
+
 ## [1.0.10] - 2026-11-15
 
 ### Changed

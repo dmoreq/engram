@@ -107,3 +107,32 @@ fn monitor_drops_dead_repo_entries_from_state() {
     assert!(state.recent_events.is_empty());
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn monitor_renders_every_detector_type() {
+    // Coverage detectors (D5/D1L/DT) ride the same detector_counts map as
+    // D1-D4: a regression to a D1-D4-only line ships silently otherwise.
+    use engram::dashboard::monitor::render::render_screen;
+    use engram::dashboard::monitor::state::{MonitorTab, TuiState};
+
+    let temp_dir = std::env::temp_dir().join(format!("test_tui_det_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let log_path = temp_dir.join("usage.log");
+    std::fs::write(&log_path, b"").unwrap();
+    let mut state = TuiState::new(None, log_path, None, false, false);
+    state.reuse_summary = serde_json::json!({
+        "total_candidates": 4,
+        "preventable_loc": 12,
+        "prewrite_count": 0,
+        "avg_callers": 1.0,
+        "detector_counts": { "D1": 1, "D5": 1, "D1L": 1, "DT": 2 }
+    });
+    state.active_tab = MonitorTab::Reuse;
+    let mut buf = Vec::new();
+    render_screen(&mut buf, &state, 80, 24).unwrap();
+    let rendered = String::from_utf8_lossy(&buf);
+    assert!(rendered.contains(" D5:1"), "{rendered}");
+    assert!(rendered.contains(" D1L:1"), "{rendered}");
+    assert!(rendered.contains(" DT:2"), "{rendered}");
+    std::fs::remove_dir_all(&temp_dir).unwrap();
+}
