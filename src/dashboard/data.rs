@@ -223,4 +223,30 @@ mod cache_tests {
         assert_eq!(summary["errors"][0]["stage"], "security", "{summary}");
         remove_tree(&dir);
     }
+
+    #[test]
+    fn rotated_generation_reads_oldest_first() {
+        // The reader folds usage.log.1 (older) before usage.log, so a feed
+        // built from the entries stays newest-first across a rotation.
+        let dir = temp_root("dashboard-entries-rotated");
+        let repo = dir.to_string_lossy().into_owned();
+        write_file(
+            dir.join("usage.log.1"),
+            format!("{{\"ts\":1700000001.0,\"tool\":\"build\",\"repo\":\"{repo}\",\"repo_name\":\"r\"}}\n{{\"ts\":1700000002.0,\"tool\":\"build\",\"repo\":\"{repo}\",\"repo_name\":\"r\"}}\n").as_bytes(),
+        )
+        .unwrap();
+        write_file(
+            dir.join("usage.log"),
+            format!(
+                "{{\"ts\":1700000003.0,\"tool\":\"build\",\"repo\":\"{repo}\",\"repo_name\":\"r\"}}\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let entries = read_usage_entries(&dir.join("usage.log"));
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert_eq!(entries[0]["ts"], 1700000001.0);
+        assert_eq!(entries[2]["ts"], 1700000003.0);
+        remove_tree(&dir);
+    }
 }

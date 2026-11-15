@@ -71,3 +71,38 @@ fn snippet_paths_stay_inside_the_repository_root() {
     assert!(contained_path(&root, "src/../../outside.rs").is_none());
     crate::db::test_support::remove_tree(&root);
 }
+
+#[test]
+fn detector_counts_cover_every_detector_type() {
+    // Coverage detectors (D5 class-shape, D1L unresolved, DT test helpers)
+    // appear in candidate lists; the pills must count them like D1-D4.
+    let candidates = vec![
+        json!({ "detector": "D1" }),
+        json!({ "detector": "D5" }),
+        json!({ "detector": "D1L" }),
+        json!({ "detector": "DT" }),
+        json!({ "detector": "DT" }),
+    ];
+    let summary = summarize_reuse_metrics(&candidates, 5, 0);
+    assert_eq!(summary["detector_counts"]["D1"], 1);
+    assert_eq!(summary["detector_counts"]["D5"], 1);
+    assert_eq!(summary["detector_counts"]["D1L"], 1);
+    assert_eq!(summary["detector_counts"]["DT"], 2);
+}
+
+#[test]
+fn prewrite_feed_keeps_only_search_and_reuse_newest_first() {
+    let entries = vec![
+        json!({ "tool": "search", "ts": 100.0, "repo": "/r", "repo_name": "r", "shown": 3, "latency_us": 100, "args": { "terms": "alpha" } }),
+        // Memory lookups are not pre-write discovery.
+        json!({ "tool": "mem_query", "ts": 150.0, "repo": "/r", "repo_name": "r", "shown": 9, "latency_us": 50, "args": { "terms": "x" } }),
+        // Reuse runs are scanned feeds too; newest wins the first row.
+        json!({ "tool": "reuse", "ts": 200.0, "repo": "/r", "repo_name": "r", "result_count": 2, "latency_us": 200, "args": {} }),
+    ];
+    let feed = collect_prewrite_searches(&entries);
+    assert_eq!(feed.len(), 2, "{feed:?}");
+    assert_eq!(feed[0]["tool"], "reuse");
+    assert_eq!(feed[0]["shown"], 2);
+    assert_eq!(feed[1]["tool"], "search");
+    assert_eq!(feed[1]["shown"], 3);
+}

@@ -233,19 +233,55 @@ fn search_hit_rate_counts_only_ok_hits() {
 
 #[test]
 fn last_reuse_scan_prefers_the_newest_ok_scan() {
-    // The newest scan wins even when an older one was larger, so the cell
-    // tracks accretion direction rather than the historical maximum.
+    // The newest SCAN wins: proposal runs journal as tool "reuse" too but
+    // are not a duplicate census. Truncation comes from the journaled
+    // verdict, and the replaced snapshot rides along for the pool delta.
     let repo = with_live_repo("summary-scan-cap");
     let entries = vec![
-        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 100, "ts": 1700000001.0, "args": { "limit": 100 } }),
-        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 4, "ts": 1700000002.0, "args": { "limit": 10 } }),
+        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 100, "ts": 1700000001.0, "mode": "scan", "truncated": true, "args": { "limit": 100 } }),
+        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 4, "ts": 1700000002.0, "mode": "scan", "truncated": false, "args": { "limit": 10 } }),
+        // A proposal run is not a census snapshot.
+        json!({ "tool": "reuse", "exit_code": 0, "repo": repo, "result_count": 999, "ts": 1700000003.0, "mode": "propose" }),
     ];
     let summary = compute_summary(&entries);
     let scan = &summary["repo_aggs"][&repo]["last_reuse_scan"];
     assert_eq!(scan["result_count"], 4);
     assert_eq!(scan["limit_capped"], false);
     assert_eq!(scan["ts"], 1700000002.0);
+    assert_eq!(scan["prev_result_count"], 100);
+    assert_eq!(scan["prev_ts"], 1700000001.0);
     crate::db::test_support::remove_tree(std::path::Path::new(&repo));
+}
+
+#[test]
+fn worktree_only_history_synthesizes_the_main_row() {
+    // Every entry comes from a linked worktree: the main repository row must
+    // fold them even with no direct main-repo journal line. Sub-row counters
+    // are graph-scoped like the parent row (a mem call adds to neither).
+    let main = crate::db::test_support::temp_root("summary-wt-only");
+    crate::db::test_support::make_dir_all(main.join(".git/worktrees/wt")).unwrap();
+    let wt = crate::db::test_support::temp_root("summary-wt-only-link");
+    let pointer = format!("gitdir: {}/.git/worktrees/wt\n", main.display());
+    crate::db::test_support::write_file(wt.join(".git"), pointer.as_bytes()).unwrap();
+    let main_canon = std::fs::canonicalize(&main).unwrap_or_else(|_| main.clone());
+    let main_str = main_canon.to_string_lossy().into_owned();
+    let wt_str = wt.to_string_lossy().into_owned();
+
+    let entries = vec![
+        json!({ "tool": "callers", "exit_code": 0, "repo": wt_str, "repo_name": "wt", "worktree": true }),
+        json!({ "tool": "mem_write", "exit_code": 0, "repo": wt_str, "repo_name": "wt", "worktree": true }),
+    ];
+    let summary = compute_summary(&entries);
+    let aggs = summary["repo_aggs"].as_object().unwrap();
+    assert_eq!(aggs.len(), 1, "no worktree row of its own: {summary}");
+    let row = &summary["repo_aggs"][&main_str];
+    // The synthesized row IS the main repository, not a worktree itself.
+    assert_eq!(row["worktree"], false);
+    assert_eq!(row["graph_calls"], 1);
+    assert_eq!(row["memory_calls"], 1);
+    assert_eq!(row["worktrees"]["wt"]["calls"], 1, "graph calls only");
+    crate::db::test_support::remove_tree(&main);
+    crate::db::test_support::remove_tree(&wt);
 }
 
 #[test]

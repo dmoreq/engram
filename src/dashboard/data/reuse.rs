@@ -195,6 +195,12 @@ pub fn collect_reuse_candidates(
         cached_scan(&repos, &labels);
     decorate_usage(&mut candidates_json, &usage);
 
+    // Consolidation closure: pair every historically surfaced twin against
+    // the current scan. A surfaced pair absent from the current index was
+    // resolved (merged away) — the improvement the surfaced N× badge can
+    // never show on its own.
+    let resolved = usage::resolved_vs_current(&candidates_json, &usage);
+
     let prewrite_searches = collect_prewrite_searches(entries);
     let prewrite_count = entries
         .iter()
@@ -219,6 +225,10 @@ pub fn collect_reuse_candidates(
     summary["cache_age_ms"] = json!(cache_age_ms);
     // Repos absent from the map were gated or unreadable: unmeasured, not zero.
     summary["repo_candidate_pools"] = json!(repo_pools);
+    summary["resolved_twins"] = json!({
+        "resolved": resolved.resolved,
+        "surfaced": resolved.surface_distinct,
+    });
     summary["degraded"] = json!(blocked > 0);
     summary["errors"] = json!(errors);
     Ok((candidates_json, summary, prewrite_searches))
