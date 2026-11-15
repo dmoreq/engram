@@ -220,9 +220,13 @@ fn bench_hash_16mib() {
         hash_p95.as_secs_f64() * 1e3,
         added.as_secs_f64() * 1e3
     );
+    // Budget 75 ms: hosted macOS runners measure 48-50 ms of added hashing
+    // wall (local Apple Silicon ~10-15 ms), so the previous 25 ms budget
+    // failed CI on every merge (same precedent as the deep-shared bench's
+    // 500 -> 800 ms move). Still catches a >=1.6x hashing regression.
     assert!(
-        added <= Duration::from_millis(25),
-        "hash wall: added {:.2}ms > 25ms",
+        added <= Duration::from_millis(75),
+        "hash wall: added {:.2}ms > 75ms",
         added.as_secs_f64() * 1e3
     );
     let _ = fs::remove_dir_all(&root);

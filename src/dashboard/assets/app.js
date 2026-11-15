@@ -293,10 +293,16 @@ function loadReuseData() {
         const cacheNote = summary.cache_hit
           ? ' · cached ' + Math.round((summary.cache_age_ms || 0) / 1000) + 's'
           : '';
+        // Consolidation closure: surfaced twins absent from the current scan
+        // were merged away — the improvement the recurrence badge cannot show.
+        const closure = summary.resolved_twins || {};
+        const resolvedNote = (closure.surface_distinct || 0) > 0
+          ? ' · ' + (closure.resolved || 0) + ' of ' + closure.surface_distinct + ' surfaced twins resolved'
+          : '';
         if (totalCandidates > reuseCandidates.length) {
-          kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + cacheNote;
+          kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + resolvedNote + cacheNote;
         } else {
-          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + cacheNote;
+          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + resolvedNote + cacheNote;
         }
       }
 
@@ -458,7 +464,7 @@ function updateActionCenter(currentNotes, modifiedCount, brokenCount) {
       ? 'Target file was modified after the last verify. Review the note, then Verify to refresh its anchor.'
       : 'Referenced symbol or file path is missing from the current code index. Re-run <code>eg build</code> in that repository, or edit the note refs.';
     const touchBtn = isModified
-      ? '<button class="btn-touch" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + m.rev + '">Verify</button>'
+      ? '<button class="btn-touch" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
       : '';
 
     const refsList = (m.refs || []).map(r => '<code>' + escapeHtml(r) + '</code>').join(', ');
@@ -794,8 +800,19 @@ function lastScanCell(rData) {
   if (!scan) return '<span class="text-muted">—</span>';
   const when = new Date(scan.ts * 1000).toLocaleDateString();
   const size = scan.result_count.toLocaleString() + ' candidates'
-    + (scan.limit_capped ? ' <span class="text-muted" style="font-size: 0.72rem;">(limit-capped)</span>' : '');
-  return '<span class="text-muted" style="font-size: 0.72rem;">' + when + ' ·</span> ' + size;
+    + (scan.limit_capped ? ' <span class="text-muted" style="font-size: 0.72rem;">(truncated)</span>' : '');
+  // Pool delta vs the previous scan: the consolidation-loop trend. A drop
+  // means twins were merged away; a rise means new duplication accreted.
+  let delta = '';
+  if (scan.prev_result_count !== undefined && scan.prev_result_count !== null) {
+    const d = scan.result_count - scan.prev_result_count;
+    if (d !== 0) {
+      const sign = d > 0 ? '+' : '−';
+      const cls = d > 0 ? 'status-warn' : 'status-ok';
+      delta = ' <span class="badge ' + cls + '" style="font-size:0.7rem;">Δ ' + sign + Math.abs(d).toLocaleString() + '</span>';
+    }
+  }
+  return '<span class="text-muted" style="font-size: 0.72rem;">' + when + ' ·</span> ' + size + delta;
 }
 
 function renderReuseReposTable(repoAggs) {
@@ -1349,18 +1366,15 @@ function renderReuseList() {
     const repoBadge = '<span class="badge badge-repo">' + escapeHtml(c.repo) + '</span>';
     const locBadge = '<span class="badge status-warn" data-tip="card.loc_saving">-' + c.loc_saving + ' LOC</span>';
     const confBadge = c.confidence ? '<span class="badge" data-tip="card.confidence">' + escapeHtml(c.confidence) + '</span>' : '';
-    // Advisory recurrence: the twin was surfaced to an agent before and is
-    // still present, which is the closure gap this number names.
-    const surfacedBadge = (c.reuse_count || 0) > 0
-      ? '<span class="badge" data-tip="card.usage">surfaced ' + c.reuse_count + '&times;</span>'
-      : '';
+    // Advisory recurrence lives in the meta line (count + last-used date);
+    // a separate badge would restate the same journal number twice.
 
     card.innerHTML =
       '<div class="item-card-head">' +
       '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
       '    <span class="' + detBadgeClass + '" data-tip="det.' + c.detector.toLowerCase() + '">' + c.detector + '</span>' +
           (c.overlap_applicable ? '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + c.overlap_pct + '% overlap</span>' : '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + escapeHtml(detectorEvidenceLabel(c.detector)) + '</span>') +
-      '    ' + confBadge + locBadge + surfacedBadge +
+      '    ' + confBadge + locBadge +
       '  </div>' +
       '  ' + repoBadge +
       '</div>' +
@@ -1569,7 +1583,7 @@ function renderMemoryList() {
     card.innerHTML =
       '<div class="item-card-head">' +
       '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
-      '    <span class="' + kindClass + '">' + m.kind.toUpperCase() + '</span>' +
+      '    <span class="' + kindClass + '">' + escapeHtml(m.kind.toUpperCase()) + '</span>' +
       '    ' + revPill +
       '    ' + refBadge +
       '  </div>' +
@@ -1639,14 +1653,14 @@ function renderMemoryDossier(m) {
   }
 
   const touchBtn = m.ref_status === 'modified' && m.is_current
-    ? '<button class="btn-touch" style="padding: 0.15rem 0.5rem; font-size: 0.72rem; margin-left: 0.5rem;" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + m.rev + '">Verify</button>'
+    ? '<button class="btn-touch" style="padding: 0.15rem 0.5rem; font-size: 0.72rem; margin-left: 0.5rem;" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
     : '';
 
   container.innerHTML =
     '<div class="dossier-head">' +
     '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">' +
     '    <div style="display:flex; gap:0.45rem; align-items:center;">' +
-    '      <span class="' + kindClass + '">' + m.kind.toUpperCase() + '</span>' +
+    '      <span class="' + kindClass + '">' + escapeHtml(m.kind.toUpperCase()) + '</span>' +
     '      <span class="badge" style="background:var(--bg-subtle);">Rev ' + m.rev + '</span>' +
     '      <span class="badge badge-repo">' + escapeHtml(m.store) + '</span>' +
     '      ' + touchBtn +
@@ -1654,7 +1668,7 @@ function renderMemoryDossier(m) {
     '    <span class="text-muted" style="font-size:0.78rem;">' + dateStr + '</span>' +
     '  </div>' +
     '  <div class="dossier-title">' + escapeHtml(m.key) + '</div>' +
-    '  <div class="text-muted" style="font-size:0.8rem;">Scope: <strong>' + m.scope + '</strong> &middot; Source: <code>' + m.source + '</code></div>' +
+    '  <div class="text-muted" style="font-size:0.8rem;">Scope: <strong>' + escapeHtml(m.scope) + '</strong> &middot; Source: <code>' + escapeHtml(m.source) + '</code></div>' +
     '</div>' +
     '<div class="recall-banner">' +
     '  <div style="font-family:var(--font-mono); font-size:0.78rem;">Recalls: <strong>' + m.recall_count + '</strong> &middot; Last: ' + lastRecalledStr + '</div>' +
@@ -1828,19 +1842,19 @@ const TIP = {
   'kpi.excess_loc': 'Estimated deletable lines, extrapolated from the sampled candidates.',
   'kpi.judge': 'Gray-zone candidates the local semantic judge reviewed. Rejected means the judge called the pair distinct.',
   'kpi.recall': 'Share of tagged sessions (ENGRAM_SESSION set) whose calls read memory (query, get, or export). Untagged sessions are not measured.',
-  'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Notes without refs are excluded; notes in stores without an index are unverified.',
+  'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
   'col.last_active': 'Most recent run recorded for this row.',
   'col.p50': 'Half of runs were faster than this.',
   'col.items': 'Results returned by the query.',
   'col.reliability': 'Share of runs that finished without error.',
   'col.tokens_saved': 'Estimated tokens avoided instead of reading files (coefficients, not a measurement).',
   'col.reuse_tokens_saved': 'Estimated tokens avoided by search and reuse calls (coefficients, not a measurement).',
-  'col.search_hit_rate': 'Share of pre-write searches that returned at least one result. "—" when the row has no searches.',
+  'col.search_hit_rate': 'Share of pre-write searches that returned at least one result. Misses can be healthy — the twin genuinely does not exist yet. "—" when the row has no searches.',
   'col.candidates_sample': 'Duplicate twins per repository: shown is the top-overlap sample (at most 25); after the slash is the repository\u2019s full candidate pool. "\u2014" when the repository was not scanned.',
-  'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Limit-capped" means the scan returned its limit, so the true candidate pool is larger.',
+  'col.latest_scan': 'Newest successful eg reuse scan in the retained journal. "Truncated" is the journaled verdict that results were cut from a larger pool. The Δ badge compares against the previous scan in the window.',
   'col.results_shown': 'Results the search or scan showed to the agent.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
-  'col.memory_hit_rate': 'Share of ok memory reads that returned at least one item (query results, exact-key gets, exported rows). "—" when the row has no reads.',
+  'col.memory_hit_rate': 'Share of memory reads that returned at least one item (query results, exact-key gets, exported rows). Failed reads count against the rate. "—" when the row has no reads.',
   'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4 show their evidence class instead of a percentage.',
   'card.callers': 'Call sites using the canonical helper.',
   'card.confidence': 'Static confidence tier; stale or unknown freshness caps it at low.',
@@ -1850,7 +1864,8 @@ const TIP = {
   'view.memory': 'Collapse the note list: Top 10 or 3 by latest activity (created, verified, or recalled), most recalled, or all notes.',
   'view.reuse': 'Collapse the candidate list by canonical call-site usage, or show all sampled candidates.',
   'card.loc_saving': 'Lines removed if the duplicate is merged away.',
-  'det.all': 'Show every detection rule.',
+  'det.all': 'Show every detection rule. Pill counts are sample floors from the per-repo scan (at most 25 candidates each), not corpus totals.',
+  'header.data_age': 'Timestamp the payload was built. All counts cover the retained journal: the current log plus one rotated generation (about 10 MiB of history).',
   'det.d1': 'Both functions call the same downstream functions.',
   'det.d2': 'Same parameter types and name tokens.',
   'det.d3': 'Calls a raw client the project already wraps.',

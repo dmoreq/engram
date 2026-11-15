@@ -127,12 +127,20 @@ fn discover_memory_stores(root: Option<&Path>, entries: &[Value]) -> Vec<Store> 
 }
 
 /// Exact-key recall counts only. A bare store-wide query cannot be attributed
-/// to one note, and a substring guess is not a measurement.
+/// to one note, and a substring guess is not a measurement. Only successful
+/// lookups count: a `mem_get` that exited 1 (key unknown) or 3 (store error)
+/// delivered nothing, so it is not a recall.
 fn aggregate_recalls(entries: &[Value]) -> HashMap<String, (usize, f64)> {
     let mut recalls_map: HashMap<String, (usize, f64)> = HashMap::new();
     for e in entries {
         let tool = e.get("tool").and_then(Value::as_str).unwrap_or("");
         if tool != "mem_get" && tool != "mem_query" {
+            continue;
+        }
+        if e.get("exit_code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            continue;
+        }
+        if e.get("result_count").and_then(Value::as_u64).unwrap_or(0) == 0 {
             continue;
         }
         let ts = e.get("ts").and_then(Value::as_f64).unwrap_or(0.0);

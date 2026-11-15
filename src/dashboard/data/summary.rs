@@ -54,111 +54,9 @@ fn is_graph_tool(tool: &str) -> bool {
     classify(tool).graph
 }
 
-/// One parsed usage entry: every field the record phases need, plus the
-/// tool's dimension flags. Parsing lives here alone so the fallback defaults
-/// cannot drift between phases.
-struct EntryView<'a> {
-    tool: &'a str,
-    exit_code: i64,
-    shown: usize,
-    result_count: usize,
-    lat_us: Option<f64>,
-    ts: f64,
-    repo_name: &'a str,
-    /// Aggregation key: the journaled absolute path when present, else the
-    /// name. A path keeps two repositories with the same directory name apart.
-    repo_key: &'a str,
-    /// Row label: the main repository's basename when this entry belongs to a
-    /// linked worktree, else the journaled `repo_name`.
-    repo_display: String,
-    /// Main repository root when the entry was recorded in a linked worktree
-    /// whose `.git` pointer still resolves; the row folds into it.
-    repo_main: Option<String>,
-    is_worktree: bool,
-    agent_name: &'a str,
-    session_name: &'a str,
-    session_tagged: bool,
-    /// `args.limit` for the tools that record one (`reuse`, `search`): a scan
-    /// whose `result_count` reached the limit returned more than it showed.
-    args_limit: Option<usize>,
-    facts: EntryFacts,
-}
-
-impl<'a> EntryView<'a> {
-    /// `None` when the entry does not name a live repository: only live
-    /// repositories contribute to the summary, so there is no unattributed
-    /// bucket to fold into. The readers and the pruner already drop dead and
-    /// identityless lines; this keeps direct callers honest.
-    fn parse(e: &'a Value) -> Option<EntryView<'a>> {
-        let tool = e.get("tool").and_then(Value::as_str).unwrap_or("unknown");
-        let repo_key = e
-            .get("repo")
-            .and_then(Value::as_str)
-            .filter(|s| crate::journal::liveness::repo_is_live(Some(s)))?;
-        let repo_name = e
-            .get("repo_name")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty());
-        let is_worktree = e.get("worktree").and_then(Value::as_bool).unwrap_or(false);
-        let repo_main = if is_worktree {
-            crate::repo::cached_worktree_main_root(Path::new(repo_key))
-                .map(|p| p.to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let repo_display = match &repo_main {
-            Some(main) => main_display(main),
-            None => repo_name.unwrap_or(UNATTRIBUTED).to_string(),
-        };
-        Some(EntryView {
-            tool,
-            exit_code: e.get("exit_code").and_then(Value::as_i64).unwrap_or(0),
-            shown: e
-                .get("shown")
-                .or_else(|| e.get("result_count"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as usize,
-            result_count: e.get("result_count").and_then(Value::as_u64).unwrap_or(0) as usize,
-            lat_us: e.get("latency_us").and_then(Value::as_f64),
-            ts: e.get("ts").and_then(Value::as_f64).unwrap_or(0.0),
-            repo_name: repo_name.unwrap_or(UNATTRIBUTED),
-            repo_key,
-            repo_display,
-            repo_main,
-            is_worktree,
-            agent_name: e
-                .get("agent")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("user"),
-            session_name: e
-                .get("session")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("default"),
-            session_tagged: e
-                .get("session")
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty()),
-            args_limit: e
-                .get("args")
-                .and_then(|a| a.get("limit"))
-                .and_then(Value::as_u64)
-                .map(|v| v as usize),
-            facts: {
-                let class = classify(tool);
-                EntryFacts {
-                    is_graph: class.graph,
-                    is_reuse: class.reuse,
-                    is_search: tool == "search",
-                    is_mem: class.memory,
-                    is_mem_read: class.mem_read,
-                    is_mem_write: class.mem_write,
-                }
-            },
-        })
-    }
-}
+// Parsing moved beside the payload assembly; the fold phases reach it
+// through this re-export so fallback defaults cannot drift.
+use payload::EntryView;
 
 #[derive(Default)]
 struct SummaryState {
@@ -237,7 +135,9 @@ impl SummaryState {
         t.results += v.result_count;
         let r = self.repo_mut(folded_key(v), &v.repo_display);
         record_entry_into(r, v.facts, v.ts, v.is_worktree && v.repo_main.is_none());
-        if v.repo_main.is_some() {
+        // Worktree sub-rows render on the graph tab only: their counters are
+        // graph-scoped, matching the parent row's definition.
+        if v.repo_main.is_some() && v.facts.is_graph {
             r.worktrees
                 .entry(v.repo_name.to_string())
                 .or_default()
@@ -275,7 +175,7 @@ impl SummaryState {
             self.repo_mut(folded_key(v), &v.repo_display).memory_errors += 1;
             self.agent_mut(v.agent_name).memory_errors += 1;
         }
-        if v.repo_main.is_some() {
+        if v.repo_main.is_some() && v.facts.is_graph {
             if let Some(wt) = self
                 .repo_mut(folded_key(v), &v.repo_display)
                 .worktrees
@@ -306,15 +206,28 @@ impl SummaryState {
                 .memory_read_hits += 1;
             self.agent_mut(v.agent_name).memory_read_hits += 1;
         }
-        if v.tool == "reuse" {
+        if v.tool == "reuse" && v.mode.is_none_or(|mode| mode == "scan") {
+            // Proposal and coverage runs journal as tool "reuse" too; only a
+            // scan is a duplicate-census snapshot. Truncation comes from the
+            // journaled verdict, not from comparing against args.limit (a
+            // pool of exactly `limit` candidates is not a truncated scan).
             let scan = LastReuseScan {
                 ts: v.ts,
                 result_count: v.result_count,
-                limit_capped: v.args_limit.is_some_and(|limit| v.result_count >= limit),
+                limit_capped: v.truncated,
+                prev_result_count: None,
+                prev_ts: 0.0,
             };
             let repo = self.repo_mut(folded_key(v), &v.repo_display);
             if repo.last_reuse_scan.as_ref().is_none_or(|s| v.ts >= s.ts) {
-                repo.last_reuse_scan = Some(scan);
+                let mut demoted = scan;
+                if let Some(prev) = repo.last_reuse_scan {
+                    // Keep the previous snapshot so the cell can show the
+                    // pool delta — the consolidation-loop signal.
+                    demoted.prev_result_count = Some(prev.result_count);
+                    demoted.prev_ts = prev.ts;
+                }
+                repo.last_reuse_scan = Some(demoted);
             }
         }
         self.saved_tokens += saved;
@@ -431,14 +344,17 @@ struct RepoAgg {
     worktrees: BTreeMap<String, WtAgg>,
 }
 
-/// The newest successful full reuse scan a repository recorded.
+/// The newest successful full reuse scan a repository recorded, with the
+/// snapshot it replaced (for the pool-delta trend).
 #[derive(Clone, Copy)]
 struct LastReuseScan {
     ts: f64,
     result_count: usize,
-    /// True when `result_count` reached `args.limit`: the scan returned a
-    /// truncated view of a larger candidate pool.
+    /// Journaled truncation verdict: the scan cut results from a larger pool.
     limit_capped: bool,
+    /// The snapshot this scan replaced, when one existed in the window.
+    prev_result_count: Option<usize>,
+    prev_ts: f64,
 }
 
 /// One linked worktree's contribution to its main repository's row.

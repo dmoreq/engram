@@ -7,6 +7,112 @@ use super::*;
 /// session recall, the graph event window, and the per-dimension rollups.
 /// Field set and units are documented in `docs/agent-integration.md`; the
 /// golden key-set test in `src/dashboard.rs` pins presence and absence.
+/// One parsed usage entry: every field the record phases need, plus the
+/// tool's dimension flags. Parsing lives beside the payload assembly so the
+/// fallback defaults cannot drift between phases.
+pub(super) struct EntryView<'a> {
+    pub(super) tool: &'a str,
+    pub(super) exit_code: i64,
+    pub(super) shown: usize,
+    pub(super) result_count: usize,
+    pub(super) lat_us: Option<f64>,
+    pub(super) ts: f64,
+    pub(super) repo_name: &'a str,
+    /// Aggregation key: the journaled absolute path when present, else the
+    /// name. A path keeps two repositories with the same directory name apart.
+    pub(super) repo_key: &'a str,
+    /// Row label: the main repository's basename when this entry belongs to a
+    /// linked worktree, else the journaled `repo_name`.
+    pub(super) repo_display: String,
+    /// Main repository root when the entry was recorded in a linked worktree
+    /// whose `.git` pointer still resolves; the row folds into it.
+    pub(super) repo_main: Option<String>,
+    pub(super) is_worktree: bool,
+    pub(super) agent_name: &'a str,
+    pub(super) session_name: &'a str,
+    pub(super) session_tagged: bool,
+    /// `args.limit` for the tools that record one (`reuse`, `search`): a scan
+    /// whose `result_count` reached the limit returned more than it showed.
+    /// Journal `mode` for the tools that record one (`reuse`: scan/proposal).
+    pub(super) mode: Option<&'a str>,
+    /// Journaled truncation verdict: true when results were actually cut.
+    pub(super) truncated: bool,
+    pub(super) facts: EntryFacts,
+}
+
+impl<'a> EntryView<'a> {
+    /// `None` when the entry does not name a live repository: only live
+    /// repositories contribute to the summary, so there is no unattributed
+    /// bucket to fold into. The readers and the pruner already drop dead and
+    /// identityless lines; this keeps direct callers honest.
+    pub(super) fn parse(e: &'a Value) -> Option<EntryView<'a>> {
+        let tool = e.get("tool").and_then(Value::as_str).unwrap_or("unknown");
+        let repo_key = e
+            .get("repo")
+            .and_then(Value::as_str)
+            .filter(|s| crate::journal::liveness::repo_is_live(Some(s)))?;
+        let repo_name = e
+            .get("repo_name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let is_worktree = e.get("worktree").and_then(Value::as_bool).unwrap_or(false);
+        let repo_main = if is_worktree {
+            crate::repo::cached_worktree_main_root(Path::new(repo_key))
+                .map(|p| p.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+        let repo_display = match &repo_main {
+            Some(main) => main_display(main),
+            None => repo_name.unwrap_or(UNATTRIBUTED).to_string(),
+        };
+        Some(EntryView {
+            tool,
+            exit_code: e.get("exit_code").and_then(Value::as_i64).unwrap_or(0),
+            shown: e
+                .get("shown")
+                .or_else(|| e.get("result_count"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
+            result_count: e.get("result_count").and_then(Value::as_u64).unwrap_or(0) as usize,
+            lat_us: e.get("latency_us").and_then(Value::as_f64),
+            ts: e.get("ts").and_then(Value::as_f64).unwrap_or(0.0),
+            repo_name: repo_name.unwrap_or(UNATTRIBUTED),
+            repo_key,
+            repo_display,
+            repo_main,
+            is_worktree,
+            agent_name: e
+                .get("agent")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("user"),
+            session_name: e
+                .get("session")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("default"),
+            session_tagged: e
+                .get("session")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty()),
+            mode: e.get("mode").and_then(Value::as_str),
+            truncated: e.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+            facts: {
+                let class = classify(tool);
+                EntryFacts {
+                    is_graph: class.graph,
+                    is_reuse: class.reuse,
+                    is_search: tool == "search",
+                    is_mem: class.memory,
+                    is_mem_read: class.mem_read,
+                    is_mem_write: class.mem_write,
+                }
+            },
+        })
+    }
+}
+
 pub(super) fn summary_json(mut state: SummaryState, entries: &[Value]) -> Value {
     // Only entries that survived the live-repository guard are counted; the
     // raw slice can carry skipped lines when a caller feeds it directly.
@@ -119,6 +225,8 @@ fn format_aggs(aggs: HashMap<String, RepoAgg>, with_worktree: bool) -> BTreeMap<
                 "ts": s.ts,
                 "result_count": s.result_count,
                 "limit_capped": s.limit_capped,
+                "prev_result_count": s.prev_result_count,
+                "prev_ts": s.prev_ts,
             })
         });
         let mut entry = json!({
