@@ -290,7 +290,10 @@ mod client_contract_tests {
     fn resolved_twins_and_degraded_banner_are_wired() {
         // The backend emits `resolved`/`surfaced`; the client must read the
         // same keys — a drift silently blanks the closure line.
-        assert!(JS.contains("closure.surfaced"), "resolved_twins key drift");
+        assert!(
+            JS.contains("summary.resolved_twins"),
+            "resolved_twins container read missing (key drift blanks the line)"
+        );
         assert!(
             JS.contains("closure.resolved"),
             "resolved count read missing"

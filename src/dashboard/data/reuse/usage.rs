@@ -137,8 +137,14 @@ pub(super) fn resolved_vs_current(
         let Some(pool) = measured_pools.get(repo) else {
             continue;
         };
+        // A pool above the sample cap means the 25-candidate sample cannot
+        // prove absence — such pairs are unmeasured on BOTH sides of the
+        // fraction: neither resolved nor part of the denominator.
+        if *pool > super::SAMPLE_CAP {
+            continue;
+        }
         surface_distinct += 1;
-        if *pool <= super::SAMPLE_CAP && !current.contains(key) {
+        if !current.contains(key) {
             resolved += 1;
         }
     }
@@ -255,6 +261,7 @@ mod usage_tests {
         ]);
         let totals = resolved_vs_current(&candidates, &usage, &pools);
         assert_eq!(totals.resolved, 0, "{totals:?}");
-        assert_eq!(totals.surface_distinct, 1, "only the sampled repo counts");
+        // The over-cap repo is excluded on both sides of the fraction.
+        assert_eq!(totals.surface_distinct, 0, "{totals:?}");
     }
 }

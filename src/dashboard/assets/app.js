@@ -855,9 +855,10 @@ function renderReuseReposTable(repoAggs) {
     const wt = rData.worktree;
     const pct = (calls / maxCalls) * 100.0;
     const wtBadge = wt ? '<span class="badge badge-wt">worktree</span>' : '<span class="badge badge-repo">repo</span>';
-    const label = rData.display || rName;
-    const sampled = candidateCounts[label];
-    const pool = reusePools[label];
+    // Sample/pool maps are keyed by the repository PATH (the repo_aggs key),
+    // collision-proof where display labels escalate. Absent pool = unmeasured.
+    const sampled = candidateCounts[rName];
+    const pool = reusePools[rName];
     // Sampled / pool: the top-overlap count actually shown next to the
     // repository's full candidate pool. Absent pool = unmeasured scan.
     const candCell = pool === undefined
@@ -1863,7 +1864,7 @@ const TIP = {
   'col.results_shown': 'Results the search or scan showed to the agent.',
   'col.reads_writes': 'Memory reads (query, get, export) versus write operations (write, touch, delete, gc, import).',
   'col.memory_hit_rate': 'Share of memory reads that returned at least one item (query results, exact-key gets, exported rows). Failed reads count against the rate. "—" when the row has no reads.',
-  'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4 show their evidence class instead of a percentage.',
+  'card.overlap': 'Measured evidence overlap for D1/D2; D3/D4/D5/D1L/DT show their evidence class instead of a percentage.',
   'card.callers': 'Call sites using the canonical helper.',
   'card.confidence': 'Static confidence tier; stale or unknown freshness caps it at low.',
   'card.usage': 'How many eg reuse runs in the retained journal surfaced this candidate, and when the last one ran.',
