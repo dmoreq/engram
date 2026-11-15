@@ -80,23 +80,24 @@
         </table>
       </div>
 
-      <!-- Agent Navigation Attribution Breakdown -->
+      <!-- Agent Attribution Breakdown (all pillars) -->
       <div class="card">
         <div class="card-title">
-          <span>Agent Navigation Attribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Graph queries and context avoidance by agent</span>
+          <span>Agent Attribution</span>
+          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Adoption and savings across all three pillars, by agent</span>
         </div>
         <table>
           <thead>
             <tr>
               <th>Agent Identity</th>
-              <th class="text-right">Calls</th>
-              <th data-tip="col.reliability">Reliability</th>
-              <th class="text-right" data-tip="col.tokens_saved">Graph Tokens Saved</th>
+              <th class="text-right">Graph</th>
+              <th class="text-right" data-tip="col.search_hit_rate">Reuse</th>
+              <th class="text-right" data-tip="col.reads_writes">Memory (r · w)</th>
+              <th class="text-right" data-tip="col.tokens_saved">Tokens Saved</th>
             </tr>
           </thead>
           <tbody id="agents-tbody">
-            <tr><td colspan="4" class="empty-cell">Loading agents...</td></tr>
+            <tr><td colspan="5" class="empty-cell">Loading agents...</td></tr>
           </tbody>
         </table>
       </div>
@@ -266,7 +267,7 @@
           </tr>
         </thead>
         <tbody id="prewrite-tbody">
-          <tr><td colspan="6" class="empty-cell">No pre-write helper searches recorded yet</td></tr>
+          <tr><td colspan="5" class="empty-cell">No pre-write helper searches recorded yet</td></tr>
         </tbody>
       </table>
     </div>

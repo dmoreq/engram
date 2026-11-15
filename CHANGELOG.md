@@ -14,6 +14,33 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+### Fixed
+- Round-4 verification over the lean rebuild: the unified agent table's
+  savings column read a nonexistent `tokens_saved` payload key (field is
+  `saved_tokens`) and rendered ~0 for every agent; its header carried the
+  stale 4-column graph-only contract over the new 5-pillar body; the
+  pre-write feed kept a ghost latency cell after its header column was
+  removed; and the memory repos table still rendered always-on reliability
+  badges.
+
+### Added
+- A thead-vs-body column-count parity guard over every rendered table, and
+  stay-removed pins for the Preventable LOC tile and the pre-write feed's
+  latency column.
+
+## [1.0.12] - 2026-11-15
+
+### Changed
+- Lean rebuild (round-3 deletion mandate): Session Recall KPI, Semantic
+  Judge tile, LIVE badge, and worktree sub-rows removed (permanently
+  unmeasured or presentation-only); avg latency dropped (p95 carries the
+  tail); Preventable LOC merged into the Candidates subtitle; reliability
+  badges render only when errs > 0; pre-write feed latency column and Top 3
+  view options removed; the three per-tab agent attribution tables
+  collapsed into one unified all-pillar table on tab 01.
+
 ## [1.0.11] - 2026-11-15
 
 ### Fixed
