@@ -52,8 +52,8 @@ const REUSE_VIEWS = {
   used10: { label: 'Top 10 by callers', limit: 10 },
   all: { label: 'All', limit: 0 },
 };
-let memView = 'recent3';
-let reuseView = 'used3';
+let memView = 'recent10';
+let reuseView = 'used10';
 
 function memoryActivity(m) {
   return Math.max(m.created_at || 0, m.anchored_at || 0, m.last_recalled_ts || 0);
@@ -218,7 +218,6 @@ function loadSummaryData() {
       const latSubEl = document.getElementById('metric-latency-sub');
       if (latSubEl) {
         const p95 = data.graph_p95_ms !== undefined ? data.graph_p95_ms : data.p95_ms;
-        const avg = data.graph_avg_ms !== undefined ? data.graph_avg_ms : data.avg_ms;
         if (totalCalls === 0 || p95 === null || p95 === undefined) {
           latSubEl.textContent = 'No measured queries';
         } else {
@@ -300,7 +299,7 @@ function loadReuseData() {
         if (totalCandidates > reuseCandidates.length) {
           kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + locNote + resolvedNote + cacheNote;
         } else {
-          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + locNote + cacheNote;
+          kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + locNote + resolvedNote + cacheNote;
         }
       }
 
@@ -612,7 +611,7 @@ function renderAgentsTable(agentAggs, totalCalls) {
       reuseCalls: aData.reuse_calls || 0,
       reads: aData.memory_reads || 0,
       writes: aData.memory_writes || 0,
-      saved: aData.tokens_saved || 0,
+      saved: aData.saved_tokens || 0,
       calls: aData.calls || 0,
     }])
     .filter(([_, aData]) => aData.calls > 0);
@@ -866,7 +865,7 @@ function renderMemoryReposTable(repoAggs) {
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
       '<td class="text-right num-col text-muted">' + reads.toLocaleString() + ' r · ' + writes.toLocaleString() + ' w</td>' +
       '<td class="text-right num-col">' + hitRate + '</td>' +
-      '<td><span class="badge ' + relClass + '">' + rel.toFixed(1) + '% (' + errs + ' err)</span></td>';
+      '<td>' + (errs === 0 ? '' : '<span class="badge status-err">' + rel.toFixed(1) + '% (' + errs + ' err)</span>') + '</td>';
 
     tbody.appendChild(tr);
   });
@@ -1053,7 +1052,6 @@ function createRecentRow(q) {
     '<td>' + agentTagHtml(aName) + '</td>' +
     '<td><code>' + escapeHtml(q.tool || '—') + '</code></td>' +
     '<td class="text-right num-col">' + (q.shown || q.result_count || 0) + '</td>' +
-    '<td class="text-right num-col">' + latStr + '</td>' +
     '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
     '<td class="args-cell" title="' + escapeHtml(argsRaw) + '"><code>' + escapeHtml(argsHuman) + '</code></td>';
 
@@ -1266,7 +1264,7 @@ function renderPrewriteTable() {
   const tbody = document.getElementById('prewrite-tbody');
   if (!tbody) return;
   if (!prewriteSearches || prewriteSearches.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No pre-write helper searches recorded yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No pre-write helper searches recorded yet</td></tr>';
     updateListCount('prewrite-list-count', 0, 0, 'newest first');
     return;
   }
@@ -1276,8 +1274,7 @@ function renderPrewriteTable() {
   visible.forEach(s => {
     const tr = document.createElement('tr');
     const ts = s.ts ? new Date(s.ts * 1000).toLocaleTimeString() : '—';
-    const latStr = s.latency_us ? (s.latency_us / 1000.0).toFixed(1) + 'ms' : '—';
-    const rName = s.repo_name || UNATTRIBUTED;
+      const rName = s.repo_name || UNATTRIBUTED;
     tr.innerHTML =
       '<td class="num-col text-muted">' + ts + '</td>' +
       '<td><span class="repo-tag">' + escapeHtml(rName) + '</span></td>' +
@@ -1286,8 +1283,7 @@ function renderPrewriteTable() {
         explainToolArgs(s.tool, s.tool === 'reuse' ? { paths: s.terms } : { terms: s.terms })
         || s.terms || 'Every file'
       ) + '</code></td>' +
-      '<td class="text-right num-col">' + (s.shown || 0) + '</td>' +
-      '<td class="text-right num-col">' + latStr + '</td>';
+      '<td class="text-right num-col">' + (s.shown || 0) + '</td>';
     tbody.appendChild(tr);
   });
   updateListCount('prewrite-list-count', visible.length, prewriteSearches.length, 'newest first');
@@ -1866,12 +1862,8 @@ function initEventSource() {
 
   document.addEventListener('visibilitychange', () => {
     isDocumentVisible = !document.hidden;
-    const dot = document.querySelector('.live-dot');
     if (isDocumentVisible) {
-      if (dot) dot.className = 'live-dot live-active';
       refreshVisibleData();
-    } else if (dot) {
-      dot.className = 'live-dot live-paused';
     }
   });
 
