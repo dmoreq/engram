@@ -16,8 +16,9 @@
       <img src="/logo-light.svg" width="140" height="32" alt="Engram" class="header-logo header-logo-light">
       <img src="/logo.svg" width="140" height="32" alt="Engram" class="header-logo header-logo-dark">
       <h1 id="header-title" class="sr-only">Engram Console</h1>
-      <span class="header-subtitle" aria-hidden="true">Console</span>
-      <span id="data-age" class="text-muted" style="font-size:0.75rem; margin-left:0.75rem;" data-tip="header.data_age"></span>
+      <span class="header-subtitle" aria-hidden="true">Agent Code Intelligence &amp; Impact</span>
+      <span class="impact-badge" aria-hidden="true">Deterministic Graph &middot; Anti-Reinvention &middot; Zero-Token Memory</span>
+      <span id="data-age" class="data-age-chip text-muted" data-tip="header.data_age"></span>
     </div>
     <div class="header-right">
       <button class="theme-btn" id="theme-toggle-btn">Theme: Light</button>
@@ -40,6 +41,12 @@
   <!-- ==================== TAB 01: DETERMINISTIC CODE GRAPH & NAVIGATION ==================== -->
   <div id="tab-telemetry-content" role="tabpanel" aria-labelledby="tab-telemetry-btn">
     <div id="data-error-telemetry" class="hidden" role="status"></div>
+    <div class="impact-explainer">
+      <div class="explainer-badge">Pillar 01 &middot; Navigation</div>
+      <div class="explainer-text">
+        <strong>Deterministic Graph Navigation:</strong> Sub-millisecond AST symbol and call graph traversal replacing full-file LLM context stuffing with zero hallucinations.
+      </div>
+    </div>
     <div class="kpi-strip">
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.graph_queries">Deterministic Graph Queries</div>
@@ -177,12 +184,28 @@
   <!-- ==================== TAB 02: REAL-TIME ANTI-REINVENTION ENGINE ==================== -->
   <div id="tab-reuse-content" class="hidden" role="tabpanel" aria-labelledby="tab-reuse-btn">
     <div id="data-error-reuse" class="hidden" role="status"></div>
+    <div class="impact-explainer">
+      <div class="explainer-badge">Pillar 02 &middot; Anti-Reinvention</div>
+      <div class="explainer-text">
+        <strong>Real-Time Anti-Reinvention:</strong> Active detection of structural duplicate twins across 7 AST detectors (D1&ndash;DT) to prevent code bloat before code is written.
+      </div>
+    </div>
     <!-- Prevention KPI Strip -->
     <div class="kpi-strip">
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.candidates">Duplicate Candidates Identified</div>
         <div class="kpi-value text-success" id="reuse-kpi-count">&mdash;</div>
         <div class="kpi-sub" id="reuse-kpi-count-sub">Syntactic &amp; structural duplicate twins</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.prewrite">Pre-Write Helper Lookups</div>
+        <div class="kpi-value" id="reuse-kpi-prewrite">&mdash;</div>
+        <div class="kpi-sub" id="reuse-kpi-prewrite-sub">No pre-write lookups recorded</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.avg_callers">Canonical Helper Leverage</div>
+        <div class="kpi-value" id="reuse-kpi-callers">&mdash;</div>
+        <div class="kpi-sub" id="reuse-kpi-callers-sub">No canonical callers recorded</div>
       </div>
     </div>
 
@@ -276,12 +299,28 @@
   <!-- ==================== TAB 03: AGENT MEMORY INSPECTOR ==================== -->
   <div id="tab-memory-content" class="hidden" role="tabpanel" aria-labelledby="tab-memory-btn">
     <div id="data-error-memory" class="hidden" role="status"></div>
-    <!-- Memory KPI Strip (4 Core KPIs) -->
+    <div class="impact-explainer">
+      <div class="explainer-badge">Pillar 03 &middot; Memory</div>
+      <div class="explainer-text">
+        <strong>Zero-Token Persistent Memory:</strong> Durable storage for architectural decisions and gotchas, with automated AST anchor currency verification against code drift.
+      </div>
+    </div>
+    <!-- Memory KPI Strip (3 Core KPIs) -->
     <div class="kpi-strip">
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.currency">Anchor Currency Rate</div>
         <div class="kpi-value text-success" id="mem-kpi-currency">&mdash;</div>
         <div class="kpi-sub" id="mem-kpi-currency-sub">&mdash;</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.active_notes">Active Project Notes</div>
+        <div class="kpi-value" id="mem-kpi-active-count">&mdash;</div>
+        <div class="kpi-sub" id="mem-kpi-active-sub">No active notes</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.recalls">Exact-Key Agent Recalls</div>
+        <div class="kpi-value" id="mem-kpi-recalls-count">&mdash;</div>
+        <div class="kpi-sub" id="mem-kpi-recalls-sub">No recalls recorded</div>
       </div>
     </div>
 

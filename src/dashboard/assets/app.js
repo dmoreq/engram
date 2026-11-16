@@ -309,6 +309,33 @@ function loadReuseData() {
         feedCount.textContent = count.toLocaleString();
       }
 
+      const prewriteKpi = document.getElementById('reuse-kpi-prewrite');
+      const prewriteCount = summary.prewrite_count !== undefined ? summary.prewrite_count : prewriteSearches.length;
+      if (prewriteKpi) {
+        prewriteKpi.textContent = prewriteCount.toLocaleString();
+      }
+      const prewriteSub = document.getElementById('reuse-kpi-prewrite-sub');
+      if (prewriteSub) {
+        prewriteSub.textContent = prewriteCount > 0
+          ? 'Proactive searches before code authoring'
+          : 'No pre-write lookups recorded';
+      }
+
+      const callersKpi = document.getElementById('reuse-kpi-callers');
+      if (callersKpi) {
+        const avg = summary.avg_callers;
+        callersKpi.textContent = (avg !== null && avg !== undefined && avg > 0)
+          ? avg.toFixed(1) + 'x'
+          : '—';
+      }
+      const callersSub = document.getElementById('reuse-kpi-callers-sub');
+      if (callersSub) {
+        const avg = summary.avg_callers;
+        callersSub.textContent = (avg !== null && avg !== undefined && avg > 0)
+          ? 'Avg callers per authoritative helper'
+          : 'No canonical callers recorded';
+      }
+
       const counts = summary.detector_counts || {};
       updateDetectorPills(counts, reuseCandidates.length);
       populateReuseRepoFilter();
@@ -381,6 +408,47 @@ function updateMemoryKpis() {
       ? 'No notes with code refs'
       : validCount + ' valid · ' + modifiedCount + ' modified · ' + brokenCount + ' broken'
         + (unverifiedCount > 0 ? ' · ' + unverifiedCount + ' unverified' : '');
+  }
+
+  // Active Notes KPI
+  const activeCountEl = document.getElementById('mem-kpi-active-count');
+  if (activeCountEl) {
+    activeCountEl.textContent = currentNotes.length > 0 ? currentNotes.length.toLocaleString() : '—';
+  }
+  const activeSubEl = document.getElementById('mem-kpi-active-sub');
+  if (activeSubEl) {
+    if (currentNotes.length === 0) {
+      activeSubEl.textContent = 'No active memory notes';
+    } else {
+      const kinds = {};
+      currentNotes.forEach(m => {
+        const k = m.kind || 'fact';
+        kinds[k] = (kinds[k] || 0) + 1;
+      });
+      const parts = [];
+      if (kinds.decision) parts.push(kinds.decision + ' decisions');
+      if (kinds.gotcha) parts.push(kinds.gotcha + ' gotchas');
+      if (kinds.procedure) parts.push(kinds.procedure + ' procedures');
+      if (kinds.fact) parts.push(kinds.fact + ' facts');
+      if (kinds.task) parts.push(kinds.task + ' tasks');
+      activeSubEl.textContent = parts.length > 0 ? parts.slice(0, 3).join(' · ') : 'Stored project knowledge';
+    }
+  }
+
+  // Total Recalls KPI
+  const recallsCountEl = document.getElementById('mem-kpi-recalls-count');
+  let totalRecalls = 0;
+  currentNotes.forEach(m => {
+    totalRecalls += (m.recall_count || 0);
+  });
+  if (recallsCountEl) {
+    recallsCountEl.textContent = currentNotes.length > 0 ? totalRecalls.toLocaleString() : '—';
+  }
+  const recallsSubEl = document.getElementById('mem-kpi-recalls-sub');
+  if (recallsSubEl) {
+    recallsSubEl.textContent = currentNotes.length === 0
+      ? 'No active memory notes'
+      : (totalRecalls > 0 ? 'Exact-key memories leveraged by agents' : 'No recalls recorded in retained journal');
   }
 
   updateActionCenter(currentNotes, modifiedCount, brokenCount);
@@ -1653,7 +1721,11 @@ const TIP = {
   'kpi.p50': 'Half of all queries finished faster than this.',
   'kpi.tokens_saved': 'Estimated tokens an agent avoided spending on source reads, including eg build re-runs (coefficients, not a measurement).',
   'kpi.candidates': 'Functions that look like near-copies of another function.',
+  'kpi.prewrite': 'Pre-write searches and reuse scans run by agents to discover existing helpers before authoring new code.',
+  'kpi.avg_callers': 'Average number of call sites using each canonical helper, indicating strong codebase consolidation.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
+  'kpi.active_notes': 'Total current notes (decisions, gotchas, facts, tasks, procedures) retained across agent sessions.',
+  'kpi.recalls': 'Total times agents looked up exact memory notes across all active stores in the retained journal.',
   'col.last_active': 'Most recent run recorded for this row.',
   'col.p50': 'Half of runs were faster than this.',
   'col.items': 'Results shown to the agent by the query.',
