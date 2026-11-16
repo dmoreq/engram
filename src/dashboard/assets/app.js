@@ -1191,7 +1191,9 @@ function populateReuseRepoFilter() {
 function setReuseDetectorFilter(det) {
   activeReuseDetector = det;
   document.querySelectorAll('.filter-pill[data-det]').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-det') === det);
+    const isAct = btn.getAttribute('data-det') === det;
+    btn.classList.toggle('active', isAct);
+    btn.setAttribute('aria-pressed', isAct ? 'true' : 'false');
   });
   selectedReuseId = null;
   renderReuseList();
@@ -1263,6 +1265,14 @@ function renderReuseList() {
     // Advisory recurrence lives in the meta line (count + last-used date);
     // a separate badge would restate the same journal number twice.
 
+    const candFile = (c.candidate_info && c.candidate_info.file)
+      ? c.candidate_info.file + ':' + c.candidate_info.line_start
+      : '';
+    const canFile = c.canonical_file + ':' + c.canonical_line;
+    const fileLocHtml = candFile && candFile !== canFile
+      ? '<span title="Candidate &rarr; Canonical">' + escapeHtml(candFile) + ' &rarr; ' + escapeHtml(canFile) + '</span>'
+      : '<span>' + escapeHtml(canFile) + '</span>';
+
     card.innerHTML =
       '<div class="item-card-head">' +
       '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
@@ -1275,7 +1285,7 @@ function renderReuseList() {
       '<div class="item-key">' + escapeHtml(c.symbol) + '</div>' +
       '<div class="item-snippet">&rarr; canonical: <code>' + escapeHtml(c.canonical) + '</code> <span class="badge status-ok" data-tip="card.callers">[callers=' + c.canonical_callers + ']</span></div>' +
       '<div class="item-meta">' +
-      '  <span>' + escapeHtml(c.canonical_file) + ':' + c.canonical_line + '</span>' +
+      '  ' + fileLocHtml +
       (c.shared_evidence ? '<span>&bull;</span><span>' + escapeHtml(c.shared_evidence) + '</span>' : '') +
       '<span>&bull;</span><span data-tip="card.usage">' + escapeHtml(reuseUsageText(c)) + '</span>' +
       '</div>';
@@ -1290,6 +1300,7 @@ function renderReuseList() {
 function renderReuseDossier(c) {
   const container = document.getElementById('reuse-dossier-container');
   if (!container) return;
+  container.scrollTop = 0;
   if (!c) {
     container.innerHTML = '<div class="empty-cell" style="padding-top: 5rem;">Select a duplication candidate to inspect side-by-side source code.</div>';
     return;
@@ -1298,6 +1309,14 @@ function renderReuseDossier(c) {
   const detBadgeClass = 'badge badge-' + c.detector.toLowerCase();
   const symSnippet = c.candidate_snippet || '(Source snippet unavailable)';
   const canSnippet = c.canonical_snippet || '(Source snippet unavailable)';
+
+  const candFile = c.candidate_info ? c.candidate_info.file : '';
+  const candRange = c.candidate_info ? (c.candidate_info.line_start + '-' + c.candidate_info.line_end) : '0-0';
+  const candPath = candFile + (candFile ? ':' + candRange : '');
+
+  const canFile = c.canonical_info ? c.canonical_info.file : '';
+  const canRange = c.canonical_info ? (c.canonical_info.line_start + '-' + c.canonical_info.line_end) : '0-0';
+  const canPath = canFile + (canFile ? ':' + canRange : '');
 
   container.innerHTML =
     '<div class="dossier-head">' +
@@ -1321,14 +1340,14 @@ function renderReuseDossier(c) {
     '  <div class="code-panel code-panel-candidate">' +
     '    <div class="code-panel-head">' +
     '      <span class="badge status-warn">DUPLICATE CANDIDATE</span>' +
-    '      <span>' + escapeHtml(c.candidate_info ? c.candidate_info.file : '') + ':' + (c.candidate_info ? c.candidate_info.line_start : 0) + '-' + (c.candidate_info ? c.candidate_info.line_end : 0) + '</span>' +
+    '      <span class="code-panel-file" title="' + escapeHtml(candPath) + '">' + escapeHtml(candPath) + '</span>' +
     '    </div>' +
     '    <pre><code>' + escapeHtml(symSnippet) + '</code></pre>' +
     '  </div>' +
     '  <div class="code-panel code-panel-canonical">' +
     '    <div class="code-panel-head">' +
     '      <span class="badge status-ok">CANONICAL REUSE TARGET</span>' +
-    '      <span>' + escapeHtml(c.canonical_info ? c.canonical_info.file : '') + ':' + (c.canonical_info ? c.canonical_info.line_start : 0) + '-' + (c.canonical_info ? c.canonical_info.line_end : 0) + '</span>' +
+    '      <span class="code-panel-file" title="' + escapeHtml(canPath) + '">' + escapeHtml(canPath) + '</span>' +
     '    </div>' +
     '    <pre><code>' + escapeHtml(canSnippet) + '</code></pre>' +
     '  </div>' +
@@ -1399,15 +1418,19 @@ function populateMemoryStoreFilter() {
   if (pillGroup) {
     pillGroup.innerHTML = '';
     const allBtn = document.createElement('button');
-    allBtn.className = 'filter-pill' + (select.value === 'ALL' ? ' active' : '');
+    const isAll = select.value === 'ALL';
+    allBtn.className = 'filter-pill' + (isAll ? ' active' : '');
     allBtn.setAttribute('data-store', 'ALL');
+    allBtn.setAttribute('aria-pressed', isAll ? 'true' : 'false');
     allBtn.textContent = 'All (' + allMemories.length + ')';
     pillGroup.appendChild(allBtn);
 
     Array.from(stores.keys()).sort().forEach(id => {
       const btn = document.createElement('button');
-      btn.className = 'filter-pill' + (select.value === id ? ' active' : '');
+      const isAct = select.value === id;
+      btn.className = 'filter-pill' + (isAct ? ' active' : '');
       btn.setAttribute('data-store', id);
+      btn.setAttribute('aria-pressed', isAct ? 'true' : 'false');
       const count = allMemories.filter(m => (m.store_id || m.store) === id).length;
       btn.textContent = stores.get(id) + ' (' + count + ')';
       pillGroup.appendChild(btn);
@@ -1418,19 +1441,22 @@ function populateMemoryStoreFilter() {
 function syncMemoryStorePills(currentStore) {
   const pills = document.querySelectorAll('#mem-store-pills .filter-pill');
   pills.forEach(pill => {
-    pill.classList.toggle('active', pill.getAttribute('data-store') === currentStore);
+    const isAct = pill.getAttribute('data-store') === currentStore;
+    pill.classList.toggle('active', isAct);
+    pill.setAttribute('aria-pressed', isAct ? 'true' : 'false');
   });
 }
 
 function setMemoryStoreFilter(storeId) {
   const select = document.getElementById('mem-store-filter');
-  if (select) select.value = storeId;
-  syncMemoryStorePills(storeId);
+  const targetStore = (select && select.value === storeId && storeId !== 'ALL') ? 'ALL' : storeId;
+  if (select) select.value = targetStore;
+  syncMemoryStorePills(targetStore);
   selectedMemoryId = null;
-  if (storeId === 'ALL') {
+  if (targetStore === 'ALL') {
     announce('Filter reset: all stores');
   } else {
-    announce('Filtered by store ' + storeId);
+    announce('Filtered by store ' + targetStore);
   }
   renderMemoryList();
 }
@@ -1545,6 +1571,7 @@ function renderMemoryList() {
 function renderMemoryDossier(m) {
   const container = document.getElementById('memory-dossier-container');
   if (!container) return;
+  container.scrollTop = 0;
   if (!m) {
     container.innerHTML = '<div class="empty-cell" style="padding-top: 5rem;">Select a memory note from the list to view full dossier.</div>';
     return;
@@ -1588,12 +1615,15 @@ function renderMemoryDossier(m) {
     ? '<button class="btn-touch" style="padding: 0.15rem 0.5rem; font-size: 0.72rem; margin-left: 0.5rem;" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
     : '';
 
+  const isGlobal = (m.store_id || m.store) === 'global';
+  const globalFlag = isGlobal ? ' --global' : '';
+  const refsArg = m.refs && m.refs.length ? ' --refs "' + escapeHtml(m.refs.join(' ')) + '"' : '';
   const cliHtml =
     '<div class="action-recommendation" style="margin-top: 1.25rem;">' +
     '  <div style="font-weight: 600; margin-bottom: 0.35rem;">Agent Workflow &amp; CLI Invocations</div>' +
     '  <div style="font-family: var(--font-mono); font-size: 0.76rem; display: flex; flex-direction: column; gap: 0.25rem;">' +
-    '    <div><span class="text-muted">Read: </span><code>eg mem get "' + escapeHtml(m.key) + '"</code></div>' +
-    '    <div><span class="text-muted">Save: </span><code>eg mem write "' + escapeHtml(m.key) + '" --kind ' + escapeHtml(m.kind) + ' --body "..."</code></div>' +
+    '    <div><span class="text-muted">Read: </span><code>eg mem get "' + escapeHtml(m.key) + '"' + globalFlag + '</code></div>' +
+    '    <div><span class="text-muted">Save: </span><code>eg mem write "' + escapeHtml(m.key) + '" --kind ' + escapeHtml(m.kind) + refsArg + globalFlag + ' --body "..."</code></div>' +
     '  </div>' +
     '</div>';
 
@@ -1941,7 +1971,8 @@ function initDelegation() {
     const id = e.target.id;
     if (id === 'repo-filter' || id === 'agent-filter' || id === 'status-filter') applyTelemetryFilters();
     else if (id === 'reuse-repo-filter') renderReuseList();
-    else if (id === 'mem-store-filter' || id === 'mem-kind-filter' || id === 'mem-show-superseded') renderMemoryList();
+    else if (id === 'mem-store-filter') { syncMemoryStorePills(e.target.value); renderMemoryList(); }
+    else if (id === 'mem-kind-filter' || id === 'mem-show-superseded') renderMemoryList();
     else if (id === 'mem-view' && MEMORY_VIEWS[e.target.value]) { memView = e.target.value; renderMemoryList(); }
     else if (id === 'reuse-view' && REUSE_VIEWS[e.target.value]) { reuseView = e.target.value; renderReuseList(); }
   });

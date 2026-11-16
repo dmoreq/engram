@@ -241,14 +241,14 @@
 
       <span class="text-muted" style="font-size: 0.78rem;">Detector:</span>
       <div class="pill-group" id="reuse-detector-pills">
-        <button class="filter-pill active" data-det="ALL" data-tip="det.all">All</button>
-        <button class="filter-pill" data-det="D1" data-tip="det.d1">D1 Callee</button>
-        <button class="filter-pill" data-det="D2" data-tip="det.d2">D2 Interface</button>
-        <button class="filter-pill" data-det="D3" data-tip="det.d3">D3 Bypass</button>
-        <button class="filter-pill" data-det="D4" data-tip="det.d4">D4 Wrapper</button>
-        <button class="filter-pill" data-det="D5" data-tip="det.d5">D5 Class</button>
-        <button class="filter-pill" data-det="D1L" data-tip="det.d1l">D1L Unresolved</button>
-        <button class="filter-pill" data-det="DT" data-tip="det.dt">DT Tests</button>
+        <button class="filter-pill active" data-det="ALL" data-tip="det.all" aria-pressed="true">All</button>
+        <button class="filter-pill" data-det="D1" data-tip="det.d1" aria-pressed="false">D1 Callee</button>
+        <button class="filter-pill" data-det="D2" data-tip="det.d2" aria-pressed="false">D2 Interface</button>
+        <button class="filter-pill" data-det="D3" data-tip="det.d3" aria-pressed="false">D3 Bypass</button>
+        <button class="filter-pill" data-det="D4" data-tip="det.d4" aria-pressed="false">D4 Wrapper</button>
+        <button class="filter-pill" data-det="D5" data-tip="det.d5" aria-pressed="false">D5 Class</button>
+        <button class="filter-pill" data-det="D1L" data-tip="det.d1l" aria-pressed="false">D1L Unresolved</button>
+        <button class="filter-pill" data-det="DT" data-tip="det.dt" aria-pressed="false">DT Tests</button>
       </div>
 
       <input type="text" id="reuse-search" class="search-input" placeholder="Search candidate, canonical symbol, or path...">
@@ -363,7 +363,7 @@
     <div class="filter-bar">
       <span class="text-muted" style="font-size: 0.78rem;">Store:</span>
       <div class="pill-group" id="mem-store-pills">
-        <button class="filter-pill active" data-store="ALL">All Stores</button>
+        <button class="filter-pill active" data-store="ALL" aria-pressed="true">All Stores</button>
       </div>
       <select id="mem-store-filter" class="filter-select hidden">
         <option value="ALL">All Stores</option>
