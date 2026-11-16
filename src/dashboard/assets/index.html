@@ -209,30 +209,27 @@
       </div>
     </div>
 
-    <!-- Anti-Reinvention Workspace & Agent Distribution -->
-    <div class="panel-grid">
-      <div class="card">
-        <div class="card-title">
-          <span>Workspace Distribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Search and reuse invocations across repositories</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Repository / Branch</th>
-              <th class="text-right">Calls</th>
-              <th class="text-right" data-tip="col.search_hit_rate">Search Hit Rate</th>
-              <th class="text-right" data-tip="col.candidates_sample">Candidates (Sample / Pool)</th>
-              <th class="text-right" data-tip="col.latest_scan">Latest Scan</th>
-              <th class="text-right" data-tip="col.reuse_tokens_saved">Reuse Tokens Saved</th>
-            </tr>
-          </thead>
-          <tbody id="reuse-repos-tbody">
-            <tr><td colspan="6" class="empty-cell">Loading repositories...</td></tr>
-          </tbody>
-        </table>
+    <!-- Anti-Reinvention Workspace Distribution -->
+    <div class="card" style="margin-bottom: 1.75rem;">
+      <div class="card-title">
+        <span>Workspace Distribution</span>
+        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Search and reuse invocations across repositories</span>
       </div>
-
+      <table>
+        <thead>
+          <tr>
+            <th>Repository / Branch</th>
+            <th class="text-right">Calls</th>
+            <th class="text-right" data-tip="col.search_hit_rate">Search Hit Rate</th>
+            <th class="text-right" data-tip="col.candidates_sample">Candidates (Sample / Pool)</th>
+            <th class="text-right" data-tip="col.latest_scan">Latest Scan</th>
+            <th class="text-right" data-tip="col.reuse_tokens_saved">Reuse Tokens Saved</th>
+          </tr>
+        </thead>
+        <tbody id="reuse-repos-tbody">
+          <tr><td colspan="6" class="empty-cell">Loading repositories...</td></tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- Filter Bar -->
@@ -254,6 +251,8 @@
         <button class="filter-pill" data-det="DT" data-tip="det.dt">DT Tests</button>
       </div>
 
+      <input type="text" id="reuse-search" class="search-input" placeholder="Search candidate, canonical symbol, or path...">
+
       <label for="reuse-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
       <select id="reuse-view" class="filter-select" data-tip="view.reuse">
         <option value="used10" selected>Top 10 by callers</option>
@@ -263,7 +262,7 @@
     <div class="list-count text-muted" id="reuse-list-count"></div>
 
     <!-- Master-Detail Split Pane -->
-    <div class="master-detail-split">
+    <div class="master-detail-split master-detail-split-code">
       <div class="list-pane" id="reuse-cards-container">
         <!-- Rendered dynamically via JS -->
       </div>
@@ -324,29 +323,26 @@
       </div>
     </div>
 
-    <!-- Memory Workspace & Agent Distribution -->
-    <div class="panel-grid">
-      <div class="card">
-        <div class="card-title">
-          <span>Workspace Memory Distribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Project memory reads, writes, and reliability by repository</span>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Repository / Store</th>
-              <th class="text-right">Calls</th>
-              <th class="text-right" data-tip="col.reads_writes">Reads / Writes</th>
-              <th class="text-right" data-tip="col.memory_hit_rate">Read Hit Rate</th>
-              <th data-tip="col.reliability">Reliability</th>
-            </tr>
-          </thead>
-          <tbody id="mem-repos-tbody">
-            <tr><td colspan="5" class="empty-cell">Loading repositories...</td></tr>
-          </tbody>
-        </table>
+    <!-- Workspace Memory Distribution -->
+    <div class="card" style="margin-bottom: 1.75rem;">
+      <div class="card-title">
+        <span>Workspace Memory Distribution</span>
+        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Project memory reads, writes, and reliability by repository</span>
       </div>
-
+      <table>
+        <thead>
+          <tr>
+            <th>Repository / Store</th>
+            <th class="text-right">Calls</th>
+            <th class="text-right" data-tip="col.reads_writes">Reads / Writes</th>
+            <th class="text-right" data-tip="col.memory_hit_rate">Read Hit Rate</th>
+            <th data-tip="col.reliability">Reliability</th>
+          </tr>
+        </thead>
+        <tbody id="mem-repos-tbody">
+          <tr><td colspan="5" class="empty-cell">Loading repositories...</td></tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- Action Center for Broken & Modified References -->
@@ -365,8 +361,11 @@
 
     <!-- Memory Filter Bar -->
     <div class="filter-bar">
-      <label for="mem-store-filter" class="text-muted" style="font-size: 0.78rem;">Store:</label>
-      <select id="mem-store-filter" class="filter-select">
+      <span class="text-muted" style="font-size: 0.78rem;">Store:</span>
+      <div class="pill-group" id="mem-store-pills">
+        <button class="filter-pill active" data-store="ALL">All Stores</button>
+      </div>
+      <select id="mem-store-filter" class="filter-select hidden">
         <option value="ALL">All Stores</option>
       </select>
 

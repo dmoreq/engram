@@ -962,6 +962,7 @@ function filterMemoryByRepo(repoName) {
       select.value = matchedValue;
       announce('Filtered by store ' + repoName);
     }
+    syncMemoryStorePills(select.value);
     renderMemoryList();
   }
 }
@@ -1198,9 +1199,18 @@ function setReuseDetectorFilter(det) {
 
 function getFilteredReuseCandidates() {
   const repo = document.getElementById('reuse-repo-filter') ? document.getElementById('reuse-repo-filter').value : 'ALL';
+  const searchInput = document.getElementById('reuse-search');
+  const search = searchInput ? searchInput.value.toLowerCase().trim() : '';
   return reuseCandidates.filter(c => {
     if (repo !== 'ALL' && c.repo !== repo) return false;
     if (activeReuseDetector !== 'ALL' && c.detector !== activeReuseDetector) return false;
+    if (search) {
+      const matchSymbol = (c.symbol || '').toLowerCase().includes(search);
+      const matchCanonical = (c.canonical || '').toLowerCase().includes(search);
+      const matchFile = (c.canonical_file || '').toLowerCase().includes(search)
+        || (c.candidate_info && (c.candidate_info.file || '').toLowerCase().includes(search));
+      if (!matchSymbol && !matchCanonical && !matchFile) return false;
+    }
     return true;
   });
 }
@@ -1308,14 +1318,14 @@ function renderReuseDossier(c) {
     (c.shared_evidence ? '<div class="dossier-section-title">Shared Footprint &amp; Overlap Evidence</div><div class="chips-row"><span class="chip chip-tag">' + escapeHtml(c.shared_evidence) + '</span></div>' : '') +
     '<div class="dossier-section-title">Side-by-Side Source Code Comparison</div>' +
     '<div class="side-by-side-grid">' +
-    '  <div class="code-panel">' +
+    '  <div class="code-panel code-panel-candidate">' +
     '    <div class="code-panel-head">' +
     '      <span class="badge status-warn">DUPLICATE CANDIDATE</span>' +
     '      <span>' + escapeHtml(c.candidate_info ? c.candidate_info.file : '') + ':' + (c.candidate_info ? c.candidate_info.line_start : 0) + '-' + (c.candidate_info ? c.candidate_info.line_end : 0) + '</span>' +
     '    </div>' +
     '    <pre><code>' + escapeHtml(symSnippet) + '</code></pre>' +
     '  </div>' +
-    '  <div class="code-panel">' +
+    '  <div class="code-panel code-panel-canonical">' +
     '    <div class="code-panel-head">' +
     '      <span class="badge status-ok">CANONICAL REUSE TARGET</span>' +
     '      <span>' + escapeHtml(c.canonical_info ? c.canonical_info.file : '') + ':' + (c.canonical_info ? c.canonical_info.line_start : 0) + '-' + (c.canonical_info ? c.canonical_info.line_end : 0) + '</span>' +
@@ -1383,6 +1393,46 @@ function populateMemoryStoreFilter() {
     select.value = 'ALL';
     if (keep !== 'ALL') announce('Filter "' + keep + '" reset: store no longer active');
   }
+
+  // Populate store filter pills
+  const pillGroup = document.getElementById('mem-store-pills');
+  if (pillGroup) {
+    pillGroup.innerHTML = '';
+    const allBtn = document.createElement('button');
+    allBtn.className = 'filter-pill' + (select.value === 'ALL' ? ' active' : '');
+    allBtn.setAttribute('data-store', 'ALL');
+    allBtn.textContent = 'All (' + allMemories.length + ')';
+    pillGroup.appendChild(allBtn);
+
+    Array.from(stores.keys()).sort().forEach(id => {
+      const btn = document.createElement('button');
+      btn.className = 'filter-pill' + (select.value === id ? ' active' : '');
+      btn.setAttribute('data-store', id);
+      const count = allMemories.filter(m => (m.store_id || m.store) === id).length;
+      btn.textContent = stores.get(id) + ' (' + count + ')';
+      pillGroup.appendChild(btn);
+    });
+  }
+}
+
+function syncMemoryStorePills(currentStore) {
+  const pills = document.querySelectorAll('#mem-store-pills .filter-pill');
+  pills.forEach(pill => {
+    pill.classList.toggle('active', pill.getAttribute('data-store') === currentStore);
+  });
+}
+
+function setMemoryStoreFilter(storeId) {
+  const select = document.getElementById('mem-store-filter');
+  if (select) select.value = storeId;
+  syncMemoryStorePills(storeId);
+  selectedMemoryId = null;
+  if (storeId === 'ALL') {
+    announce('Filter reset: all stores');
+  } else {
+    announce('Filtered by store ' + storeId);
+  }
+  renderMemoryList();
 }
 
 function getFilteredMemories() {
@@ -1538,6 +1588,15 @@ function renderMemoryDossier(m) {
     ? '<button class="btn-touch" style="padding: 0.15rem 0.5rem; font-size: 0.72rem; margin-left: 0.5rem;" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
     : '';
 
+  const cliHtml =
+    '<div class="action-recommendation" style="margin-top: 1.25rem;">' +
+    '  <div style="font-weight: 600; margin-bottom: 0.35rem;">Agent Workflow &amp; CLI Invocations</div>' +
+    '  <div style="font-family: var(--font-mono); font-size: 0.76rem; display: flex; flex-direction: column; gap: 0.25rem;">' +
+    '    <div><span class="text-muted">Read: </span><code>eg mem get "' + escapeHtml(m.key) + '"</code></div>' +
+    '    <div><span class="text-muted">Save: </span><code>eg mem write "' + escapeHtml(m.key) + '" --kind ' + escapeHtml(m.kind) + ' --body "..."</code></div>' +
+    '  </div>' +
+    '</div>';
+
   container.innerHTML =
     '<div class="dossier-head">' +
     '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">' +
@@ -1558,7 +1617,8 @@ function renderMemoryDossier(m) {
     '<div class="dossier-section-title">Memory Content</div>' +
     '<div class="dossier-body">' + escapeHtml(m.body) + '</div>' +
     refsHtml +
-    tagsHtml;
+    tagsHtml +
+    cliHtml;
 }
 
 let isDocumentVisible = true;
@@ -1864,6 +1924,8 @@ function initDelegation() {
     if (tabBtn) { switchTab(tabBtn.dataset.tab); return; }
     const pill = e.target.closest('[data-det]');
     if (pill) { setReuseDetectorFilter(pill.dataset.det); return; }
+    const storePill = e.target.closest('[data-store]');
+    if (storePill) { setMemoryStoreFilter(storePill.dataset.store); return; }
     const touchBtn = e.target.closest('.btn-touch[data-key]');
     if (touchBtn) { touchMemory(touchBtn); return; }
     const verifyAll = e.target.closest('#verify-all-btn');
@@ -1872,6 +1934,7 @@ function initDelegation() {
   document.addEventListener('input', (e) => {
     const id = e.target.id;
     if (id === 'query-search') applyTelemetryFilters();
+    else if (id === 'reuse-search') { selectedReuseId = null; renderReuseList(); }
     else if (id === 'mem-search') renderMemoryList();
   });
   document.addEventListener('change', (e) => {
