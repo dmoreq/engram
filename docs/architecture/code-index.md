@@ -74,7 +74,7 @@ skips the fast path and re-extracts everything.
 | `impact` | `src/query/impact/` | Reverse closure over `calls`, `imports`, and `inherits`, with a file-level summary |
 | `imports`, `symbols`, `unresolved` | `src/query/analysis/` | Direct table scans with deterministic ordering |
 | `search` | `src/query/analysis/search.rs` | FTS5 `bm25` over split identifier tokens, then caller-count ranking |
-| `reuse` | `src/query/reuse/` | Four static duplicate detectors over the symbol corpus |
+| `reuse` | `src/query/reuse/` | Seven static duplicate detectors over the symbol corpus (D1–D4, D5, D1L, DT) |
 | `stats`, `doctor` | `src/insights.rs`, `src/doctor.rs` | Meta counters and integrity/staleness probes |
 
 Every ordering ends with deterministic tie-breakers (`qualname`, `file_path`,

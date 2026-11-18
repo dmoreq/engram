@@ -14,17 +14,21 @@ pub(super) fn kpi_section(
     aggs: &std::collections::BTreeMap<String, ToolAgg>,
     errors_note: &str,
 ) -> Vec<String> {
-    let total: usize = aggs.values().map(|a| a.calls).sum();
-    let mut all_lat: Vec<u64> = aggs
-        .values()
-        .flat_map(|a| a.latencies.iter().copied())
-        .collect();
+    let mut total = 0;
+    let mut total_errors = 0;
+    let mut total_stale = 0;
+    let mut all_lat = Vec::new();
+
+    for a in aggs.values() {
+        total += a.calls;
+        total_errors += a.errors;
+        total_stale += a.stale;
+        all_lat.extend_from_slice(&a.latencies);
+    }
     all_lat.sort_unstable();
     let p50 = percentile(&all_lat, 0.5);
     let p95 = percentile(&all_lat, 0.95);
 
-    let total_errors: usize = aggs.values().map(|a| a.errors).sum();
-    let total_stale: usize = aggs.values().map(|a| a.stale).sum();
     let reliability_pct = if total > 0 {
         100.0 * (total.saturating_sub(total_errors) as f64) / (total as f64)
     } else {

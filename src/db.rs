@@ -18,8 +18,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::error::{is_sqlite_corruption, EgError, Result};
 use crate::extract::{
-    CarriedIndex, CarriedSymbol, Confidence, EdgeKind, EdgeSiteKind, NewSymbol, SymbolKind,
-    SCHEMA_VERSION,
+    CarriedIndex, CarriedSymbol, Confidence, EdgeKind, NewSymbol, SymbolKind, SCHEMA_VERSION,
 };
 
 /// Compile-time grammar identity, derived from the Cargo.lock-pinned grammar
@@ -362,7 +361,14 @@ pub fn create_secondary_indexes(conn: &Connection) -> Result<()> {
 /// build's lock holder removes it, and the previous `index.db` stays readable.
 pub fn publish_new_index(root: &Path) -> Result<()> {
     let new = db_new_path(root);
-    File::open(&new)?.sync_all()?;
+    // Write permission is required for FlushFileBuffers on Windows
+    // (ERROR_ACCESS_DENIED on a read-only handle); POSIX is unaffected and
+    // the published index stays immutable after the rename.
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&new)?
+        .sync_all()?;
     fs::rename(&new, db_path(root))?;
     // Best-effort directory fsync: makes the rename durable. If it fails, a
     // crash can revert to the previous index, never expose a missing one.

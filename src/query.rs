@@ -81,7 +81,7 @@ const IMPACT_CALLS_CAVEAT: &str =
 
 /// One import statement is one site even when it resolves to both a module and
 /// a symbol edge; every non-import edge remains an individual site.
-fn impact_site_key() -> String {
+pub(super) fn impact_site_key() -> String {
     format!(
         "CASE WHEN e.kind = '{}' THEN 'i:' || s.id || ':' || e.site_line ELSE 'e:' || e.id END",
         EdgeKind::Imports.as_str()
@@ -130,10 +130,9 @@ struct SymbolRow {
     signature: String,
 }
 
-/// One BFS level's out-edges grouped per source: `(dst qualname, dst path,
-/// site_line, dst id)` sorted by the pinned neighbor key (`path` is the
-/// destination file). Amendment 13.
-type LevelEdges = std::collections::HashMap<i64, Vec<(String, String, i64, i64)>>;
+/// One BFS level's out-edges grouped per source: `(site_line, dst_id)`
+/// sorted by the pinned neighbor key `(dst qualname, dst path, site_line)` in SQL.
+type LevelEdges = std::collections::HashMap<i64, Vec<(i64, i64)>>;
 
 /// Row tag for an AMBIGUOUS-confidence edge (one spelling everywhere).
 pub const AMBIGUOUS_TAG: &str = " [ambiguous]";

@@ -390,3 +390,39 @@ fn python_nested_def_scopes_to_enclosing_function() {
     let qns: Vec<&str> = fx.symbols.iter().map(|s| s.qualname.as_str()).collect();
     assert!(qns.contains(&"pkg.mod.C.outer.inner"), "{qns:?}");
 }
+
+#[test]
+fn nested_class_constructor_and_qualified_method_resolve() {
+    // `Outer.Inner()` is a constructor of the nested class (not a method
+    // lookup on Outer), and `Outer.Inner.make()` resolves the method on it.
+    let src = "class Outer:\n    class Inner:\n        @staticmethod\n        def make():\n            return 1\n\ndef build():\n    return Outer.Inner()\n\ndef use():\n    return Outer.Inner.make()\n";
+    let e = edges_for(src);
+    assert!(
+        e.iter()
+            .any(|(k, c, n)| k == "calls" && c == "EXTRACTED" && n.ends_with(".Outer.Inner")),
+        "nested class constructor must resolve: {e:?}"
+    );
+    assert!(
+        e.iter()
+            .any(|(k, c, n)| k == "calls" && c == "EXTRACTED" && n.ends_with(".Outer.Inner.make")),
+        "qualified nested method must resolve: {e:?}"
+    );
+    assert!(
+        !e.iter().any(|(k, c, _)| k == "calls" && c == "AMBIGUOUS"),
+        "nested class paths must not fan out ambiguous edges: {e:?}"
+    );
+}
+
+#[test]
+fn attribute_assignment_does_not_shadow_module_function() {
+    // `cfg.debug = True` is an attribute assignment, not a pattern: the
+    // attribute name must not be recorded as a local that shadows the
+    // module-level `debug` function.
+    let src = "def debug(x):\n    return x\n\ndef run(cfg):\n    cfg.debug = True\n    return debug(cfg)\n";
+    let e = edges_for(src);
+    assert!(
+        e.iter()
+            .any(|(k, c, n)| k == "calls" && c == "EXTRACTED" && n.ends_with(".debug")),
+        "attribute assignment must not erase the module function: {e:?}"
+    );
+}

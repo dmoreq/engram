@@ -20,7 +20,7 @@ pub(super) fn write_rows(
     prep: &BuildPrep,
     rows: &[crate::db::FilesRow],
     resolution: &crate::extract::Resolution,
-) -> Result<WriteIds> {
+) -> Result<()> {
     if !prep.cls.carried.is_empty() {
         let unchanged = carry_forward_rows(&prep.cls, &prep.old_map);
         crate::db::carry_forward_unchanged(conn, &prep.root, &unchanged)?;
@@ -29,22 +29,10 @@ pub(super) fn write_rows(
     // Schema v6 / Amendment 19: unresolved edge sites per fresh file, so a
     // later build can re-extract exactly the files whose gaps a new symbol
     // could heal.
-    let unresolved_rows: Vec<(i64, &str, crate::extract::EdgeSiteKind, usize)> = resolution
-        .unresolved_calls
-        .iter()
-        .map(|u| {
-            (
-                fresh_file_ids[u.file_idx],
-                u.name.as_str(),
-                u.kind,
-                u.site_line,
-            )
-        })
-        .collect();
-    crate::db::insert_unresolved_calls(conn, &unresolved_rows)?;
+    crate::db::insert_unresolved_calls(conn, &resolution.unresolved_calls, &fresh_file_ids)?;
 
     // Symbols: fresh rows insert; carried rows keep their previous ids.
-    let (fresh_symbols, fresh_pos, fresh_sym_count) = split_fresh_symbols(resolution);
+    let (fresh_symbols, fresh_pos, _) = split_fresh_symbols(resolution);
     let fresh_paths: Vec<String> = rows.iter().map(|r| r.rel.clone()).collect();
     let fresh_sym_ids =
         crate::db::insert_symbols(conn, &fresh_symbols, &fresh_file_ids, &fresh_paths)?;
@@ -52,12 +40,7 @@ pub(super) fn write_rows(
     // Edges: endpoints map fresh -> inserted id, carried -> previous row id.
     let edge_rows = edge_rows_for(resolution, &fresh_pos, &fresh_sym_ids);
     crate::db::insert_edge_rows(conn, &edge_rows)?;
-    Ok(WriteIds {
-        sym_ids: fresh_sym_ids,
-        pos: fresh_pos,
-        paths: fresh_paths,
-        sym_count: fresh_sym_count,
-    })
+    Ok(())
 }
 
 fn carry_forward_rows(
@@ -130,46 +113,8 @@ fn edge_rows_for<'a>(
     edge_rows
 }
 
-pub(super) fn write_fts_indexes(
-    conn: &rusqlite::Connection,
-    resolution: &crate::extract::Resolution,
-    ids: &WriteIds,
-    all_fresh: bool,
-) -> Result<()> {
-    // Fast path: a fully fresh build writes FTS rows directly from the
-    // in-memory symbol rows instead of re-reading all symbols with a
-    // SELECT + JOIN. Any other build keeps the SELECT path (carried rows
-    // are not in memory).
-    if all_fresh {
-        let mut fts_rows: Vec<(i64, &str, &str, &str, &str)> =
-            Vec::with_capacity(resolution.symbols.len());
-        let mut complete = true;
-        for (sym, pos) in resolution.symbols.iter().zip(&ids.pos) {
-            let Some(pos) = pos else {
-                complete = false;
-                break;
-            };
-            let Some(path) = ids.paths.get(sym.file_idx) else {
-                complete = false;
-                break;
-            };
-            fts_rows.push((
-                ids.sym_ids[*pos],
-                sym.qualname.as_str(),
-                sym.name.as_str(),
-                path.as_str(),
-                sym.signature.as_str(),
-            ));
-        }
-        if complete {
-            crate::db::populate_symbols_fts_rows(conn, &fts_rows)?;
-        } else {
-            crate::db::populate_symbols_fts(conn)?;
-        }
-    } else {
-        crate::db::populate_symbols_fts(conn)?;
-    }
-    Ok(())
+pub(super) fn write_fts_indexes(conn: &rusqlite::Connection) -> Result<()> {
+    crate::db::populate_symbols_fts(conn)
 }
 
 /// Authoritative SQL totals for the meta manifest, one scan per table (A3).
@@ -199,6 +144,7 @@ pub(super) fn write_meta_counts(conn: &rusqlite::Connection, root: &Path) -> Res
         (meta_keys::EDGE_CALLS, c.calls_total),
         (meta_keys::EDGE_IMPORTS, c.imports_total),
         (meta_keys::EDGE_INHERITS, c.inherits_total),
+        (meta_keys::UNRESOLVED_CALLEE_COUNT, c.unres_total),
     ] {
         crate::db::set_meta(conn, key, &n.to_string())?;
     }

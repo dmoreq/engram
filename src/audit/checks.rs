@@ -34,6 +34,16 @@ pub struct Threshold {
     pub multiplier: Option<f64>,
 }
 
+impl Threshold {
+    pub fn evaluate(&self, value: f64, baseline: Option<&BaselineView>) -> Status {
+        if self.direction == "lower_is_better" {
+            lower_status(value, self, baseline)
+        } else {
+            higher_status(value, self, baseline)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BaselineView {
     pub value: f64,

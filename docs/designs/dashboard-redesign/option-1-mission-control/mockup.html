@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eg &mdash; Mission Control</title>
+<script>
+/* Set theme before first paint: localStorage override, else prefers-color-scheme */
+(function(){try{var t=localStorage.getItem('eg-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+</script>
+<style>
+/* ===== Tokens: Shibumi Utilitarian light (default). 24 semantic tokens, each with an active caller. ===== */
+:root {
+  color-scheme: light;
+  --bg-canvas: #F7F4EE; --bg-surface: #FBF9F5; --bg-subtle: #EFECE4; --bg-elevated: #FFFFFF;
+  --text-primary: #1E1C1A; --text-secondary: #4A4640; --text-muted: #666059;
+  --border-subtle: rgba(30,28,26,0.09); --border-strong: rgba(30,28,26,0.18);
+  --intent-primary: #8A4A2E; --intent-primary-soft: rgba(138,74,46,0.10);
+  --intent-success: #246A49; --intent-success-soft: rgba(36,106,73,0.10);
+  --intent-warning: #945807; --intent-warning-soft: rgba(148,88,7,0.10);
+  --intent-danger: #B8322C; --intent-danger-soft: rgba(184,50,44,0.10);
+  --intent-info: #2E5A70; --intent-info-soft: rgba(46,90,112,0.10);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-sm: 4px; --radius-md: 8px;
+  --transition-fast: 0.15s cubic-bezier(0.4,0,0.2,1);
+  --focus-ring: var(--intent-info);
+}
+/* ===== Tokens: Shibumi dark (also applied pre-paint by the head script) ===== */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724;
+  --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84;
+  --border-subtle: rgba(243,239,234,0.09); --border-strong: rgba(243,239,234,0.18);
+  --intent-primary: #D9825B; --intent-primary-soft: rgba(217,130,91,0.15);
+  --intent-success: #52B788; --intent-success-soft: rgba(82,183,136,0.15);
+  --intent-warning: #E9A84A; --intent-warning-soft: rgba(233,168,74,0.15);
+  --intent-danger: #F06A63; --intent-danger-soft: rgba(240,106,99,0.15);
+  --intent-info: #6BA3BE; --intent-info-soft: rgba(107,163,190,0.15);
+}
+/* Base: monospace-driven console. Type ramp (4 sizes): 10 labels/chips/headers, 11 body/meta,
+   12 titles, 18 KPI figures. No text below 10px; text-muted only at 11px+. Layout px below is
+   grid geometry and the Mode B density scale; all color routes through tokens. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-canvas); color: var(--text-primary);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.45;
+  overflow: hidden; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums;
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-radius: var(--radius-sm); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.hidden { display: none !important; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--radius-sm); }
+::-webkit-scrollbar-track { background: transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.console { height: 100vh; display: flex; flex-direction: column; }
+
+/* ===== Topbar ===== */
+.topbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border-strong); }
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-mark { background: var(--intent-primary); color: var(--bg-canvas); font-weight: 700; font-size: 11px; padding: 3px 6px; border-radius: var(--radius-sm); letter-spacing: 0.05em; }
+.brand-name { font-weight: 700; font-size: 12px; letter-spacing: 0.14em; }
+.brand-sub { font-size: 11px; color: var(--text-muted); }
+.topbar-spacer { flex: 1; }
+.btn { min-height: 24px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: var(--text-secondary); border: 1px solid var(--border-strong); padding: 2px 10px; border-radius: var(--radius-md); white-space: nowrap; transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast); }
+.btn:hover { color: var(--text-primary); border-color: var(--intent-primary); }
+.btn:disabled { color: var(--intent-success); border-color: transparent; background: var(--intent-success-soft); cursor: default; }
+.live-toggle { display: flex; align-items: center; gap: 6px; min-height: 24px; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; color: var(--intent-success); background: var(--intent-success-soft); border: 1px solid var(--border-subtle); padding: 2px 10px; border-radius: var(--radius-md); transition: background var(--transition-fast); }
+.live-toggle:hover { border-color: var(--intent-success); }
+.live-toggle.paused { color: var(--text-secondary); background: var(--bg-subtle); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* ===== KPI strip: 4 single-signal figures (duplicates live in their owning panels) ===== */
+.kpi-strip { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--bg-surface); border-bottom: 1px solid var(--border-strong); }
+.kpi { padding: 8px 14px 7px; border-right: 1px solid var(--border-subtle); min-width: 0; }
+.kpi:last-child { border-right: none; }
+.kpi-label { font-size: 10px; letter-spacing: 0.1em; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi-value { font-size: 18px; font-weight: 700; line-height: 1.15; margin-top: 2px; white-space: nowrap; }
+.kpi-value small { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.kpi-sub { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi.accent-success .kpi-value { color: var(--intent-success); }
+.kpi.accent-info .kpi-value { color: var(--intent-info); }
+.kpi-flag { color: var(--intent-warning); }
+
+/* ===== Main grid ===== */
+.grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 336px minmax(0, 1fr) 328px; background: var(--bg-canvas); }
+.rail { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.rail-left { border-right: 1px solid var(--border-strong); }
+.rail-right { border-left: 1px solid var(--border-strong); }
+.center { min-width: 0; display: flex; flex-direction: column; }
+
+/* ===== Panels: hairline regions, never nested bordered cards ===== */
+.panel { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--border-strong); }
+.panel:last-child { border-bottom: none; }
+.rail-left .panel:nth-child(1) { flex: 1.35; }
+.rail-left .panel:nth-child(2) { flex: 1; }
+.rail-left .panel:nth-child(3) { flex: 0.85; }
+.rail-right .panel:nth-child(1) { flex: 1.4; }
+.rail-right .panel:nth-child(2) { flex: 1; }
+.center .panel { flex: 1; }
+.panel-head { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.panel-code { font-size: 10px; font-weight: 700; color: var(--bg-canvas); background: var(--text-muted); border-radius: var(--radius-sm); padding: 1px 5px; letter-spacing: 0.06em; }
+.panel-title { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; }
+.panel-actions { display: flex; gap: 6px; margin-left: 8px; }
+.panel-meta, #feed-count { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-body { flex: 1; overflow-y: auto; min-height: 0; }
+.empty-hint { padding: 16px 14px; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+
+/* ===== Chips: one class + intent variants (single vocabulary for all static labels) ===== */
+.chip { font-size: 10px; letter-spacing: 0.04em; color: var(--text-secondary); background: var(--bg-subtle); padding: 1px 8px; border-radius: var(--radius-sm); white-space: nowrap; }
+.chip-success { background: var(--intent-success-soft); color: var(--intent-success); }
+.chip-warning { background: var(--intent-warning-soft); color: var(--intent-warning); font-weight: 700; }
+.chip-danger { background: var(--intent-danger-soft); color: var(--intent-danger); font-weight: 700; }
+.chip-info { background: var(--intent-info-soft); color: var(--intent-info); }
+
+/* ===== Compact data table ===== */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th { position: sticky; top: 0; z-index: 1; background: var(--bg-surface); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-secondary); text-align: right; padding: 4px 8px 3px; border-bottom: 1px solid var(--border-subtle); }
+.tbl th:first-child, .tbl td:first-child { text-align: left; }
+.tbl td { font-size: 11px; padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tbody tr { transition: background var(--transition-fast); }
+.cell-name { font-weight: 700; max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+.num-dim, .f-shown, .f-lat { color: var(--text-secondary); }
+.subrow td { font-size: 11px; color: var(--text-muted); padding-top: 0; background: var(--bg-subtle); text-align: right; }
+.subrow td:first-child { padding-left: 20px; text-align: left; font-weight: 400; }
+.hit-bar { display: block; position: relative; height: 3px; min-width: 40px; background: var(--border-subtle); border-radius: var(--radius-sm); overflow: hidden; }
+.hit-fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: var(--radius-sm); }
+
+/* ===== Feed (center) ===== */
+.feed-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); flex-wrap: wrap; }
+.pill-group { display: flex; border: 1px solid var(--text-muted); border-radius: var(--radius-md); overflow: hidden; }
+.pill { min-height: 24px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; padding: 2px 10px; color: var(--text-secondary); transition: background var(--transition-fast), color var(--transition-fast); }
+.pill:hover { color: var(--text-primary); }
+.pill.active { background: var(--intent-primary-soft); color: var(--intent-primary); box-shadow: inset 0 -2px 0 0 currentColor; }
+.feed-select { min-height: 24px; font-size: 10px; color: var(--text-secondary); background: var(--bg-subtle); border: 1px solid var(--text-muted); border-radius: var(--radius-md); padding: 2px 6px; }
+.feed-search { min-height: 24px; font-size: 11px; color: var(--text-primary); background: var(--bg-subtle); border: 1px solid var(--text-muted); border-radius: var(--radius-md); padding: 2px 9px; width: 140px; }
+.feed-search::placeholder { color: var(--text-muted); }
+.feed-search:focus { border-color: var(--intent-info); }
+.feed-cols, .feed-row { display: grid; grid-template-columns: 66px 74px 108px 62px 34px 48px 62px 1fr; gap: 6px; padding: 4px 12px; white-space: nowrap; align-items: center; }
+.feed-cols { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-secondary); border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.feed-row { font-size: 11px; min-height: 24px; border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: background var(--transition-fast); }
+.feed-row.selected { background: var(--intent-primary-soft); box-shadow: inset 0 0 0 1px var(--intent-primary); }
+.feed-row.err .f-exit { color: var(--intent-danger); font-weight: 700; }
+.feed-row.err .f-time { color: var(--intent-danger); }
+.f-tool { font-weight: 700; color: var(--intent-info); overflow: hidden; text-overflow: ellipsis; }
+.feed-row[data-pillar="reuse"] .f-tool { color: var(--intent-warning); }
+.feed-row[data-pillar="build"] .f-tool { color: var(--intent-primary); }
+.f-repo, .f-agent { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.f-exit { color: var(--intent-success); font-weight: 700; }
+.f-shown, .f-lat { text-align: right; }
+.f-args { overflow: hidden; text-overflow: ellipsis; }
+.brand-sub, .f-time, .f-wt, .f-args, .pw-time, .pw-shown, .pw-lat { color: var(--text-muted); }
+.feed-row:hover, .cand-row:hover, .tbl tbody tr:hover, .pw-row:hover { background: var(--bg-subtle); }
+
+/* ===== Inspector: the single drill-down region (raw journal entry OR candidate evidence) ===== */
+.inspector { flex: none; border-top: 1px solid var(--border-strong); background: var(--bg-elevated); padding: 6px 12px; font-size: 11px; display: flex; gap: 10px; align-items: flex-start; min-height: 30px; cursor: pointer; }
+.insp-label { flex: none; min-width: 58px; padding-top: 1px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--intent-primary); }
+.insp-json { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.inspector.open .insp-json { white-space: pre-wrap; overflow-y: auto; max-height: 118px; text-overflow: clip; }
+.insp-evidence { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.insp-evhead { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.ev-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.insp-evmeta { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-body { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.snip { background: var(--bg-subtle); border-radius: var(--radius-sm); padding: 5px 7px; font-size: 11px; line-height: 1.5; min-width: 0; }
+.snip-head { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: var(--text-secondary); margin-bottom: 2px; }
+.snip-canon { color: var(--intent-success); }
+.snip code { display: block; white-space: pre; overflow: auto; max-height: 7.5em; color: var(--text-secondary); font-family: var(--font-mono); }
+
+/* ===== Candidates ===== */
+.sum-line { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 12px 0; }
+.sum-line + .sum-line { padding-bottom: 6px; }
+.cand-row { padding: 7px 12px; border-bottom: 1px solid var(--border-subtle); cursor: pointer; transition: background var(--transition-fast); }
+.cand-row.selected { background: var(--intent-warning-soft); box-shadow: inset 0 0 0 1px var(--intent-warning); }
+.cand-top { font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.cand-top .sym { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cand-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-muted); margin: 3px 0 4px; flex-wrap: wrap; }
+.cand-meta strong { color: var(--text-secondary); font-weight: 700; }
+.cand-files { font-size: 11px; color: var(--text-muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== Memory integrity ===== */
+.mem-row { padding: 7px 12px; border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 4px; }
+.mem-top { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; }
+.mem-top .btn { margin-left: auto; }
+.mem-refs { display: flex; flex-wrap: wrap; gap: 4px; }
+.mem-refs .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.mem-meta { font-size: 11px; color: var(--text-muted); }
+
+/* ===== Pre-write stream ===== */
+.pw-row { display: grid; grid-template-columns: 58px 56px 1fr 40px 52px; gap: 6px; padding: 4px 12px; font-size: 11px; min-height: 24px; align-items: center; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
+.pw-tool { font-weight: 700; color: var(--intent-warning); }
+.pw-terms { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.pw-shown, .pw-lat { text-align: right; }
+.pw-shown.zero { color: var(--intent-danger); }
+
+/* ===== Status bar ===== */
+.statusbar { flex: none; display: flex; align-items: center; padding: 5px 14px; border-top: 1px solid var(--border-strong); background: var(--bg-surface); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; }
+.statusbar .seg { padding: 0 10px; border-right: 1px solid var(--border-subtle); }
+.statusbar .seg:first-child { padding-left: 0; }
+.statusbar .ok-code { color: var(--intent-success); font-weight: 700; }
+.statusbar .seg-right { margin-left: auto; border-right: none; padding-right: 0; }
+
+/* ===== Motion: gated behind prefers-reduced-motion (CSS + JS guards) ===== */
+@media (prefers-reduced-motion: no-preference) {
+  .live-toggle:not(.paused) .live-dot { animation: pulse 1.6s ease-in-out infinite; }
+  .feed-row.flash { animation: rowflash 1.4s ease-out; }
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes rowflash { 0% { background: var(--intent-info-soft); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .btn, .pill, .live-toggle, .feed-row, .cand-row, .tbl tbody tr, .pw-row { transition: none; }
+}
+
+/* ===== Intermediate band 1101-1250px: shrink rails, drop ARGS column ===== */
+@media (max-width: 1250px) and (min-width: 1101px) {
+  .grid { grid-template-columns: 280px minmax(0, 1fr) 292px; }
+  .feed-cols, .feed-row { grid-template-columns: 66px 74px 108px 62px 34px 48px 62px; }
+  .f-args, .col-args { display: none; }
+  .feed-search { width: 110px; }
+}
+
+/* ===== Narrow fallback: unlock console height, stack rails ===== */
+@media (max-width: 1100px) {
+  body { overflow: auto; }
+  .console { height: auto; }
+  .grid { grid-template-columns: 1fr; }
+  .rail-left, .rail-right { border: none; }
+  .panel-body { max-height: 420px; }
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); }
+  .kpi { border-bottom: 1px solid var(--border-subtle); }
+}
+</style>
+</head>
+<body>
+<div class="console">
+  <h1 class="sr-only">eg Mission Control</h1>
+  <div id="aria-live" class="sr-only" role="status" aria-live="polite"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">EG</span>
+      <span class="brand-name">MISSION CONTROL</span>
+      <span class="brand-sub">loopback 127.0.0.1 &middot; offline</span>
+    </div>
+    <span class="chip" title="Journal retention window served by GET /api/summary">window: retained_journal</span>
+    <span class="chip" id="data-age" title="generated_at from /api/summary">DATA AGE 4s</span>
+    <div class="topbar-spacer"></div>
+    <button class="btn" id="scenario-toggle" aria-pressed="false" title="First-run scenario: render the null contract (no usage.log, no index, no notes). Null or empty metrics render as dash + hint.">FIRST-RUN</button>
+    <button class="live-toggle" id="live-toggle" aria-pressed="true" title="Pause / resume the live journal stream (SSE /events demo simulation)"><span class="live-dot" aria-hidden="true"></span><span id="live-label">LIVE</span></button>
+    <button class="btn" id="theme-toggle">THEME: LIGHT</button>
+  </header>
+
+  <section class="kpi-strip" aria-label="Global KPIs">
+    <div class="kpi"><div class="kpi-label" title="summary.call_count">TOTAL CALLS</div><div class="kpi-value">1,284</div><div class="kpi-sub">err 9 &middot; rel 99.3% &middot; graph 99.6%</div></div>
+    <div class="kpi"><div class="kpi-label" title="summary latency percentiles">LATENCY</div><div class="kpi-value">0.8<small>ms p50</small></div><div class="kpi-sub">p95 3.4 &middot; avg 1.1 ms</div></div>
+    <div class="kpi accent-success"><div class="kpi-label" title="tokens_saved_total; USD estimate">TOKENS SAVED</div><div class="kpi-value">412,000</div><div class="kpi-sub">$6.18 <span class="kpi-flag">estimated</span></div></div>
+    <div class="kpi accent-info"><div class="kpi-label" title="session count; memory recall pct">SESSIONS</div><div class="kpi-value">18</div><div class="kpi-sub">recall 66.7%</div></div>
+  </section>
+
+  <main class="grid">
+    <div class="rail rail-left">
+      <section class="panel" aria-label="Repo signals">
+        <header class="panel-head"><span class="panel-code">L1</span><h2 class="panel-title">REPO SIGNALS</h2><span class="panel-meta" title="repo_aggs &middot; 3 pillars &middot; GRAPH column sums to 906">repo_aggs &middot; graph 305k tok</span></header>
+        <div class="panel-body">
+          <table class="tbl" id="repo-table">
+            <thead><tr><th>REPO</th><th>CALLS</th><th>GRAPH</th><th title="error_count">ERR</th><th>TOK</th><th title="repo_aggs.reuse_calls">REU</th><th title="repo_aggs.memory_calls; tooltip carries memory_reads / memory_writes / memory_read_hit_rate_pct">MEM</th><th>HIT%</th></tr></thead>
+            <tbody>
+              <tr><td class="cell-name" data-repo="app" title="/ws/app">app</td><td>578</td><td>456</td><td>4</td><td class="num-dim">186k</td><td>84</td><td title="memory_reads 31 &middot; memory_writes 9 &middot; memory_read_hit_rate_pct 84%">22</td><td><span class="hit-bar" title="search_hit_rate_pct 92"><span class="hit-fill" style="width:92%; background: var(--intent-info);"></span></span></td></tr>
+              <tr class="subrow"><td title="WtAgg: calls, errors, last_ts">wt-ui-fix &middot; last 08:29</td><td>96</td><td>&mdash;</td><td>1</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+              <tr><td class="cell-name" data-repo="docs-site" title="/ws/docs-site">docs-site</td><td>322</td><td>188</td><td>3</td><td class="num-dim">104k</td><td>12</td><td title="memory_reads 20 &middot; memory_writes 6 &middot; memory_read_hit_rate_pct 70%">14</td><td><span class="hit-bar" title="search_hit_rate_pct 78"><span class="hit-fill" style="width:78%; background: var(--intent-info);"></span></span></td></tr>
+              <tr><td class="cell-name" data-repo="engram" title="/ws/engram">engram</td><td>214</td><td>132</td><td>1</td><td class="num-dim">68k</td><td>2</td><td title="memory_reads 8 &middot; memory_writes 2 &middot; memory_read_hit_rate_pct 75%">6</td><td><span class="hit-bar" title="search_hit_rate_pct 64"><span class="hit-fill" style="width:64%; background: var(--intent-info);"></span></span></td></tr>
+              <tr><td class="cell-name" data-repo="cli-tool" title="/ws/cli-tool">cli-tool</td><td>170</td><td>130</td><td>1</td><td class="num-dim">54k</td><td>5</td><td title="memory_reads 6 &middot; memory_writes 2 &middot; memory_read_hit_rate_pct 67%">4</td><td><span class="hit-bar" title="search_hit_rate_pct 71"><span class="hit-fill" style="width:71%; background: var(--intent-info);"></span></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Agent attribution">
+        <header class="panel-head"><span class="panel-code">L2</span><h2 class="panel-title">AGENT ATTRIBUTION</h2><span class="panel-meta">agent_aggs &middot; all pillars</span></header>
+        <div class="panel-body">
+          <table class="tbl">
+            <thead><tr><th>AGENT</th><th>CALLS</th><th>GRAPH</th><th>ERR</th><th>TOK</th><th title="agent_aggs.memory_calls">MEM</th><th>LAST</th></tr></thead>
+            <tbody>
+              <tr><td class="cell-name">zcode</td><td>742</td><td>588</td><td>4</td><td class="num-dim">241k</td><td title="memory_reads 30 &middot; memory_writes 8">26</td><td class="num-dim">08:33</td></tr>
+              <tr><td class="cell-name">claude</td><td>386</td><td>236</td><td>3</td><td class="num-dim">118k</td><td title="memory_reads 15 &middot; memory_writes 5">12</td><td class="num-dim">08:29</td></tr>
+              <tr><td class="cell-name">cursor</td><td>156</td><td>82</td><td>2</td><td class="num-dim">53k</td><td title="memory_reads 10 &middot; memory_writes 2">8</td><td class="num-dim">07:58</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Pre-write discovery stream">
+        <header class="panel-head"><span class="panel-code">L3</span><h2 class="panel-title">PRE-WRITE DISCOVERY</h2><span class="panel-meta" title="prewrite_searches within the retained journal window">112 lookups</span></header>
+        <div class="panel-body">
+          <div class="pw-row"><span class="pw-time">08:33:04</span><span class="pw-tool">search</span><span class="pw-terms">parse_token lexer</span><span class="pw-shown">21</span><span class="pw-lat">0.8ms</span></div>
+          <div class="pw-row"><span class="pw-time">08:32:51</span><span class="pw-tool">reuse</span><span class="pw-terms">parse_token</span><span class="pw-shown">6</span><span class="pw-lat">2.3ms</span></div>
+          <div class="pw-row"><span class="pw-time">08:32:18</span><span class="pw-tool">search</span><span class="pw-terms">carousel init</span><span class="pw-shown zero">0</span><span class="pw-lat">1.0ms</span></div>
+          <div class="pw-row"><span class="pw-time">08:31:40</span><span class="pw-tool">search</span><span class="pw-terms">normalize token</span><span class="pw-shown">12</span><span class="pw-lat">0.9ms</span></div>
+          <div class="pw-row"><span class="pw-time">08:30:57</span><span class="pw-tool">search</span><span class="pw-terms">journal_append</span><span class="pw-shown">8</span><span class="pw-lat">0.7ms</span></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="center">
+      <section class="panel" aria-label="Live agent activity">
+        <header class="panel-head"><span class="panel-code">C</span><h2 class="panel-title">LIVE AGENT ACTIVITY</h2><span class="panel-meta">graph_recent_queries + SSE /events &middot; filter in-window</span></header>
+        <div class="feed-bar">
+          <div class="pill-group" role="group" aria-label="Status filter"><button class="pill active" data-status="all" aria-pressed="true">ALL</button><button class="pill" data-status="ok" aria-pressed="false">OK</button><button class="pill" data-status="err" aria-pressed="false">ERR</button></div>
+          <select class="feed-select" id="repo-filter" aria-label="Filter by repo"><option value="all">repo: all</option></select>
+          <select class="feed-select" id="agent-filter" aria-label="Filter by agent"><option value="all">agent: all</option></select>
+          <input class="feed-search" id="feed-search" type="search" placeholder="Filter tool / args ( / )" aria-label="Search feed text; also matches repo, agent, worktree">
+          <span class="panel-meta" id="feed-count">13 / 13 shown</span>
+        </div>
+        <div class="feed-cols" aria-hidden="true"><span>TIME</span><span>TOOL</span><span>REPO</span><span>AGENT</span><span class="num-right">EXIT</span><span class="num-right">SHOWN</span><span class="num-right">LAT</span><span class="col-args">ARGS</span></div>
+        <div class="panel-body" id="feed" aria-label="Journal feed. ArrowUp / ArrowDown navigate, Enter selects a row for the inspector.">
+          <div class="empty-hint hidden" id="feed-empty">No journal entries yet. usage.log is empty on a fresh machine: the feed populates as agents run eg graph, reuse, or memory commands. KPI cells render dash + 'no samples until first journal write'.</div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645800" data-tool="callers" data-repo="app" data-repo-path="/ws/app" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="7" data-result-count="12" data-lat-us="640" data-args='{"name":"read_bounded"}'><span class="f-time">08:33:12</span><span class="f-tool">callers</span><span class="f-repo">app</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">7</span><span class="f-lat">0.6ms</span><span class="f-args">name=read_bounded</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645792" data-tool="search" data-repo="app" data-repo-path="/ws/app" data-repo-main="/ws/app" data-repo-main-name="app" data-wt="wt-ui-fix" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="21" data-result-count="21" data-lat-us="1120" data-args='{"terms":"parse_token lexer"}'><span class="f-time">08:33:04</span><span class="f-tool">search</span><span class="f-repo">app <span class="f-wt">&middot; wt-ui-fix</span></span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">21</span><span class="f-lat">1.1ms</span><span class="f-args">terms=parse_token lexer</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645779" data-tool="reuse" data-repo="app" data-repo-path="/ws/app" data-agent="claude" data-status="ok" data-pillar="reuse" data-shown="6" data-result-count="6" data-lat-us="2310" data-args='{"symbol":"parse_token"}'><span class="f-time">08:32:51</span><span class="f-tool">reuse</span><span class="f-repo">app</span><span class="f-agent">claude</span><span class="f-exit">0</span><span class="f-shown">6</span><span class="f-lat">2.3ms</span><span class="f-args">symbol=parse_token</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645768" data-tool="impact" data-repo="app" data-repo-path="/ws/app" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="12" data-result-count="18" data-lat-us="1480" data-args='{"name":"check_ref_status"}'><span class="f-time">08:32:40</span><span class="f-tool">impact</span><span class="f-repo">app</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">12</span><span class="f-lat">1.5ms</span><span class="f-args">name=check_ref_status</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645749" data-tool="mem query" data-repo="app" data-repo-path="/ws/app" data-agent="claude" data-status="ok" data-pillar="memory" data-shown="3" data-result-count="3" data-lat-us="310" data-args='{"key":"allowlist-refs"}'><span class="f-time">08:32:22</span><span class="f-tool">mem query</span><span class="f-repo">app</span><span class="f-agent">claude</span><span class="f-exit">0</span><span class="f-shown">3</span><span class="f-lat">0.3ms</span><span class="f-args">key=allowlist-refs</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645738" data-tool="build" data-repo="engram" data-repo-path="/ws/engram" data-agent="zcode" data-status="ok" data-pillar="build" data-shown="" data-result-count="" data-lat-us="12400" data-args='{}'><span class="f-time">08:32:10</span><span class="f-tool">build</span><span class="f-repo">engram</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">&mdash;</span><span class="f-lat">12.4ms</span><span class="f-args">incremental carry-forward</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645726" data-tool="callees" data-repo="docs-site" data-repo-path="/ws/docs-site" data-agent="cursor" data-status="ok" data-pillar="graph" data-shown="9" data-result-count="9" data-lat-us="520" data-args='{"name":"render_preview"}'><span class="f-time">08:31:58</span><span class="f-tool">callees</span><span class="f-repo">docs-site</span><span class="f-agent">cursor</span><span class="f-exit">0</span><span class="f-shown">9</span><span class="f-lat">0.5ms</span><span class="f-args">name=render_preview</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645715" data-tool="path" data-repo="app" data-repo-path="/ws/app" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="4" data-result-count="4" data-lat-us="830" data-args='{"from":"read_bounded","to":"normalize_token"}'><span class="f-time">08:31:47</span><span class="f-tool">path</span><span class="f-repo">app</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">4</span><span class="f-lat">0.8ms</span><span class="f-args">from=read_bounded to=normalize_token</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645703" data-tool="imports" data-repo="docs-site" data-repo-path="/ws/docs-site" data-agent="cursor" data-status="ok" data-pillar="graph" data-shown="14" data-result-count="14" data-lat-us="470" data-args='{"file":"src/main.ts"}'><span class="f-time">08:31:35</span><span class="f-tool">imports</span><span class="f-repo">docs-site</span><span class="f-agent">cursor</span><span class="f-exit">0</span><span class="f-shown">14</span><span class="f-lat">0.5ms</span><span class="f-args">file=src/main.ts</span></div>
+          <div class="feed-row err" role="button" tabindex="0" aria-pressed="false" data-ts="1794645688" data-tool="search" data-repo="docs-site" data-repo-path="/ws/docs-site" data-agent="claude" data-status="err" data-pillar="graph" data-shown="0" data-result-count="0" data-lat-us="990" data-args='{"terms":"carousel init"}'><span class="f-time">08:31:20</span><span class="f-tool">search</span><span class="f-repo">docs-site</span><span class="f-agent">claude</span><span class="f-exit">1</span><span class="f-shown">0</span><span class="f-lat">1.0ms</span><span class="f-args">terms=carousel init</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645670" data-tool="context" data-repo="engram" data-repo-path="/ws/engram" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="6" data-result-count="6" data-lat-us="410" data-args='{"symbol":"journal_append"}'><span class="f-time">08:31:02</span><span class="f-tool">context</span><span class="f-repo">engram</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">6</span><span class="f-lat">0.4ms</span><span class="f-args">symbol=journal_append</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645652" data-tool="mem write" data-repo="app" data-repo-path="/ws/app" data-agent="claude" data-status="ok" data-pillar="memory" data-shown="1" data-result-count="1" data-lat-us="280" data-args='{"key":"allowlist-refs"}'><span class="f-time">08:30:44</span><span class="f-tool">mem write</span><span class="f-repo">app</span><span class="f-agent">claude</span><span class="f-exit">0</span><span class="f-shown">1</span><span class="f-lat">0.3ms</span><span class="f-args">key=allowlist-refs</span></div>
+          <div class="feed-row" role="button" tabindex="0" aria-pressed="false" data-ts="1794645640" data-tool="callers" data-repo="cli-tool" data-repo-path="/ws/cli-tool" data-agent="zcode" data-status="ok" data-pillar="graph" data-shown="5" data-result-count="5" data-lat-us="520" data-args='{"name":"parse_args"}'><span class="f-time">08:30:12</span><span class="f-tool">callers</span><span class="f-repo">cli-tool</span><span class="f-agent">zcode</span><span class="f-exit">0</span><span class="f-shown">5</span><span class="f-lat">0.5ms</span><span class="f-args">name=parse_args</span></div>
+        </div>
+        <div class="inspector" id="inspector" role="button" tabindex="0" aria-expanded="false" title="Single drill-down point. Click or press Enter to expand / collapse; Escape collapses and returns focus to the triggering row.">
+          <span class="insp-label" id="insp-label">INSPECT</span>
+          <span class="insp-json" id="insp-json">Select a feed row (Enter) for the raw journal entry; select a duplicate candidate for evidence.</span>
+          <div class="insp-evidence hidden" id="insp-evidence" aria-label="Candidate evidence: candidate vs canonical snippet">
+            <div class="insp-evhead"><span class="ev-title" id="ev-title"></span><span class="insp-evmeta" id="ev-meta"></span></div>
+            <div class="ev-body">
+            <div class="snip"><div class="snip-head">CANDIDATE</div><code id="ev-cand-code"></code></div>
+            <div class="snip"><div class="snip-head snip-canon">CANONICAL</div><code id="ev-canon-code"></code></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="rail rail-right">
+      <section class="panel" aria-label="Duplicate candidates">
+        <header class="panel-head"><span class="panel-code">R1</span><h2 class="panel-title">DUPLICATES</h2><span class="panel-meta">GET /api/reuse</span></header>
+        <div class="panel-body">
+          <div class="sum-line" aria-label="Pool vs sample">
+            <span class="chip" title="reuse.summary.total_candidates (whole-corpus pool); 1,240 loc preventable (est)">pool 38 &middot; 1,240 loc est</span>
+            <span class="chip chip-success" title="resolved_twins.resolved / surfaced; avg canonical callers 6.4">resolved 3/6 &middot; avg 6.4 callers</span>
+            <span class="chip chip-warning" title="repo_aggs.last_reuse_scan.limit_capped: journaled truncation verdict (docs-site scan hit the cap)">limit-capped: docs-site</span>
+          </div>
+          <div class="sum-line" aria-label="Detector counts from the sampled candidate list">
+            <span class="chip" title="detector_counts covers the sampled candidate list (cap 25/repo), estimated">est &middot; cap 25/repo</span>
+            <span class="chip chip-warning">D1 14</span><span class="chip">D1L 5</span><span class="chip">D2 6</span><span class="chip">D3 4</span><span class="chip">D4 3</span>
+          </div>
+          <div id="candidates">
+            <div class="empty-hint hidden" id="cand-empty">No candidates yet. Run an eg reuse pre-write search to sample the corpus; detector counts appear once a scan populates the candidate list.</div>
+            <div class="cand-row" role="button" tabindex="0" aria-pressed="true" data-cand="0">
+              <div class="cand-top"><span class="chip chip-warning">D1</span><span class="sym">parse_token -&gt; normalize_token</span></div>
+              <div class="cand-meta"><span>overlap <strong>83%</strong></span><span>callers <strong>14</strong></span><span>save <strong>22 loc</strong></span><span class="chip chip-warning">high</span></div>
+              <div class="hit-bar" title="overlap_pct 83"><span class="hit-fill" style="width:83%; background: var(--intent-warning);"></span></div>
+              <div class="cand-files">src/legacy.rs:120 -&gt; src/tokens.rs:88</div>
+            </div>
+            <div class="cand-row" role="button" tabindex="0" aria-pressed="false" data-cand="1">
+              <div class="cand-top"><span class="chip chip-warning">D1L</span><span class="sym">fetch_user -&gt; http_get</span></div>
+              <div class="cand-meta"><span>overlap <strong>61%</strong></span><span>callers <strong>5</strong></span><span>save <strong>18 loc</strong></span><span class="chip">medium</span></div>
+              <div class="hit-bar" title="overlap_pct 61"><span class="hit-fill" style="width:61%; background: var(--intent-warning);"></span></div>
+              <div class="cand-files">src/client.rs:44 -&gt; src/net.rs:210</div>
+            </div>
+            <div class="cand-row" role="button" tabindex="0" aria-pressed="false" data-cand="2">
+              <div class="cand-top"><span class="chip chip-warning">D4</span><span class="sym">batch_write -&gt; write_many</span></div>
+              <div class="cand-meta"><span>overlap <strong>&mdash;</strong></span><span>callers <strong>2</strong></span><span>save <strong>31 loc</strong></span><span class="chip">low</span></div>
+              <div class="cand-files">src/export.rs:301 -&gt; src/io.rs:77</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Memory integrity">
+        <header class="panel-head"><span class="panel-code">R2</span><h2 class="panel-title">MEMORY INTEGRITY</h2><span class="panel-actions"><button class="btn" id="verify-all">VERIFY ALL</button></span><span class="panel-meta">GET /api/memories</span></header>
+        <div class="panel-body" id="memories">
+          <div class="empty-hint hidden" id="mem-empty">No notes yet. eg mem write anchors the first note; ref chips appear once GET /api/memories resolves refs against the code index.</div>
+          <div class="mem-row" data-key="allowlist-refs" data-rev="3" data-store-id="/ws/app/.engram/memory.db">
+            <div class="mem-top"><span>allowlist-refs</span><span class="chip chip-info">gotcha</span><button class="btn" data-store="engram">VERIFY</button></div>
+            <div class="mem-refs"><span class="chip chip-warning">modified src/query/reuse.rs</span></div>
+            <div class="mem-meta">rev 3 &middot; recalls 4 &middot; store engram &middot; <span class="mem-anchored">anchored 2h ago</span></div>
+          </div>
+          <div class="mem-row" data-key="db-write-confine" data-rev="1" data-store-id="/ws/app/.engram/memory.db">
+            <div class="mem-top"><span>db-write-confine</span><span class="chip chip-info">invariant</span><button class="btn" data-store="engram">VERIFY</button></div>
+            <div class="mem-refs"><span class="chip chip-danger">broken src/db.rs</span></div>
+            <div class="mem-meta">rev 1 &middot; recalls 2 &middot; store engram &middot; <span class="mem-anchored">anchored 1d ago</span></div>
+          </div>
+          <div class="mem-row" data-key="reuse-ref-shape" data-rev="1" data-store-id="/ws/app/.engram/memory.db">
+            <div class="mem-top"><span>reuse-ref-shape</span><span class="chip chip-info">gotcha</span><button class="btn" disabled>ANCHORED</button></div>
+            <div class="mem-refs"><span class="chip chip-success">valid src/query/reuse.rs</span><span class="chip chip-success">valid src/extract/resolve.rs</span></div>
+            <div class="mem-meta">rev 1 &middot; recalls 11 &middot; store engram &middot; <span class="mem-anchored">anchored 20m ago</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="statusbar">
+    <span class="seg" id="seg-summary">GET /api/summary <span class="ok-code">200</span> schema 2 &middot; window 50 entries</span>
+    <span class="seg">GET /api/reuse <span class="ok-code">200</span> schema 4</span>
+    <span class="seg">GET /api/memories <span class="ok-code">200</span> schema 2</span>
+    <span class="seg">POST /api/memory/touch ready</span>
+    <span class="seg" id="sse-state">SSE /events connected &middot; keepalive 15s &middot; cap 8</span>
+    <span class="seg seg-right">generated_at 2026-11-14T08:33:20Z</span>
+    <span class="seg" title="Compile-time env!(CARGO_PKG_VERSION); dashboard assets are embedded via include_str!">eg 1.1.0</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var JOURNAL_WINDOW = 50; // payload.rs take(50): feed cap matches the retained journal window
+  var REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function announce(msg) {
+    var r = document.getElementById('aria-live'); r.textContent = '';
+    window.setTimeout(function () { r.textContent = msg; }, 30);
+  }
+
+  /* Theme: localStorage 'eg-theme'; the head script already applied it before first paint */
+  var root = document.documentElement;
+  var themeBtn = document.getElementById('theme-toggle');
+  var theme = localStorage.getItem('eg-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  function applyTheme() { root.setAttribute('data-theme', theme); themeBtn.textContent = 'THEME: ' + theme.toUpperCase(); }
+  themeBtn.addEventListener('click', function () {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('eg-theme', theme);
+    applyTheme();
+    announce('Theme switched to ' + theme);
+  });
+  applyTheme();
+
+  /* One haystack format for static and streamed rows */
+  function argsHaystack(args) { return Object.keys(args).map(function (k) { return k + '=' + args[k]; }).join(' ').toLowerCase(); }
+  function argsLine(args) { return Object.keys(args).map(function (k) { return k + '=' + args[k]; }).join(' '); }
+
+  /* Column headers are aria-hidden; prefix each cell with an sr-only column name.
+     The label is an absolutely positioned sibling, so cell textContent stays clean. */
+  var CELL_LABELS = { 'f-time': 'time', 'f-tool': 'tool', 'f-repo': 'repo', 'f-agent': 'agent', 'f-exit': 'exit', 'f-shown': 'shown', 'f-lat': 'latency', 'f-args': 'args' };
+  function labelRowCells(row) {
+    Array.prototype.slice.call(row.children).forEach(function (cell) {
+      var name = CELL_LABELS[cell.classList[0]];
+      if (!name) { return; }
+      var label = document.createElement('span');
+      label.className = 'sr-only';
+      label.textContent = name + ' ';
+      row.insertBefore(label, cell);
+    });
+  }
+
+  /* Feed filters: client-side within the retained journal window */
+  var feed = document.getElementById('feed');
+  var feedRows = Array.prototype.slice.call(feed.querySelectorAll('.feed-row'));
+  var firstRun = false;
+  var state = { status: 'all', repo: 'all', agent: 'all', q: '' };
+  function applyFilters() {
+    var shown = 0;
+    feedRows.forEach(function (row) {
+      var ok = !firstRun &&
+        (state.status === 'all' || row.getAttribute('data-status') === state.status) &&
+        (state.repo === 'all' || row.getAttribute('data-repo') === state.repo) &&
+        (state.agent === 'all' || row.getAttribute('data-agent') === state.agent) &&
+        (state.q === '' || row.getAttribute('data-search').indexOf(state.q) !== -1);
+      row.classList.toggle('hidden', !ok);
+      if (ok) { shown++; }
+    });
+    document.getElementById('feed-count').textContent = shown + ' / ' + feedRows.length + ' shown';
+  }
+
+  /* Build filter options from the rendered data instead of hard-coding them */
+  var repoNames = {};
+  document.querySelectorAll('#repo-table td.cell-name[data-repo]').forEach(function (td) { repoNames[td.getAttribute('data-repo')] = 1; });
+  var agentNames = {};
+  feedRows.forEach(function (row) {
+    repoNames[row.getAttribute('data-repo')] = 1;
+    agentNames[row.getAttribute('data-agent')] = 1;
+    row.setAttribute('data-search', [row.getAttribute('data-tool'), row.getAttribute('data-repo'), row.getAttribute('data-agent'), row.getAttribute('data-wt') || '', argsHaystack(JSON.parse(row.getAttribute('data-args')))].join(' ').toLowerCase());
+    labelRowCells(row);
+  });
+  function fillSelect(sel, pairs) {
+    pairs.forEach(function (p) { var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1]; sel.appendChild(o); });
+  }
+  fillSelect(document.getElementById('repo-filter'), Object.keys(repoNames).sort().map(function (n) { return [n, 'repo: ' + n]; }));
+  fillSelect(document.getElementById('agent-filter'), Object.keys(agentNames).sort().map(function (n) { return [n, 'agent: ' + n]; }));
+  document.querySelectorAll('.pill[data-status]').forEach(function (pill) {
+    pill.addEventListener('click', function () {
+      document.querySelectorAll('.pill[data-status]').forEach(function (p) {
+        var on = p === pill;
+        p.classList.toggle('active', on);
+        p.setAttribute('aria-pressed', String(on));
+      });
+      state.status = pill.getAttribute('data-status');
+      applyFilters();
+    });
+  });
+  document.getElementById('repo-filter').addEventListener('change', function (e) { state.repo = e.target.value; applyFilters(); });
+  document.getElementById('agent-filter').addEventListener('change', function (e) { state.agent = e.target.value; applyFilters(); });
+  var search = document.getElementById('feed-search');
+  search.addEventListener('input', function (e) { state.q = e.target.value.trim().toLowerCase(); applyFilters(); });
+
+
+  /* Inspector: the single drill-down. Two modes share one region:
+     'entry' projects the raw journal entry of a feed row;
+     'evidence' shows candidate vs canonical snippets for a duplicate candidate. */
+  var inspector = document.getElementById('inspector');
+  var inspLabel = document.getElementById('insp-label');
+  var inspJson = document.getElementById('insp-json');
+  var inspEvidence = document.getElementById('insp-evidence');
+  var evTitle = document.getElementById('ev-title');
+  var evMeta = document.getElementById('ev-meta');
+  var evCandCode = document.getElementById('ev-cand-code');
+  var evCanonCode = document.getElementById('ev-canon-code');
+  var inspMode = null; // null | 'entry' | 'evidence'
+  var inspOpen = false;
+  var lastEntry = null;
+  var inspTrigger = null;
+  var HINT = 'Select a feed row (Enter) for the raw journal entry; select a duplicate candidate for evidence.';
+
+  /* Raw journal entry projection: real fields only, repo_main stamped when worktree */
+  function entryFromRow(row) {
+    var d = row.dataset;
+    var entry = {
+      ts: Number(d.ts), tool: d.tool, repo: d.repoPath, repo_name: d.repo, agent: d.agent,
+      exit_code: Number(row.querySelector('.f-exit').textContent),
+      shown: d.shown === '' ? null : Number(d.shown),
+      result_count: d.resultCount === '' || d.resultCount === undefined ? null : Number(d.resultCount),
+      latency_us: Number(d.latUs), args: JSON.parse(d.args)
+    };
+    if (d.repoMain) { entry.repo_main = d.repoMain; entry.repo_main_name = d.repoMainName; }
+    return entry;
+  }
+
+  function showEntry(open) {
+    inspEvidence.classList.add('hidden');
+    inspJson.classList.remove('hidden');
+    inspJson.textContent = open ? JSON.stringify(lastEntry, null, 2) : JSON.stringify(lastEntry);
+    inspector.classList.toggle('open', open);
+    inspector.setAttribute('aria-expanded', String(open));
+  }
+  function renderInspector() {
+    if (inspMode === 'entry') { inspLabel.textContent = 'EVENT'; showEntry(inspOpen); }
+    else if (inspMode === 'evidence') {
+      inspLabel.textContent = 'EVIDENCE';
+      inspJson.classList.add('hidden');
+      inspEvidence.classList.remove('hidden');
+      inspector.classList.add('open');
+      inspector.setAttribute('aria-expanded', 'true');
+    } else { inspLabel.textContent = 'INSPECT'; showEntry(false); inspJson.textContent = HINT; }
+  }
+  function resetInspector() { inspMode = null; inspOpen = false; lastEntry = null; renderInspector(); }
+  function selectFeedRow(row) {
+    feedRows.forEach(function (r) { r.classList.remove('selected'); r.setAttribute('aria-pressed', 'false'); });
+    row.classList.add('selected');
+    row.setAttribute('aria-pressed', 'true');
+    lastEntry = entryFromRow(row);
+    inspMode = 'entry'; inspOpen = false; inspTrigger = row;
+    renderInspector();
+  }
+  function toggleInspector() {
+    if (inspMode === 'entry' && lastEntry) { inspOpen = !inspOpen; renderInspector(); }
+    else if (inspMode === 'evidence') { resetInspector(); }
+  }
+  /* Escape path: collapse one level, then return focus to the triggering row */
+  function collapseInspector() {
+    if (inspMode === null) { return; }
+    if (inspMode === 'entry' && inspOpen) { inspOpen = false; renderInspector(); }
+    else { resetInspector(); }
+    if (inspTrigger && document.contains(inspTrigger) && inspTrigger.focus) { inspTrigger.focus(); }
+  }
+
+  feed.addEventListener('click', function (e) { var row = e.target.closest('.feed-row'); if (row) { selectFeedRow(row); } });
+  feed.addEventListener('keydown', function (e) {
+    var row = e.target.closest('.feed-row');
+    if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectFeedRow(row); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') { return; }
+    var visible = feedRows.filter(function (r) { return !r.classList.contains('hidden'); });
+    if (!visible.length) { return; }
+    e.preventDefault();
+    var cur = document.activeElement && document.activeElement.closest ? document.activeElement.closest('.feed-row') : null;
+    var i = cur ? visible.indexOf(cur) : -1;
+    i = e.key === 'ArrowDown' ? (i < 0 ? 0 : Math.min(visible.length - 1, i + 1)) : (i <= 0 ? 0 : i - 1);
+    var next = visible[i];
+    next.focus();
+    selectFeedRow(next);
+  });
+  inspector.addEventListener('click', function (e) { if (!e.target.closest('code')) { toggleInspector(); } }); // guard: select snippet text without collapsing
+  inspector.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleInspector(); } });
+
+  /* Live simulation: SSE /events pushes raw journal entries (demo) */
+  var liveBtn = document.getElementById('live-toggle');
+  var sseState = document.getElementById('sse-state');
+  var timer = null;
+  var connectTimer = null;
+  var POOL = [
+    { tool: 'callers', repo: 'app', repoPath: '/ws/app', agent: 'zcode', pillar: 'graph', exit: 0, shown: 5, rc: 11, latUs: 610, wt: '', args: { name: 'normalize_token' } },
+    { tool: 'impact', repo: 'app', repoPath: '/ws/app', agent: 'claude', pillar: 'graph', exit: 0, shown: 8, rc: 14, latUs: 1310, wt: '', args: { name: 'parse_token' } },
+    { tool: 'search', repo: 'app', repoPath: '/ws/app', agent: 'zcode', pillar: 'graph', exit: 0, shown: 17, rc: 17, latUs: 940, wt: 'wt-ui-fix', repoMain: '/ws/app', repoMainName: 'app', args: { terms: 'token stream' } },
+    { tool: 'search', repo: 'docs-site', repoPath: '/ws/docs-site', agent: 'cursor', pillar: 'graph', exit: 0, shown: 14, rc: 14, latUs: 880, wt: '', args: { terms: 'sidebar nav' } },
+    { tool: 'callees', repo: 'engram', repoPath: '/ws/engram', agent: 'zcode', pillar: 'graph', exit: 0, shown: 11, rc: 11, latUs: 470, wt: '', args: { name: 'journal_append' } },
+    { tool: 'reuse', repo: 'app', repoPath: '/ws/app', agent: 'zcode', pillar: 'reuse', exit: 0, shown: 4, rc: 4, latUs: 2140, wt: '', args: { symbol: 'fetch_user' } },
+    { tool: 'mem query', repo: 'app', repoPath: '/ws/app', agent: 'claude', pillar: 'memory', exit: 0, shown: 2, rc: 2, latUs: 290, wt: '', args: { key: 'db-write-confine' } },
+    { tool: 'path', repo: 'docs-site', repoPath: '/ws/docs-site', agent: 'cursor', pillar: 'graph', exit: 0, shown: 3, rc: 3, latUs: 760, wt: '', args: { from: 'render_preview', to: 'doc_export' } },
+    { tool: 'search', repo: 'cli-tool', repoPath: '/ws/cli-tool', agent: 'claude', pillar: 'graph', exit: 1, shown: 0, rc: 0, latUs: 1020, wt: '', args: { terms: 'arg parse' } },
+    { tool: 'context', repo: 'app', repoPath: '/ws/app', agent: 'zcode', pillar: 'graph', exit: 0, shown: 9, rc: 9, latUs: 380, wt: '', args: { symbol: 'check_ref_status' } }
+  ];
+  var poolIdx = 0;
+  function clockNow() {
+    var d = new Date(); function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function pushEvent() {
+    var ev = POOL[poolIdx++ % POOL.length];
+    var row = document.createElement('div');
+    row.className = 'feed-row' + (ev.exit !== 0 ? ' err' : '');
+    if (!REDUCED_MOTION) {
+      row.classList.add('flash');
+      row.addEventListener('animationend', function () { row.classList.remove('flash'); }, { once: true });
+    }
+    var attrs = { role: 'button', tabindex: '0', 'aria-pressed': 'false', 'data-ts': String(Math.floor(Date.now() / 1000)),
+      'data-tool': ev.tool, 'data-repo': ev.repo, 'data-repo-path': ev.repoPath, 'data-agent': ev.agent,
+      'data-status': ev.exit === 0 ? 'ok' : 'err', 'data-pillar': ev.pillar, 'data-shown': String(ev.shown),
+      'data-result-count': String(ev.rc), 'data-lat-us': String(ev.latUs), 'data-args': JSON.stringify(ev.args) };
+    if (ev.wt) { attrs['data-wt'] = ev.wt; if (ev.repoMain) { attrs['data-repo-main'] = ev.repoMain; attrs['data-repo-main-name'] = ev.repoMainName; } }
+    Object.keys(attrs).forEach(function (k) { row.setAttribute(k, attrs[k]); });
+    row.setAttribute('data-search', [ev.tool, ev.repo, ev.agent, ev.wt || '', argsHaystack(ev.args)].join(' ').toLowerCase());
+    function cell(cls, text) { var s = document.createElement('span'); s.className = cls; s.textContent = text; return s; }
+    row.appendChild(cell('f-time', clockNow()));
+    row.appendChild(cell('f-tool', ev.tool));
+    var repoCell = cell('f-repo', ev.repo);
+    if (ev.wt) { repoCell.appendChild(cell('f-wt', ' \u00B7 ' + ev.wt)); }
+    row.appendChild(repoCell);
+    row.appendChild(cell('f-agent', ev.agent));
+    row.appendChild(cell('f-exit', String(ev.exit)));
+    row.appendChild(cell('f-shown', String(ev.shown)));
+    row.appendChild(cell('f-lat', (ev.latUs / 1000).toFixed(1) + 'ms'));
+    row.appendChild(cell('f-args', argsLine(ev.args)));
+    labelRowCells(row);
+    feed.insertBefore(row, feed.querySelector('.empty-hint') ? feed.querySelector('.empty-hint').nextSibling : feed.firstChild);
+    feedRows.unshift(row);
+    while (feedRows.length > JOURNAL_WINDOW) {
+      var dropped = feedRows.pop();
+      if (dropped.parentNode) { dropped.parentNode.removeChild(dropped); }
+    }
+    applyFilters();
+  }
+  /* Loading state: the SSE handshake phase is distinct from paused (muted, static) and live */
+  function setLive(mode) {
+    if (timer) { window.clearInterval(timer); timer = null; }
+    if (connectTimer) { window.clearTimeout(connectTimer); connectTimer = null; }
+    var live = mode !== 'paused';
+    if (mode === 'connecting') { connectTimer = window.setTimeout(function () { setLive('live'); }, 1200); }
+    else if (mode === 'live') { timer = window.setInterval(pushEvent, 4000); }
+    liveBtn.classList.toggle('paused', !live);
+    liveBtn.setAttribute('aria-pressed', String(live));
+    sseState.textContent = mode === 'connecting' ? 'SSE /events connecting (demo handshake)' : (live ? 'SSE /events connected \u00B7 keepalive 15s \u00B7 cap 8' : 'SSE /events paused (demo)');
+    announce(mode === 'connecting' ? 'Live stream connecting' : (live ? 'Live stream resumed' : 'Live stream paused'));
+  }
+  liveBtn.addEventListener('click', function () { setLive(liveBtn.getAttribute('aria-pressed') === 'true' ? 'paused' : 'connecting'); });
+  setLive('connecting');
+
+  /* Candidates: evidence renders inside the inspector region (the one drill-down) */
+  var cands = document.getElementById('candidates');
+  var candRows = Array.prototype.slice.call(cands.querySelectorAll('.cand-row'));
+  var CANDS = [
+    { det: 'D1', sym: 'parse_token -> normalize_token', conf: 'high', meta: 'overlap_pct 83 \u00B7 canonical_callers 14 \u00B7 loc_saving 22', files: 'src/legacy.rs:120 -> src/tokens.rs:88',
+      cand: 'fn parse_token(s: &str) -> Token {\n    let tok = Token::lex(s);\n    tok.trim_bounds()\n}',
+      canon: 'pub fn normalize_token(s: &str) -> Token {\n    Token::lex(s).trim_bounds()\n}' },
+    { det: 'D1L', sym: 'fetch_user -> http_get', conf: 'medium', meta: 'overlap_pct 61 \u00B7 canonical_callers 5 \u00B7 loc_saving 18', files: 'src/client.rs:44 -> src/net.rs:210',
+      cand: 'function fetchUser(id) {\n    return http.request(`/u/${id}`);\n}',
+      canon: 'export function httpGet(path) {\n    return request(path);\n}' },
+    { det: 'D4', sym: 'batch_write -> write_many', conf: 'low', meta: 'overlap_pct null (detector does not apply) \u00B7 canonical_callers 2 \u00B7 loc_saving 31', files: 'src/export.rs:301 -> src/io.rs:77',
+      cand: 'async fn batch_write(rows) {\n    for r in rows { insert(r).await; }\n}',
+      canon: 'pub async fn write_many(rows) {\n    insert_chunked(rows, 64).await\n}' }
+  ];
+  function selectCandidate(row) {
+    var already = inspMode === 'evidence' && row.classList.contains('selected');
+    candRows.forEach(function (r) { r.classList.remove('selected'); r.setAttribute('aria-pressed', 'false'); });
+    if (already) { resetInspector(); return; }
+    row.classList.add('selected');
+    row.setAttribute('aria-pressed', 'true');
+    var c = CANDS[Number(row.getAttribute('data-cand'))];
+    evTitle.textContent = c.det + ' \u00B7 ' + c.sym;
+    evMeta.textContent = c.conf + ' \u00B7 ' + c.meta + ' \u00B7 ' + c.files;
+    evCandCode.textContent = c.cand;
+    evCanonCode.textContent = c.canon;
+    inspMode = 'evidence'; inspOpen = true; inspTrigger = row;
+    renderInspector();
+    announce('Evidence opened for ' + c.sym + ': candidate and canonical snippets, scroll horizontally for long lines.');
+  }
+  cands.addEventListener('click', function (e) { var row = e.target.closest('.cand-row'); if (row) { selectCandidate(row); } });
+  cands.addEventListener('keydown', function (e) { var row = e.target.closest('.cand-row'); if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectCandidate(row); } });
+
+  /* Memory integrity: POST /api/memory/touch {key, store_id, rev} re-anchors only;
+     ref chips re-resolve when the next GET /api/memories refetch runs. */
+  var memPanel = document.getElementById('memories');
+  function verifyRow(row) {
+    var btn = row.querySelector('.btn');
+    if (!btn || btn.disabled) { return; }
+    var payload = { key: row.getAttribute('data-key'), store_id: row.getAttribute('data-store-id'), rev: Number(row.getAttribute('data-rev')) };
+    var anchored = row.querySelector('.mem-anchored');
+    if (anchored) { anchored.textContent = 'anchored just now (touch 200, rev ' + payload.rev + ')'; }
+    btn.disabled = true;
+    btn.textContent = 'ANCHORED';
+    announce('POST /api/memory/touch 200 {ok:true, key:' + payload.key + ', store_id:' + payload.store_id +
+      ', rev:' + payload.rev + ', anchored_at:now}. Touch re-anchors only: ref chips keep their status until the next GET /api/memories refetch.');
+  }
+  memPanel.addEventListener('click', function (e) { var btn = e.target.closest('.btn'); if (btn && !btn.disabled) { verifyRow(btn.closest('.mem-row')); } });
+  document.getElementById('verify-all').addEventListener('click', function () { memPanel.querySelectorAll('.mem-row').forEach(verifyRow); });
+
+  /* First-run scenario: the null contract (dash + hint, no fabricated zeros) */
+  var scenarioBtn = document.getElementById('scenario-toggle');
+  var kpiCells = Array.prototype.map.call(document.querySelectorAll('.kpi'), function (k) {
+    var v = k.querySelector('.kpi-value'); var s = k.querySelector('.kpi-sub');
+    return { v: v, s: s, vh: v.innerHTML, ss: s.textContent };
+  });
+  var candHint = document.getElementById('cand-empty');
+  var memHint = document.getElementById('mem-empty');
+  var segSummary = document.getElementById('seg-summary');
+  var segSummaryText = segSummary.textContent;
+  var ageChip = document.getElementById('data-age');
+  function setFirstRun(on) {
+    firstRun = on;
+    scenarioBtn.textContent = on ? 'BACK TO LIVE DATA' : 'FIRST-RUN';
+    scenarioBtn.setAttribute('aria-pressed', String(on));
+    kpiCells.forEach(function (c) { c.v.innerHTML = on ? '\u2014' : c.vh; c.s.textContent = on ? 'no samples yet' : c.ss; });
+    document.getElementById('feed-empty').classList.toggle('hidden', !on);
+    candRows.forEach(function (r) { r.classList.toggle('hidden', on); });
+    candHint.classList.toggle('hidden', !on);
+    memPanel.querySelectorAll('.mem-row').forEach(function (r) { r.classList.toggle('hidden', on); });
+    memHint.classList.toggle('hidden', !on);
+    segSummary.textContent = on ? 'GET /api/summary 200 schema 2 \u00B7 0 journal entries' : segSummaryText;
+    ageChip.textContent = on ? 'DATA AGE \u2014' : 'DATA AGE 4s';
+    if (on) {
+      setLive('paused');
+      resetInspector();
+      candRows.forEach(function (r) { r.classList.remove('selected'); r.setAttribute('aria-pressed', 'false'); });
+    } else { setLive('connecting'); }
+    applyFilters();
+    announce(on ? 'First-run scenario: no samples, feed and panels show empty-state hints.' : 'Live data scenario restored.');
+  }
+  scenarioBtn.addEventListener('click', function () { setFirstRun(!firstRun); });
+
+  /* "/" focuses feed search; Escape collapses the inspector */
+  document.addEventListener('keydown', function (e) {
+    var tag = document.activeElement ? document.activeElement.tagName : '';
+    if (e.key === '/' && tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') {
+      e.preventDefault();
+      search.focus();
+    }
+    if (e.key === 'Escape') { collapseInspector(); }
+  });
+
+  applyFilters();
+  renderInspector();
+})();
+</script>
+</body>
+</html>

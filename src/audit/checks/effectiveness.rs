@@ -73,13 +73,14 @@ pub(super) fn adoption_navigation(data: &AuditData) -> CheckResult {
         data.baseline_metrics.nav_successes as f64 / data.baseline_metrics.successes as f64
     });
     let baseline = baseline_of(value, b.map(|v| (v, true)));
+    let threshold = higher(0.10, Some(0.5));
     let mut c = check(
         "adoption.navigation",
         "effectiveness",
-        higher_status(value, &higher(0.10, Some(0.5)), baseline.as_ref()),
+        threshold.evaluate(value, baseline.as_ref()),
         Some(value),
         "ratio",
-        higher(0.10, Some(0.5)),
+        threshold,
         "usage",
         format!("navigation share is {}", pct(value)),
     );
@@ -222,7 +223,8 @@ pub(super) fn memory_reads(data: &AuditData) -> CheckResult {
         data.baseline_metrics.mem_reads as f64 / b_active
     });
     let baseline = baseline_of(value, base.map(|v| (v, data.baseline.sufficient)));
-    let mut status = higher_status(value, &higher(0.5, Some(0.5)), baseline.as_ref());
+    let threshold = higher(0.5, Some(0.5));
+    let mut status = threshold.evaluate(value, baseline.as_ref());
     if data.recent7.mem_writes > 0 && data.recent7.mem_reads == 0 {
         status = Status::Warn;
     }
@@ -232,7 +234,7 @@ pub(super) fn memory_reads(data: &AuditData) -> CheckResult {
         status,
         Some(value),
         "per_day",
-        higher(0.5, Some(0.5)),
+        threshold,
         "memory",
         format!("{:.2} memory reads per active day", value),
     );
@@ -267,7 +269,8 @@ pub(super) fn reuse_activity(data: &AuditData) -> CheckResult {
         .get("reuse")
         .map(|t| t.calls as f64 / data.baseline.active_days.max(1) as f64);
     let baseline = baseline_of(value, base.map(|v| (v, data.baseline.sufficient)));
-    let mut status = higher_status(value, &higher(0.2, Some(0.5)), baseline.as_ref());
+    let threshold = higher(0.2, Some(0.5));
+    let mut status = threshold.evaluate(value, baseline.as_ref());
     if data.recent7.nav_successes >= 50 && reuse == 0 {
         status = Status::Warn;
     }
@@ -277,7 +280,7 @@ pub(super) fn reuse_activity(data: &AuditData) -> CheckResult {
         status,
         Some(value),
         "per_day",
-        higher(0.2, Some(0.5)),
+        threshold,
         "inspect",
         format!("{:.2} reuse calls per active day", value),
     );
@@ -303,17 +306,20 @@ pub(super) fn savings_per_call(data: &AuditData) -> CheckResult {
         );
     }
     let value = m.savings as f64 / m.priced_successes as f64;
-    let base = data.baseline_metrics.priced_successes.gt(&0).then(|| {
+    // A baseline under 20 priced calls is noise; comparing against it makes
+    // the ratio swing wildly on tiny historical samples.
+    let base = (data.baseline_metrics.priced_successes >= 20).then(|| {
         data.baseline_metrics.savings as f64 / data.baseline_metrics.priced_successes as f64
     });
     let baseline = baseline_of(value, base.map(|v| (v, data.baseline.sufficient)));
+    let threshold = higher(1000.0, Some(0.5));
     let mut c = check(
         "savings.per_call",
         "effectiveness",
-        higher_status(value, &higher(1000.0, Some(0.5)), baseline.as_ref()),
+        threshold.evaluate(value, baseline.as_ref()),
         Some(value),
         "tokens",
-        higher(1000.0, Some(0.5)),
+        threshold,
         "usage",
         format!("estimated savings per priced call is {:.0} tokens", value),
     );

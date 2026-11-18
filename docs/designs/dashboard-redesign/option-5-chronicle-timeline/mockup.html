@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>eg dashboard - Chronicle</title>
+<script>
+/* Theme init before first paint: no light/dark flash and the toggle state starts truthful. */
+try {
+  var egTheme = localStorage.getItem("eg-theme");
+  if (egTheme !== "dark" && egTheme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches) egTheme = "dark";
+  if (egTheme === "dark" || egTheme === "light") document.documentElement.dataset.theme = egTheme;
+} catch (e) { /* storage unavailable */ }
+</script>
+<style>
+/* Canonical token block (25 tokens). Dark values resolve through light-dark();
+   [data-theme] and prefers-color-scheme only switch color-scheme. */
+:root {
+  color-scheme: light;
+  --bg-canvas: light-dark(#F7F4EE, #121110);
+  --bg-surface: light-dark(#FBF9F5, #1A1816);
+  --bg-subtle: light-dark(#EFECE4, #24211E);
+  --bg-elevated: light-dark(#FFFFFF, #2A2724);
+  --text-primary: light-dark(#1E1C1A, #F3EFEA);
+  --text-secondary: light-dark(#4A4640, #C4BDB3);
+  --text-muted: light-dark(#666059, #968E84);
+  --border-subtle: light-dark(rgba(30,28,26,0.09), rgba(243,239,234,0.09));
+  --border-strong: light-dark(rgba(30,28,26,0.18), rgba(243,239,234,0.18));
+  --intent-primary: light-dark(#8A4A2E, #D9825B);
+  --intent-primary-soft: light-dark(rgba(138,74,46,0.10), rgba(217,130,91,0.15));
+  --intent-success: light-dark(#246A49, #52B788);
+  --intent-success-soft: light-dark(rgba(36,106,73,0.10), rgba(82,183,136,0.15));
+  --intent-warning: light-dark(#945807, #E9A84A);
+  --intent-warning-soft: light-dark(rgba(148,88,7,0.10), rgba(233,168,74,0.15));
+  --intent-danger: light-dark(#B8322C, #F06A63);
+  --intent-danger-soft: light-dark(rgba(184,50,44,0.10), rgba(240,106,99,0.15));
+  --intent-info: light-dark(#2E5A70, #6BA3BE);
+  --intent-info-soft: light-dark(rgba(46,90,112,0.10), rgba(107,163,190,0.15));
+  --font-display: Georgia, serif;
+  --font-sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+body { background: var(--bg-canvas); color: var(--text-primary); font-family: var(--font-sans); font-size: 13px; line-height: 1.5; height: 100vh; display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--intent-primary); outline-offset: 2px; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--radius-sm); border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+.hdr { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.mark { width: 24px; height: 24px; flex: 0 0 auto; }
+.mark-box { fill: var(--intent-primary); }
+.mark-glyph { stroke: var(--bg-canvas); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.brand h1 { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+.brand p { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.hdr-status { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 2px 8px; border-radius: var(--radius-sm); background: var(--bg-subtle); color: var(--text-secondary); font-family: var(--font-sans); font-size: 11px; line-height: 1.3; white-space: nowrap; }
+.chip .n { font-family: var(--font-mono); font-weight: 400; }
+button.chip { min-height: 26px; border: 1px solid currentColor; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background var(--transition-fast), color var(--transition-fast); }
+button.chip:hover { background: var(--bg-subtle); color: var(--text-primary); }
+button.chip[aria-pressed="true"] { background: var(--intent-primary-soft); color: var(--intent-primary); font-weight: 600; }
+#sseChip[aria-pressed="true"] { background: var(--bg-subtle); color: var(--text-secondary); font-weight: 400; }
+.chip.chip--info { background: var(--intent-info-soft); color: var(--intent-info); }
+.chip.chip--success { background: var(--intent-success-soft); color: var(--intent-success); }
+.chip.chip--warning { background: var(--intent-warning-soft); color: var(--intent-warning); }
+.chip.chip--danger { background: var(--intent-danger-soft); color: var(--intent-danger); }
+.btn { font: inherit; font-size: 12px; min-height: 28px; padding: 3px 10px; border: 1px solid var(--text-muted); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }
+.btn:hover { border-color: var(--text-primary); }
+.btn--ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }
+.btn--ghost:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.btn--primary { background: var(--intent-primary); border-color: var(--intent-primary); color: var(--bg-canvas); font-weight: 600; }
+.btn--primary:hover { background: var(--text-primary); border-color: var(--text-primary); color: var(--bg-canvas); }
+.btn:disabled, .btn:disabled:hover { background: transparent; border-color: var(--border-strong); color: var(--text-muted); cursor: not-allowed; }
+.seg { display: inline-flex; border: 1px solid var(--text-muted); border-radius: var(--radius-sm); overflow: hidden; background: transparent; }
+.seg-btn { font: inherit; font-size: 12px; min-height: 26px; padding: 2px 10px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--border-subtle); }
+.seg-btn[aria-pressed="true"] { background: var(--intent-primary-soft); color: var(--intent-primary); font-weight: 600; }
+input[type="search"] { font: inherit; font-size: 12px; min-height: 28px; padding: 3px 9px; border: 1px solid var(--text-muted); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary); flex: 1 1 220px; max-width: 340px; }
+input[type="search"]::placeholder { color: var(--text-muted); opacity: 1; }
+.shell { position: relative; flex: 1 1 auto; display: grid; grid-template-columns: 216px minmax(0, 1fr) 380px; min-height: 0; }
+.rail { border-right: 1px solid var(--border-subtle); background: var(--bg-surface); overflow-y: auto; padding: 14px 14px 24px; }
+.stream { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.detail { border-left: 1px solid var(--border-subtle); background: var(--bg-surface); overflow-y: auto; padding: 14px 16px 32px; }
+.rsec { margin-bottom: 18px; }
+.rsec h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin-bottom: 6px; }
+.kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.kpi dt { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi dd { font-family: var(--font-mono); font-size: 16px; font-weight: 600; line-height: 1.2; }
+.kpi dd span { display: block; margin-top: 1px; font-family: var(--font-sans); font-size: 11px; font-weight: 400; line-height: 1.35; color: var(--text-muted); }
+.ws { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; width: 100%; min-height: 44px; padding: 7px 4px; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
+.ws:hover { background: var(--bg-subtle); }
+.ws[aria-pressed="true"] { background: var(--intent-primary-soft); box-shadow: inset 2px 0 0 var(--intent-primary); border-bottom-color: var(--text-muted); }
+.ws[aria-pressed="true"] .ws-name { color: var(--text-primary); }
+.ws[aria-pressed="true"] .ws-sub { color: var(--text-secondary); }
+.ws-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.ws-n { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.ws-sub { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); line-height: 1.35; }
+.kv { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; color: var(--text-secondary); }
+.kv span:last-child { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.dets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.rnote { font-size: 11px; color: var(--text-muted); line-height: 1.45; margin-top: 8px; }
+.ctrl { flex: 0 0 auto; display: grid; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-canvas); }
+.ctrl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lanes { display: flex; flex-wrap: wrap; gap: 5px; }
+.hint { font-size: 11px; color: var(--text-muted); }
+.tscroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.ts-list { position: relative; list-style: none; padding: 0 14px 40px 18px; }
+.ts-list::before { content: ""; position: absolute; left: 81px; top: 0; bottom: 0; z-index: 1; width: 1px; background: var(--border-strong); }
+.day-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 10px 14px 6px 0; background: var(--bg-canvas); border-bottom: 1px solid var(--border-subtle); }
+.day-h .dh-title { font-family: var(--font-display); font-size: 13px; font-weight: 600; }
+.day-h .dh-sub { margin-left: auto; text-align: right; font-size: 11px; color: var(--text-muted); }
+.ev { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: start; gap: 10px; width: 100%; min-height: 44px; padding: 9px 10px 9px 0; border: 0; border-radius: var(--radius-md); background: transparent; color: inherit; font: inherit; text-align: left; appearance: none; cursor: pointer; transition: background var(--transition-fast); }
+.ev:hover { background: var(--bg-surface); }
+.ev.sel { background: var(--bg-surface); box-shadow: inset 2px 0 0 var(--intent-primary); }
+.ev .t { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); text-align: right; padding-top: 2px; }
+.ev .body { display: block; min-width: 0; }
+.ev .s1 { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.ev .tool { font-family: var(--font-mono); font-weight: 600; }
+.ev .subj { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.ev .s2 { display: block; font-size: 12px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; overflow-wrap: anywhere; }
+.ev .sep { margin: 0 4px; }
+.ev .chip { margin-top: 1px; }
+@keyframes evflash { from { background: var(--intent-primary-soft); } to { background: transparent; } }
+.ev.flash { animation: evflash 1.8s ease-out 1; }
+.load { padding: 40px 16px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.err-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 14px 0; padding: 8px 12px; border: 1px solid var(--intent-danger); border-radius: var(--radius-md); background: var(--intent-danger-soft); color: var(--intent-danger); font-size: 12px; }
+.act-alert { flex-basis: 100%; padding: 8px 10px; border: 1px solid var(--intent-danger); border-radius: var(--radius-sm); background: var(--intent-danger-soft); color: var(--intent-danger); font-size: 12px; }
+.act-alert p { margin: 0 0 6px; }
+.err-bar .btn, .act-alert .btn { border-color: var(--intent-danger); color: var(--intent-danger); background: transparent; }
+.empty { display: grid; justify-items: center; gap: 8px; padding: 48px 20px; text-align: center; }
+.empty p { max-width: 46ch; font-size: 12px; color: var(--text-muted); }
+.dt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dt-head time { font-size: 11px; color: var(--text-muted); }
+.dt-close { margin-left: auto; }
+.dt-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; line-height: 1.25; margin: 6px 0 12px; overflow-wrap: anywhere; }
+.dt-sec { margin-top: 16px; }
+.dt-sec h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin-bottom: 6px; }
+.dt-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.dt-meta .m { min-width: 0; }
+.dt-meta .m--wide { grid-column: 1 / -1; }
+.dt-meta dt { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.dt-meta dd { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); margin-top: 1px; overflow-wrap: anywhere; }
+.dt-note { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.dt-note.danger { color: var(--intent-danger); }
+.dt-small { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+.cli { display: inline-block; max-width: 100%; padding: 3px 7px; border-radius: var(--radius-sm); background: var(--bg-subtle); color: var(--text-secondary); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.track { height: 6px; margin: 4px 0 6px; border-radius: var(--radius-sm); background: var(--bg-subtle); overflow: hidden; }
+.track .fill { height: 100%; background: var(--intent-primary); }
+.snip + .snip { margin-top: 8px; }
+.snip-l { margin-bottom: 3px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+pre.code { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-subtle); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre; }
+.ref { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+.ref .mono { overflow-wrap: anywhere; }
+.ctx { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; align-items: baseline; gap: 8px; min-height: 24px; padding: 4px; border-radius: var(--radius-sm); cursor: pointer; }
+.ctx:hover { background: var(--bg-subtle); }
+.ctx .ct { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.ctx .cs { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx .cl { font-size: 11px; color: var(--text-muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.dt-empty { padding: 40px 8px; text-align: center; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.raw { margin-top: 18px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+.raw summary { min-height: 24px; font-size: 11px; color: var(--text-muted); cursor: pointer; }
+.raw pre { margin-top: 6px; max-height: 220px; overflow: auto; }
+.toast { position: fixed; bottom: 16px; left: 50%; z-index: 60; max-width: calc(100vw - 32px); padding: 7px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-primary); font-size: 12px; transform: translateX(-50%); }
+@media (max-width: 1280px) {
+  .shell { grid-template-columns: 200px minmax(0, 1fr); }
+  .detail { position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(400px, 92vw); border-left: 1px solid var(--text-muted); transform: translateX(103%); visibility: hidden; transition: transform var(--transition-fast); }
+  .shell.dt-open .detail { transform: none; visibility: visible; }
+}
+@media (max-width: 900px) {
+  .hdr { padding: 8px 12px; }
+  .brand p { display: none; }
+  .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .rail { display: flex; gap: 16px; overflow-x: auto; overflow-y: hidden; padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--border-subtle); }
+  .rsec { flex: 0 0 auto; min-width: 150px; margin: 0; }
+  .rsec--engine, .rail > .rnote { display: none; }
+  .detail { position: fixed; top: 0; right: 0; bottom: 0; width: min(400px, 94vw); }
+  .ctrl { padding: 8px 12px; }
+  .ts-list { padding: 0 10px 40px 12px; }
+  .ts-list::before { left: 69px; }
+  .ev { grid-template-columns: 52px minmax(0, 1fr) auto; padding-right: 6px; }
+}
+@media (max-width: 560px) {
+  .hdr-status { margin-left: 0; }
+  input[type="search"] { max-width: none; flex-basis: 100%; }
+  .hint { display: none; }
+  .dt-meta { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+<header class="hdr">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+      <rect class="mark-box" x="1" y="1" width="22" height="22" rx="6"></rect>
+      <path class="mark-glyph" d="M6.5 8h11M6.5 12h7M6.5 16h11"></path>
+    </svg>
+    <div>
+      <h1>eg &middot; Chronicle</h1>
+      <p>Local code graph &middot; anti-reinvention &middot; memory</p>
+    </div>
+  </div>
+  <div class="hdr-status">
+    <button type="button" class="chip chip--info" id="sseChip" aria-pressed="false" title="Pause or resume the live stream">LIVE &middot; SSE /events</button>
+    <span class="chip" id="ageChip" title="Stale after 30s without a journal event">Updated &mdash;</span>
+    <button type="button" class="btn btn--ghost" id="themeBtn" aria-pressed="false">Dark theme</button>
+  </div>
+</header>
+<div class="shell">
+  <aside class="rail" aria-label="Summary" tabindex="0">
+    <section class="rsec">
+      <h2>Totals</h2>
+      <dl class="kpis" id="kpis"></dl>
+    </section>
+    <section class="rsec">
+      <h2>Workspaces</h2>
+      <div id="wsList"></div>
+    </section>
+    <section class="rsec rsec--engine">
+      <h2>Agents</h2>
+      <div class="lanes" id="agentList"></div>
+      <p class="rnote" id="agentsNote"></p>
+    </section>
+    <section class="rsec rsec--engine">
+      <h2>Anti-reinvention</h2>
+      <div id="engList"></div>
+      <p class="rnote">Detector counts sample surfaced candidates, not the full pool. D2/D3 matches rely on text evidence only.</p>
+    </section>
+    <p class="rnote">Retained window: 50 entries &middot; offline loopback console.</p>
+  </aside>
+  <main class="stream" aria-label="Chronicle timeline">
+    <div class="ctrl">
+      <div class="ctrl-row lanes" id="lanePills" role="group" aria-label="Filter by lane">
+        <button type="button" class="chip" data-lane="all" aria-pressed="true">All <span class="n">0</span></button>
+        <button type="button" class="chip" data-lane="build" aria-pressed="false">Build <span class="n">0</span></button>
+        <button type="button" class="chip" data-lane="query" aria-pressed="false">Query <span class="n">0</span></button>
+        <button type="button" class="chip" data-lane="memory" aria-pressed="false">Memory <span class="n">0</span></button>
+        <button type="button" class="chip" data-lane="session" aria-pressed="false">Session <span class="n">0</span></button>
+        <button type="button" class="chip" data-lane="schema" aria-pressed="false">Schema <span class="n">0</span></button>
+      </div>
+      <div class="ctrl-row">
+        <label class="sr-only" for="qInput">Filter events, symbols, notes</label>
+        <input id="qInput" type="search" placeholder="Filter events, symbols, notes ( / )">
+        <div class="seg" role="group" aria-label="Timeline grouping">
+          <button type="button" class="seg-btn" data-zoom="day" aria-pressed="true">Day</button>
+          <button type="button" class="seg-btn" data-zoom="hour" aria-pressed="false">Hour</button>
+        </div>
+        <span class="hint">Day groups the retained window</span>
+        <button type="button" class="btn btn--ghost" id="clearBtn" disabled>Reset</button>
+      </div>
+    </div>
+    <div class="tscroll" id="tscroll" tabindex="0" aria-label="Retained journal timeline, scrollable">
+      <div class="load" id="loadState" role="status">Loading retained window&hellip;</div>
+      <div class="err-bar" id="errorState" role="alert" hidden>
+        <span id="errorCause"></span>
+        <button type="button" class="btn btn--ghost" id="errorRetry">Retry failed loads</button>
+      </div>
+      <ol class="ts-list" id="tsList" aria-label="Journal events" hidden></ol>
+      <div class="empty" id="emptyState" hidden>
+        <p>No retained events match these filters.</p>
+        <button type="button" class="btn btn--ghost" id="emptyReset">Reset filters</button>
+      </div>
+    </div>
+  </main>
+  <aside class="detail" id="detail" aria-label="Event record" tabindex="0"></aside>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="sr-only" aria-live="polite" id="liveRegion"></div>
+<div class="sr-only" aria-live="polite" id="countRegion"></div>
+<script>
+"use strict";
+var $ = function (s, el) { return (el || document).querySelector(s); };
+var $$ = function (s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); };
+var esc = function (s) {
+  var m = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(s).replace(/[&<>"']/g, function (c) { return m[c]; });
+};
+var fmtInt = function (n) { return n.toLocaleString("en-US"); };
+var fmtTok = function (n) { return n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + "K" : String(n); };
+var fmtUs = function (us) {
+  var ms = us / 1000;
+  return us >= 1000 ? (ms % 1 ? ms.toFixed(1) : ms.toFixed(0)) + " ms" : us + " \u00B5s";
+};
+var pad2 = function (v) { return String(v).padStart(2, "0"); };
+var fmtClock = function (ts) { var d = new Date(ts); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); };
+var fmtDay = function (ts) { return new Date(ts).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); };
+var relTime = function (ts) {
+  var dt = Math.max(0, Date.now() - ts);
+  var k = dt < 60e3 ? [1e3, "s"] : dt < 3600e3 ? [60e3, "m"] : dt < 86400e3 ? [3600e3, "h"] : [86400e3, "d"];
+  return Math.max(1, Math.round(dt / k[0])) + k[1] + " ago";
+};
+var NOW = Date.now();
+var min = function (m) { return NOW - m * 60e3; };
+var dAt = function (daysAgo, h, m) { var d = new Date(NOW - daysAgo * 86400e3); d.setHours(h, m, 0, 0); return d.getTime(); };
+var dayDiff = function (ts) {
+  var a = new Date(ts), b = new Date(NOW);
+  return Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 86400e3);
+};
+var dayLabel = function (ts) { var k = dayDiff(ts); return k === 0 ? "Today" : k === 1 ? "Yesterday" : fmtDay(ts); };
+var SUMMARY = {
+  total_calls: 1284, error_count: 9, reliability_pct: 99.3,
+  saved_tokens: 412000, saved_dollars: 1.24, saved_tokens_estimated: true,
+  session_count: 18, memory_session_count: 12, session_recall_pct: 66.7, generated_at: new Date(NOW - 45e3).toISOString(),
+  tool_aggs: { callers: { calls: 210, p50: 0.6, saved_tokens: 64000 } }
+};
+var REPOS = [
+  { display: "app", calls: 640, errors: 2, saved_tokens: 204000, search_hit_rate_pct: 92, memory_reads: 22, memory_writes: 9,
+    last_reuse_scan: { ts: min(18), result_count: 21, limit_capped: false, prev_result_count: 24, prev_ts: min(180) } },
+  { display: "engram", calls: 388, errors: 5, saved_tokens: 128000, search_hit_rate_pct: 74, memory_reads: 15, memory_writes: 4,
+    last_reuse_scan: { ts: min(120), result_count: 8, limit_capped: true, prev_result_count: 8, prev_ts: dAt(1, 20, 40) } },
+  { display: "docs-site", calls: 256, errors: 2, saved_tokens: 80000, search_hit_rate_pct: 66, memory_reads: 6, memory_writes: 1,
+    last_reuse_scan: { ts: min(165), result_count: 3, limit_capped: false, prev_result_count: 3, prev_ts: dAt(1, 18, 5) } }
+];
+var AGENTS = [
+  { name: "zcode", calls: 512, errors: 4 },
+  { name: "claude", calls: 448, errors: 3 },
+  { name: "codex", calls: 324, errors: 2 }
+];
+var REUSE = {
+  total_candidates: 38, preventable_loc: 1240, preventable_loc_estimated: true,
+  prewrite_count: 112, avg_callers: 6.4,
+  detector_counts: { D1: 14, D1L: 5 },
+  repo_candidate_pools: { "/ws/app": 21, "/ws/engram": 12, "/ws/docs-site": 5 },
+  resolved_twins: { resolved: 3, surfaced: 6 }
+};
+var CANDIDATES = [
+  { id: "app:parse_token->normalize_token", repo: "app", repo_path: "/ws/app", detector: "D1",
+    symbol: "parse_token", canonical: "normalize_token", canonical_callers: 14, canonical_file: "src/tokens.rs", canonical_line: 88,
+    overlap_pct: 83, overlap_applicable: true, confidence: "high", reasons: ["identical match skeleton", "same tokenizer branches"], shared_evidence: "trim + chars().next() + match",
+    candidate_info: { file: "src/legacy.rs", line_start: 120, line_end: 141, loc: 22 }, canonical_info: { file: "src/tokens.rs", line_start: 88, line_end: 104, loc: 17 },
+    loc_saving: 22, reuse_count: 3, last_reused_ts: dAt(1, 16, 2), prevention_narrative: "Route new callers to normalize_token and delete the legacy wrapper once migration lands.",
+    candidate_snippet: "fn parse_token(input: &str) -> Token {\n    let t = input.trim();\n    match t.chars().next() {\n        Some(c) if c.is_ascii_digit() => Token::Num(t),\n        _ => Token::Word(t.to_string()),\n    }\n}",
+    canonical_snippet: "fn normalize_token(input: &str) -> Token {\n    let t = input.trim();\n    match t.chars().next() {\n        Some(c) if c.is_ascii_digit() => Token::Num(t),\n        _ => Token::Word(t.to_string()),\n    }\n}" },
+  { id: "app:send_chunk->flush_buffer", repo: "app", repo_path: "/ws/app", detector: "D1L",
+    symbol: "send_chunk", canonical: "flush_buffer", canonical_callers: 8, canonical_file: "src/journal.rs", canonical_line: 210,
+    overlap_pct: 71, overlap_applicable: true, confidence: "medium", reasons: ["same drain loop", "threshold literal is the only delta"], shared_evidence: "while + write + drain",
+    candidate_info: { file: "src/export.rs", line_start: 54, line_end: 70, loc: 17 }, canonical_info: { file: "src/journal.rs", line_start: 210, line_end: 226, loc: 17 },
+    loc_saving: 17, reuse_count: 1, last_reused_ts: dAt(1, 20, 40), prevention_narrative: "Route chunk writers through flush_buffer and drop the literal-threshold branch.",
+    candidate_snippet: "fn send_chunk(buf: &mut Vec<u8>, out: &mut Sink) {\n    while buf.len() > 4096 {\n        let n = out.write(buf);\n        buf.drain(..n);\n    }\n}",
+    canonical_snippet: "fn flush_buffer(buf: &mut Vec<u8>, out: &mut Sink) {\n    while !buf.is_empty() {\n        let n = out.write(buf);\n        buf.drain(..n);\n    }\n}" },
+  { id: "engram:parse_flags->load_config", repo: "engram", repo_path: "/ws/engram", detector: "D2",
+    symbol: "parse_flags", canonical: "load_config", canonical_callers: 5, canonical_file: "src/cli.rs", canonical_line: 96,
+    overlap_pct: 64, overlap_applicable: true, confidence: "medium", reasons: ["shared flag-table walk"], shared_evidence: "match on string keys",
+    candidate_info: { file: "src/doctor.rs", line_start: 31, line_end: 48, loc: 18 }, canonical_info: { file: "src/cli.rs", line_start: 96, line_end: 112, loc: 16 },
+    loc_saving: 12, reuse_count: 0, last_reused_ts: null, prevention_narrative: "Parse CLI flags once through a load_config-style loader; keep a single key match.",
+    candidate_snippet: "fn parse_flags(args: &[String]) -> Flags {\n    let mut f = Flags::default();\n    for a in args {\n        match a.as_str() { \"--json\" => f.json = true, _ => {} }\n    }\n    f\n}",
+    canonical_snippet: "fn load_config(path: &Path) -> Config {\n    let mut c = Config::default();\n    for kv in read_pairs(path) {\n        match kv.key.as_str() { \"json\" => c.json = true, _ => {} }\n    }\n    c\n}" },
+  { id: "docs-site:render_row->render_cell", repo: "docs-site", repo_path: "/ws/docs-site", detector: "D3",
+    symbol: "render_row", canonical: "render_cell", canonical_callers: 3, canonical_file: "assets/app.js", canonical_line: 412,
+    overlap_pct: null, overlap_applicable: false, confidence: "low", reasons: ["near-duplicate emit paths differ in column order"], shared_evidence: "td append order",
+    candidate_info: { file: "assets/table.js", line_start: 31, line_end: 44, loc: 14 }, canonical_info: { file: "assets/app.js", line_start: 412, line_end: 426, loc: 14 },
+    loc_saving: 9, reuse_count: 2, last_reused_ts: dAt(1, 18, 5), prevention_narrative: "Render rows by composing render_cell instead of re-emitting td nodes.",
+    candidate_snippet: "function renderRow(cells) {\n  const tr = el(\"tr\");\n  for (const c of cells) tr.append(el(\"td\", c));\n  return tr;\n}",
+    canonical_snippet: "function renderCell(c) {\n  const td = el(\"td\", c);\n  td.dataset.col = c.key;\n  return td;\n}" }
+];
+var NOTES = {
+  42: { id: 42, store: "engram", store_id: "/ws/app/.engram/memory.db", key: "allowlist-refs", rev: 3, kind: "gotcha", scope: "project",
+    body: "Ref freshness must branch on index resolution.", tags: ["refs", "freshness"],
+    resolved_refs: [{ ref: "src/query/reuse.rs", verified: true, status: "modified", type: "file" }],
+    ref_status: "modified", source: "agent", created_at: dAt(3, 11, 12), anchored_at: min(80), is_current: true, recall_count: 4, last_recalled_ts: min(65) },
+  41: { id: 41, store: "engram", store_id: "/ws/engram/.engram/memory.db", key: "sse-reconnect", rev: 1, kind: "decision", scope: "project",
+    body: "Journal rotate triggers SSE reset; clients must refetch all three endpoints.", tags: ["sse", "live"],
+    resolved_refs: [{ ref: "src/dashboard/server.rs", verified: true, status: "valid", type: "file" },
+      { ref: "src/dashboard/assets/app.js", verified: false, status: "unverified", type: "file" }],
+    ref_status: "unverified", source: "agent", created_at: min(20), anchored_at: min(20), is_current: true, recall_count: 0, last_recalled_ts: null },
+  39: { id: 39, store: "global", store_id: "global memory store", key: "parameterized-sql", rev: 5, kind: "convention", scope: "global",
+    body: "Bind user-supplied filters with ?1 parameters; never interpolate WHERE clauses.", tags: ["sql", "safety"],
+    resolved_refs: [{ ref: "src/query.rs", verified: false, status: "broken", type: "file" }],
+    ref_status: "broken", source: "agent", created_at: dAt(3, 14, 30), anchored_at: dAt(2, 9, 0), is_current: true, recall_count: 12, last_recalled_ts: dAt(1, 13, 40) }
+};
+var REPO_PATH = { "app": "/ws/app", "engram": "/ws/engram", "docs-site": "/ws/docs-site" };
+var SCAN_AGENT = { "app": "zcode", "engram": "claude", "docs-site": "codex" };
+/* query, build, session, schema entries mirror the journal shape */
+var EVENTS = [
+  { id: "e01", lane: "query", ts: min(2), tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 7, result_count: 7, latency_us: 640, args: { name: "read_bounded" } },
+  { id: "e02", lane: "query", ts: min(9), tool: "context", repo_name: "engram", agent: "claude", exit_code: 0, shown: 12, result_count: 12, latency_us: 810, args: { name: "dashboard/server.rs" } },
+  { id: "e03", lane: "query", ts: min(14), tool: "search", repo_name: "app", agent: "zcode", exit_code: 0, shown: 9, result_count: 9, latency_us: 420, terms: ["token budget", "streaming"] },
+  { id: "e04", lane: "memory", ts: min(20), agent: "claude", action: "write", note: 41, repo_name: "engram" },
+  { id: "e05", lane: "session", ts: min(5), agent: "zcode", action: "start", session: "sess-7f3a", repo_name: "app", turns: 12 },
+  { id: "e06", lane: "query", ts: min(31), tool: "impact", repo_name: "app", agent: "codex", exit_code: 0, shown: 4, result_count: 4, latency_us: 390, args: { name: "render_timeline" } },
+  { id: "e07", lane: "query", ts: min(46), tool: "callees", repo_name: "perf-lab", repo_main_name: "app", agent: "zcode", exit_code: 2, shown: 0, result_count: 0, latency_us: 120, args: { name: "missing_symbol" } },
+  { id: "e08", lane: "query", ts: min(52), tool: "search", repo_name: "engram", agent: "zcode", exit_code: 0, shown: 4, result_count: 4, latency_us: 210, terms: ["escape html", "sanitize"] },
+  { id: "e09", lane: "session", ts: dAt(1, 10, 2), agent: "claude", action: "recall", session: "sess-2b9c", repo_name: "engram", recalls: 3 },
+  { id: "e10", lane: "memory", ts: min(80), agent: "claude", action: "anchor", note: 42, repo_name: "app" },
+  { id: "e11", lane: "query", ts: min(97), tool: "symbols", repo_name: "docs-site", agent: "claude", exit_code: 0, shown: 18, result_count: 18, latency_us: 150, args: { name: "guide-*" } },
+  { id: "e12", lane: "query", ts: min(125), tool: "path", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 520, args: { name: "db.rs" } },
+  { id: "e13", lane: "query", ts: min(153), tool: "callers", repo_name: "docs-site", agent: "codex", exit_code: 0, shown: 3, result_count: 3, latency_us: 280, args: { name: "build_index" } },
+  { id: "e14", lane: "build", ts: dAt(1, 9, 14), tool: "build", repo_name: "engram", agent: "zcode", exit_code: 0, shown: 0, result_count: 0, latency_us: 418000, args: {} },
+  { id: "e15", lane: "query", ts: dAt(1, 11, 26), tool: "search", repo_name: "app", agent: "claude", exit_code: 0, shown: 6, result_count: 6, latency_us: 340, terms: ["retry", "backoff"] },
+  { id: "e16", lane: "memory", ts: dAt(1, 13, 40), agent: "codex", action: "recall", note: 39, repo_name: "app" },
+  { id: "e17", lane: "schema", ts: dAt(2, 9, 0), agent: "zcode", action: "migrate", version: 10, summary: "index.db schema v10 with callgraph edges" },
+  { id: "e18", lane: "query", ts: dAt(1, 17, 35), tool: "context", repo_name: "app", agent: "codex", exit_code: 0, shown: 9, result_count: 9, latency_us: 760, args: { name: "reuse.rs" } },
+  { id: "e19", lane: "query", ts: dAt(1, 19, 21), tool: "symbols", repo_name: "engram", agent: "claude", exit_code: 5, shown: 0, result_count: 0, latency_us: 90, args: { name: "ghost_fn" } },
+  { id: "e20", lane: "query", ts: dAt(3, 10, 5), tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 7, result_count: 7, latency_us: 640, args: { name: "read_bounded" } },
+  { id: "e21", lane: "memory", ts: dAt(3, 14, 30), agent: "codex", action: "write", note: 39, repo_name: "engram" },
+  { id: "e22", lane: "query", ts: dAt(3, 16, 2), tool: "search", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 260, terms: ["render", "timeline"] }
+];
+/* Reuse events are derived: scans anchor to last_reuse_scan.ts, surfaced twins to the
+   containing repo's scan, reused twins to last_reused_ts. No surfaced-at field exists. */
+REPOS.forEach(function (r) {
+  EVENTS.push({ id: "scan-" + r.display, lane: "query", agent: SCAN_AGENT[r.display], type: "scan", repo_name: r.display,
+    result_count: r.last_reuse_scan.result_count, limit_capped: r.last_reuse_scan.limit_capped,
+    prev_result_count: r.last_reuse_scan.prev_result_count, prev_ts: r.last_reuse_scan.prev_ts, ts: r.last_reuse_scan.ts });
+});
+CANDIDATES.forEach(function (c, i) {
+  var scanTs = REPOS.filter(function (r) { return r.display === c.repo; })[0].last_reuse_scan.ts;
+  EVENTS.push({ id: "twin-s" + i, lane: "query", agent: SCAN_AGENT[c.repo], type: "twin", surfaced: true, candidate: i, repo_name: c.repo, ts: scanTs });
+  if (c.last_reused_ts) EVENTS.push({ id: "twin-r" + i, lane: "query", agent: SCAN_AGENT[c.repo], type: "twin", surfaced: false, candidate: i, repo_name: c.repo, ts: c.last_reused_ts });
+});
+var state = { zoom: "day", lane: "all", detector: null, agent: null, wt: "any", q: "", sel: null };
+var openerId = null;
+var LANES = { build: "Build", query: "Query", memory: "Memory", session: "Session", schema: "Schema" };
+var ST_RANK = { valid: 0, unverified: 1, modified: 2, broken: 3 };
+var evRepo = function (e) { return e.repo_main_name || e.repo_name; };
+var evWt = function (e) { return e.repo_main_name && e.repo_main_name !== e.repo_name ? e.repo_name : "main"; };
+var isErr = function (e) { return typeof e.exit_code === "number" && e.exit_code !== 0; };
+var evKind = function (e) {
+  if (e.lane === "query") return e.type || (e.terms ? "prewrite" : "tool");
+  return e.lane;
+};
+var evHay = function (e) {
+  var k = evKind(e);
+  if (k === "tool" || k === "build") return [e.tool, e.args && e.args.name, e.repo_name, evRepo(e), e.agent].join(" ");
+  if (k === "prewrite") return ["search", (e.terms || []).join(" "), e.repo_name, evRepo(e), e.agent].join(" ");
+  if (k === "scan") return ["reuse scan", e.repo_name, evRepo(e), e.agent].join(" ");
+  if (k === "twin") { var c = CANDIDATES[e.candidate]; return ["twin", c.detector, c.symbol, c.canonical, c.canonical_file, c.repo].join(" "); }
+  if (k === "session") return ["session", e.action, e.session, e.repo_name, e.agent].join(" ");
+  if (k === "schema") return ["schema", e.action, "v" + e.version, e.summary, e.agent].join(" ");
+  var n = NOTES[e.note];
+  return ["memory", n.key, n.kind, n.store, e.repo_name, e.agent].join(" ");
+};
+function pass(e) {
+  if (state.lane !== "all" && e.lane !== state.lane) return false;
+  if (state.agent && e.agent !== state.agent) return false;
+  if (state.detector && !(e.lane === "query" && e.type === "twin" && CANDIDATES[e.candidate].detector === state.detector)) return false;
+  if (state.wt !== "any" && evRepo(e) !== state.wt) return false;
+  if (state.q && evHay(e).toLowerCase().indexOf(state.q.toLowerCase()) === -1) return false;
+  return true;
+}
+function rawOf(e) {
+  if (e.lane === "memory") return NOTES[e.note];
+  if (e.lane === "session") return { ts: Math.round(e.ts / 1000), kind: "session", action: e.action, session: e.session, agent: e.agent, repo_name: e.repo_name, turns: e.turns, recalls: e.recalls };
+  if (e.lane === "schema") return { ts: Math.round(e.ts / 1000), kind: "schema_migrate", version: e.version, summary: e.summary, agent: e.agent };
+  if (e.type === "scan") return { ts: Math.round(e.ts / 1000), tool: "reuse", repo_name: e.repo_name, result_count: e.result_count, limit_capped: e.limit_capped, prev_result_count: e.prev_result_count, prev_ts: Math.round(e.prev_ts / 1000) };
+  if (e.type === "twin") return CANDIDATES[e.candidate];
+  var o = { ts: Math.round(e.ts / 1000), tool: e.tool, repo: REPO_PATH[evRepo(e)] || evRepo(e), repo_name: e.repo_name,
+    agent: e.agent, exit_code: e.exit_code, shown: e.shown, result_count: e.result_count, latency_us: e.latency_us };
+  if (e.args) o.args = e.args;
+  if (e.terms) o.terms = e.terms;
+  if (e.repo_main_name) { o.repo_main = REPO_PATH[e.repo_main_name] || e.repo_main_name; o.repo_main_name = e.repo_main_name; }
+  return o;
+}
+function kpi(label, value, sub) { return '<div class="kpi"><dt>' + label + '</dt><dd>' + value + "<span>" + sub + "</span></dd></div>"; }
+function kv(label, value) { return '<div class="kv"><span>' + label + '</span><span>' + value + "</span></div>"; }
+function renderRail() {
+  $("#kpis").innerHTML =
+    kpi("Calls", fmtInt(SUMMARY.total_calls), SUMMARY.reliability_pct + "% ok \u00B7 " + SUMMARY.error_count + " errors") +
+    kpi("Tokens avoided", fmtTok(SUMMARY.saved_tokens), "$" + SUMMARY.saved_dollars.toFixed(2) + " saved" + (SUMMARY.saved_tokens_estimated ? " \u00B7 est." : "")) +
+    kpi("Pool", String(REUSE.total_candidates), "twins " + REUSE.resolved_twins.resolved + " resolved / " + REUSE.resolved_twins.surfaced + " surfaced") +
+    kpi("Recall", SUMMARY.session_recall_pct + "%", SUMMARY.memory_session_count + " of " + SUMMARY.session_count + " sessions");
+  $("#agentsNote").textContent = "Calls/errors per agent: " + AGENTS.map(function (a) { return a.name + " " + a.calls + "/" + a.errors; }).join(" \u00B7 ");
+  $("#wsList").innerHTML = REPOS.map(function (r) {
+    return '<button type="button" class="ws" data-ws="' + esc(r.display) + '" aria-pressed="false" aria-label="Filter by workspace ' + esc(r.display) + '">' +
+      '<span class="ws-name">' + esc(r.display) + '</span><span class="ws-n">' + r.calls + ' calls</span><span class="ws-sub">err ' + r.errors +
+      " \u00B7 " + fmtTok(r.saved_tokens) + " tok \u00B7 mem R/W " + r.memory_reads + "/" + r.memory_writes + "</span></button>";
+  }).join("");
+  $("#agentList").innerHTML = AGENTS.map(function (a) {
+    var n = EVENTS.filter(function (e) { return e.agent === a.name; }).length;
+    return '<button type="button" class="chip" data-agent="' + esc(a.name) + '" aria-pressed="false" aria-label="Filter by agent ' + esc(a.name) + '">' + esc(a.name) + ' <span class="n">' + n + "</span></button>";
+  }).join("");
+  var dets = Object.keys(REUSE.detector_counts).map(function (d) {
+    return '<button type="button" class="chip" data-det="' + d + '" aria-pressed="false" aria-label="Filter by detector ' + d + '">' + d + ' <span class="n">' + REUSE.detector_counts[d] + "</span></button>";
+  }).join("");
+  $("#engList").innerHTML =
+    kv("Pre-write lookups", String(REUSE.prewrite_count)) +
+    kv("Preventable LOC", fmtInt(REUSE.preventable_loc) + (REUSE.preventable_loc_estimated ? " est." : "")) +
+    kv("Avg canonical callers", String(REUSE.avg_callers)) +
+    '<div class="dets">' + dets + "</div>";
+}
+function groupOf(ts) {
+  var d = new Date(ts), h = state.zoom === "hour" ? " " + pad2(d.getHours()) + ":00" : "";
+  return { k: dayLabel(ts) + h, label: dayLabel(ts) + " &middot; " + (h ? pad2(d.getHours()) + ":00" : fmtDay(ts)) };
+}
+function statusText(e) {
+  if (isErr(e)) return "exit " + e.exit_code;
+  if (e.type === "scan" && e.limit_capped) return "capped";
+  if (e.lane !== "memory") return "";
+  var s = NOTES[e.note].ref_status;
+  return s === "broken" ? "ref broken" : s !== "valid" ? "ref " + s : "";
+}
+function chipFor(e) {
+  var st = statusText(e), cls = "chip";
+  if (isErr(e) || st === "ref broken") cls += " chip--danger"; else if (st) cls += " chip--warning";
+  return '<span class="' + cls + '">' + LANES[e.lane] + (st ? " \u00B7 " + esc(st) : "") + "</span>";
+}
+function rowTpl(e) {
+  var sep = '<span class="sep">&middot;</span>', k = evKind(e), s1 = "", s2 = "";
+  if (k === "tool" || k === "build") {
+    s1 = '<span class="tool">' + esc(e.tool) + '</span><span class="subj">' + esc((e.args && e.args.name) || "") + "</span>";
+    s2 = [esc(evRepo(e)) + (evWt(e) !== "main" ? " \u00B7 wt " + esc(evWt(e)) : ""), esc(e.agent), e.shown + " shown", fmtUs(e.latency_us)].join(sep);
+  } else if (k === "prewrite") {
+    s1 = '<span class="tool">search</span><span class="subj">' + esc((e.terms || []).join(", ")) + "</span>";
+    s2 = [esc(evRepo(e)), esc(e.agent), e.shown + " shown", fmtUs(e.latency_us)].join(sep);
+  } else if (k === "scan") {
+    s1 = '<span class="tool">reuse scan</span><span class="subj">' + esc(evRepo(e)) + "</span>";
+    s2 = [esc(e.repo_name), "pool " + e.result_count, "prev " + e.prev_result_count, esc(e.agent)].join(sep);
+  } else if (k === "twin") {
+    var c = CANDIDATES[e.candidate];
+    s1 = '<span class="tool">' + esc(c.detector) + '</span><span class="subj">' + esc(c.symbol) + " -> " + esc(c.canonical) + "</span>";
+    s2 = [e.surfaced ? "surfaced" : "reused", esc(c.repo), c.overlap_pct == null ? "overlap n/a" : "overlap " + c.overlap_pct + "%", "callers " + c.canonical_callers].join(sep);
+  } else if (k === "session") {
+    s1 = '<span class="tool">session ' + esc(e.action) + '</span><span class="subj">' + esc(e.session) + "</span>";
+    s2 = [esc(evRepo(e)), esc(e.agent), e.action === "start" ? e.turns + " turns" : e.recalls + " memories recalled"].join(sep);
+  } else if (k === "schema") {
+    s1 = '<span class="tool">schema v' + e.version + '</span><span class="subj">' + esc(e.summary) + "</span>";
+    s2 = [esc(e.action), esc(e.agent)].join(sep);
+  } else {
+    var n = NOTES[e.note];
+    s1 = '<span class="tool">memory ' + esc(e.action) + '</span><span class="subj">' + esc(n.key) + "</span>";
+    s2 = [esc(n.store) + " store", esc(n.kind), "rev " + n.rev, esc(e.agent)].join(sep);
+  }
+  var extra = statusText(e), label = e.lane + " event at " + fmtClock(e.ts) + ": " + evHay(e) + (extra ? " " + extra : "");
+  return '<li><button type="button" class="ev" data-id="' + e.id + '" aria-pressed="false" aria-label="' + esc(label) + '">' +
+    '<time class="t" datetime="' + new Date(e.ts).toISOString() + '">' + fmtClock(e.ts) + '</time><span class="body"><span class="s1">' + s1 + '</span><span class="s2">' + s2 + "</span></span>" + chipFor(e) + "</button></li>";
+}
+function updatePills() {
+  var counts = { all: EVENTS.length, build: 0, query: 0, memory: 0, session: 0, schema: 0 };
+  EVENTS.forEach(function (e) { counts[e.lane] += 1; });
+  $$("#lanePills [data-lane]").forEach(function (b) { b.querySelector(".n").textContent = String(counts[b.dataset.lane]); });
+}
+function dayRollup(items) {
+  var errs = items.filter(isErr).length;
+  var tools = {};
+  items.forEach(function (e) { if (e.tool) tools[e.tool] = (tools[e.tool] || 0) + 1; });
+  var top = Object.keys(tools).sort(function (a, b) { return tools[b] - tools[a]; })[0];
+  return items.length + " events" + (errs ? " \u00B7 " + errs + " failed" : "") + (top ? " \u00B7 top " + top : "");
+}
+function syncSel() {
+  $$("#tsList .ev").forEach(function (r) {
+    var on = r.dataset.id === state.sel; r.classList.toggle("sel", on); r.setAttribute("aria-pressed", String(on));
+  });
+}
+function renderStream() {
+  updatePills();
+  var list = EVENTS.filter(pass).sort(function (a, b) { return b.ts - a.ts; });
+  var groups = [];
+  list.forEach(function (e) {
+    var g = groupOf(e.ts);
+    var last = groups[groups.length - 1];
+    if (last && last.k === g.k) last.items.push(e);
+    else groups.push({ k: g.k, label: g.label, items: [e] });
+  });
+  $("#tsList").innerHTML = groups.map(function (g) {
+    return '<li class="day-h" data-k="' + esc(g.k) + '"><span class="dh-title">' + g.label + '</span><span class="dh-sub">' + dayRollup(g.items) + "</span></li>" +
+      g.items.map(rowTpl).join("");
+  }).join("");
+  $("#emptyState").hidden = list.length > 0;
+  $("#tsList").hidden = list.length === 0;
+  syncSel();
+}
+var md = function (k, v, wide) { return '<div class="m' + (wide ? " m--wide" : "") + '"><dt>' + k + "</dt><dd>" + v + "</dd></div>"; };
+var sec = function (t, inner) { return '<section class="dt-sec"><h4>' + t + "</h4>" + inner + "</section>"; };
+function nearby(e) {
+  return EVENTS.filter(function (x) {
+    return x.id !== e.id && evRepo(x) === evRepo(e) && Math.abs(x.ts - e.ts) <= 45 * 60e3;
+  }).sort(function (a, b) { return b.ts - a.ts; }).slice(0, 3);
+}
+function ctxTpl(x) {
+  var k = evKind(x), label;
+  if (k === "tool" || k === "build") label = esc(x.tool) + " " + esc((x.args && x.args.name) || "");
+  else if (k === "prewrite") label = "search " + esc((x.terms || []).join(", "));
+  else if (k === "scan") label = "reuse scan";
+  else if (k === "twin") { var c = CANDIDATES[x.candidate]; label = esc(c.symbol) + " -> " + esc(c.canonical); }
+  else if (k === "session") label = "session " + esc(x.action) + " " + esc(x.session);
+  else if (k === "schema") label = "schema v" + x.version + " " + esc(x.action);
+  else label = esc(NOTES[x.note].key);
+  return '<div class="ctx" data-jump="' + x.id + '" role="button" tabindex="0"><span class="ct">' + fmtClock(x.ts) +
+    '</span><span class="cs">' + label + '</span><span class="cl">' + LANES[x.lane] + "</span></div>";
+}
+function nearbySection(e) {
+  var rows = nearby(e);
+  if (!rows.length) return "";
+  return sec("Nearby &plusmn;45m", rows.map(ctxTpl).join("") + '<p class="dt-small">Derived: same repo, timestamp within 45 minutes, nearest three. Not a causal chain.</p>');
+}
+function detailGraph(e) {
+  var name = (e.args && e.args.name) || "", h = '<h3 class="dt-title"><span class="mono">' + esc(e.tool) + "</span> " + esc(name) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e)) + (evWt(e) !== "main" ? " \u00B7 wt " + esc(evWt(e)) : "")) +
+    md("Agent", esc(e.agent)) + md("Exit code", String(e.exit_code)) +
+    md("Result count", String(e.result_count)) + md("Shown", String(e.shown)) +
+    md("Latency", fmtUs(e.latency_us)) +
+    (e.tool === "callers" ? md("Tool ledger", SUMMARY.tool_aggs.callers.calls + " calls \u00B7 p50 " + SUMMARY.tool_aggs.callers.p50 + " ms \u00B7 " + fmtTok(SUMMARY.tool_aggs.callers.saved_tokens) + " tok avoided", true) : "") +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg ' + esc(e.tool) + (name ? " " + esc(name) : "") + "</span></dd></div></dl>" +
+    (isErr(e) ? '<p class="dt-note danger">Non-zero exit: shown and result_count stay 0.</p>' : "") + "</section>";
+  return h;
+}
+function detailPrewrite(e) {
+  var repo = REPOS.filter(function (r) { return r.display === evRepo(e); })[0], h = '<h3 class="dt-title">Pre-write search</h3>';
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e))) + md("Agent", esc(e.agent)) +
+    md("Shown", String(e.shown)) + md("Latency", fmtUs(e.latency_us)) +
+    md("Hit rate (repo)", repo ? repo.search_hit_rate_pct + "%" : "&mdash;") +
+    md("Terms", esc((e.terms || []).join(" \u00B7 ")), true) +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg search "' + esc((e.terms || [])[0] || "") + '"</span></dd></div></dl></section>';
+  return h;
+}
+function detailScan(e) {
+  var pool = REUSE.repo_candidate_pools[REPO_PATH[evRepo(e)] || ""] || 0, twins = CANDIDATES.filter(function (c) { return c.repo === evRepo(e); }).length;
+  var h = '<h3 class="dt-title">Reuse scan &middot; ' + esc(evRepo(e)) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e))) + md("Agent", esc(e.agent || "")) +
+    md("Result count", String(e.result_count)) +
+    md("Limit capped", e.limit_capped ? '<span class="chip chip--warning">true</span>' : '<span class="chip">false</span>') +
+    md("Prev scan", e.prev_result_count + " results \u00B7 " + relTime(e.prev_ts)) +
+    md("Candidate pool", pool + " candidates") +
+    md("Sampled twins", twins + " of " + CANDIDATES.length) +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg reuse ' + esc(REPO_PATH[evRepo(e)] || "") + "</span></dd></div></dl></section>";
+  h += sec("Narrative &amp; provenance",
+    '<p class="dt-note">Scan time is last_reuse_scan.ts. Limit capped means the pool may hold more candidates than the scan returned.</p>' +
+    '<p class="dt-small">Source: /api/summary repo_aggs.last_reuse_scan.</p>');
+  return h;
+}
+function detailSession(e) {
+  var h = '<h3 class="dt-title">Session ' + esc(e.action) + " \u00B7 " + esc(e.session) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Session", esc(e.session)) + md("Agent", esc(e.agent)) + md("Repo", esc(evRepo(e))) +
+    md(e.action === "start" ? "Turns" : "Memories recalled", String(e.action === "start" ? e.turns : e.recalls)) +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg stats</span></dd></div></dl></section>' +
+    sec("Narrative &amp; provenance", '<p class="dt-note">Session milestones come from the journal stream; the retained window holds the newest 50 entries.</p>');
+  return h;
+}
+function detailSchema(e) {
+  var h = '<h3 class="dt-title">Schema v' + e.version + " " + esc(e.action) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Action", esc(e.action)) + md("Agent", esc(e.agent)) + md("Version", String(e.version)) +
+    '<div class="m m--wide"><dt>Summary</dt><dd>' + esc(e.summary) + "</dd></div>" +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg build</span></dd></div></dl></section>' +
+    sec("Narrative &amp; provenance", '<p class="dt-note">Schema skew exits with code 5; a fresh build replaces index.db atomically after fsync.</p>');
+  return h;
+}
+function detailTwin(e) {
+  var c = CANDIDATES[e.candidate], h = '<h3 class="dt-title">' + esc(c.symbol) + " -> " + esc(c.canonical) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Repo", esc(c.repo) + " &middot; " + esc(c.repo_path)) +
+    md("Detector", esc(c.detector) + " \u00B7 " + esc(c.confidence) + " confidence") +
+    md("Candidate", esc(c.candidate_info.file) + ":" + c.candidate_info.line_start + " \u00B7 " + c.candidate_info.loc + " LOC") +
+    md("Canonical", esc(c.canonical_file) + ":" + c.canonical_line + " \u00B7 " + c.canonical_info.loc + " LOC") +
+    md("LOC saving", String(c.loc_saving)) +
+    md("Reused", c.reuse_count + "x" + (c.last_reused_ts ? " \u00B7 " + relTime(c.last_reused_ts) : " \u00B7 never")) +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg reuse ' + esc(c.candidate_info.file) + "</span></dd></div></dl></section>";
+  h += sec("Narrative &amp; provenance",
+    '<p class="dt-note">' + esc(c.prevention_narrative) + "</p>" +
+    '<p class="dt-small">' + (e.surfaced
+      ? "Surfaced by the " + esc(evRepo(e)) + " reuse scan; timestamp anchored to last_reuse_scan.ts because candidates[] has no surfaced-at field."
+      : "Reuse of this pair; timestamp anchored to last_reused_ts.") + "</p>");
+  h += sec("Overlap &amp; reasons", c.overlap_pct == null
+    ? '<p class="dt-note">overlap_pct is null (overlap_applicable ' + c.overlap_applicable + ") for " + esc(c.detector) + "; no bar is drawn.</p>"
+    : '<div class="track"><div class="fill" style="width:' + c.overlap_pct + '%"></div></div>' +
+      '<p class="dt-note">' + c.overlap_pct + "% structural overlap. " + c.reasons.map(esc).join(" \u00B7 ") + "</p>" +
+      '<p class="dt-small">Shared evidence: ' + esc(c.shared_evidence) + "</p>");
+  h += sec("Evidence snippets",
+    '<div class="snip"><p class="snip-l">candidate_snippet \u00B7 ' + esc(c.candidate_info.file) + ":" + c.candidate_info.line_start + "</p>" +
+    '<pre class="code" tabindex="0" aria-label="Code snippet, scrollable">' + esc(c.candidate_snippet) + "</pre></div>" +
+    '<div class="snip"><p class="snip-l">canonical_snippet \u00B7 ' + esc(c.canonical_file) + ":" + c.canonical_line + "</p>" +
+    '<pre class="code" tabindex="0" aria-label="Code snippet, scrollable">' + esc(c.canonical_snippet) + "</pre></div>");
+  return h;
+}
+function refChip(status) {
+  var cls = "chip";
+  if (status === "valid") cls += " chip--success";
+  else if (status === "broken") cls += " chip--danger";
+  else cls += " chip--warning";
+  return '<span class="' + cls + '">' + esc(status) + "</span>";
+}
+function detailMemory(e) {
+  var n = NOTES[e.note], h = '<h3 class="dt-title">' + esc(n.key) + "</h3>";
+  h += '<section class="dt-sec"><h4>Record</h4><dl class="dt-meta">' +
+    md("Store", esc(n.store) + " \u00B7 " + esc(n.scope)) +
+    md("Kind", esc(n.kind) + " \u00B7 rev " + n.rev) +
+    md("Store id", esc(n.store_id), true) +
+    md("Created", relTime(n.created_at)) + md("Anchored", relTime(n.anchored_at)) +
+    md("Recalls", n.recall_count + (n.last_recalled_ts ? " \u00B7 last " + relTime(n.last_recalled_ts) : " \u00B7 never")) +
+    md("Ref status", refChip(n.ref_status)) +
+    md("Tags", esc(n.tags.join(" \u00B7 ")), true) +
+    '<div class="m m--wide"><dt>CLI equivalent</dt><dd><span class="cli">eg mem query ' + esc(n.key) + "</span></dd></div></dl></section>";
+  h += sec("Note &amp; provenance",
+    '<p class="dt-note">' + esc(n.body) + "</p>" +
+    '<p class="dt-small">Source ' + esc(n.source) + " \u00B7 current rev " + (n.is_current ? "true" : "false") + ".</p>");
+  h += sec("Resolved refs", n.resolved_refs.map(function (r) {
+    return '<div class="ref"><span class="mono">' + esc(r.ref) + '</span>' + refChip(r.status) + "</div>";
+  }).join(""));
+  h += '<div class="actions"><button type="button" class="btn btn--primary" id="touchBtn">Verify &amp; re-anchor</button>' +
+    '<button type="button" class="btn btn--ghost" id="refetchBtn">Refetch /api/memories</button>' +
+    '<button type="button" class="btn btn--ghost" id="touchFailBtn">Simulate 409</button></div>' +
+    '<p class="dt-small" style="margin-top:8px"><span class="cli">POST /api/memory/touch {key, store_id, rev}</span></p>' +
+    '<p class="dt-small">Touch advances anchored_at only; refs re-resolve on GET /api/memories.</p>';
+  return h;
+}
+function focusables() {
+  return $$('#detail button:not(:disabled), #detail summary, #detail [tabindex]:not([tabindex="-1"])').filter(function (el) { return el.offsetParent !== null; });
+}
+function setInert(on) {
+  var active = on && overlayMq.matches;
+  [".hdr", ".rail", ".stream"].forEach(function (s) { var el = $(s); if (el) el.inert = active; });
+}
+function renderDetail() {
+  var el = $("#detail");
+  var e = state.sel ? EVENTS.filter(function (x) { return x.id === state.sel; })[0] : null;
+  if (!e) {
+    el.innerHTML = '<div class="dt-empty"><p>Select a journal event to inspect its record, reuse dossier, or memory note.</p></div>';
+    return;
+  }
+  var h = '<div class="dt-head"><span class="chip">' + LANES[e.lane] + '</span><time datetime="' + new Date(e.ts).toISOString() + '">' + esc(fmtDay(e.ts)) + " \u00B7 " + fmtClock(e.ts) + " \u00B7 " + relTime(e.ts) +
+    '</time><button type="button" class="btn btn--ghost dt-close" id="dtClose">Close</button></div>';
+  var k = evKind(e);
+  if (k === "tool" || k === "build") h += detailGraph(e);
+  else if (k === "prewrite") h += detailPrewrite(e);
+  else if (k === "scan") h += detailScan(e);
+  else if (k === "twin") h += detailTwin(e);
+  else if (k === "session") h += detailSession(e);
+  else if (k === "schema") h += detailSchema(e);
+  else h += detailMemory(e);
+  h += nearbySection(e);
+  h += '<details class="raw"><summary>Raw payload (served fields)</summary><pre class="code" tabindex="0" aria-label="Raw payload JSON, scrollable">' + esc(JSON.stringify(rawOf(e), null, 2)) + "</pre></details>";
+  el.innerHTML = h;
+}
+function selectEvent(id, opener, moveFocus) {
+  if (opener) openerId = opener;
+  state.sel = id;
+  syncSel();
+  renderDetail();
+  shellEl.classList.toggle("dt-open", !!id);
+  var d = $("#detail");
+  var overlay = overlayMq.matches;
+  if (id && overlay) {
+    d.setAttribute("role", "dialog");
+    d.setAttribute("aria-modal", "true");
+  } else {
+    d.removeAttribute("role");
+    d.removeAttribute("aria-modal");
+  }
+  setInert(!!id && overlay);
+  if (id && moveFocus) {
+    var title = $("#detail .dt-title") || $("#dtClose");
+    if (title) { title.setAttribute("tabindex", "-1"); title.focus({ preventScroll: true }); }
+  }
+  if (!id && moveFocus) {
+    var row = openerId ? $('#tsList [data-id="' + openerId + '"]') : null;
+    if (row && !row.closest("[inert]")) row.focus();
+    else $("#qInput").focus();
+  }
+}
+function syncFilters() {
+  $$("#lanePills [data-lane]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.lane === state.lane)); });
+  $$("#agentList [data-agent]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.agent === state.agent)); });
+  $$("#engList [data-det]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.det === state.detector)); });
+  $$("#wsList .ws").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.ws === state.wt)); });
+  $("#clearBtn").disabled = !(state.lane !== "all" || state.detector || state.agent || state.wt !== "any" || state.q);
+}
+function resetFilters() {
+  state.lane = "all"; state.detector = null; state.agent = null; state.wt = "any"; state.q = "";
+  $("#qInput").value = "";
+  syncFilters();
+  renderStream();
+  $("#qInput").focus();
+  announce("Filters reset");
+}
+var toastTimer = null;
+function toast(msg) {
+  var t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.hidden = true; }, 3400);
+}
+function announce(msg) { $("#liveRegion").textContent = msg; }
+function countAnnounce(msg) { $("#countRegion").textContent = msg; }
+function touchNote() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note];
+  var btn = $("#touchBtn");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  btn.textContent = "POST\u2026";
+  setTimeout(function () {
+    n.anchored_at = Date.now();
+    n._reanchored = true;
+    renderDetail();
+    var nb = $("#touchBtn");
+    if (nb) nb.focus();
+    toast("200 ok:true \u00B7 " + n.key + " \u00B7 rev " + n.rev + " \u00B7 anchored_at " + fmtClock(n.anchored_at));
+  }, 350);
+}
+function touchFailNote() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note], actions = $("#detail .actions"), box = $("#touchError");
+  if (!box) {
+    box = actions.insertBefore(document.createElement("div"), actions.firstChild);
+    box.id = "touchError"; box.className = "act-alert"; box.setAttribute("role", "alert"); box.tabIndex = -1;
+  }
+  box.innerHTML = "<p>409 Conflict on " + esc(n.key) + ": note advanced since read. Refetch to re-resolve refs, then retry.</p>" +
+    '<button type="button" class="btn btn--ghost" id="errRefetch">Refetch and retry</button>';
+  box.focus();
+  toast('409 {"ok":false,"error":"rev conflict on ' + n.key + '"}');
+}
+function refetchMemories() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note];
+  n.resolved_refs.forEach(function (r) {
+    if (r.status === "modified" && n._reanchored) r.status = "valid";
+    else if (r.status === "unverified") r.status = "valid";
+  });
+  n.ref_status = n.resolved_refs.reduce(function (w, r) { return ST_RANK[r.status] > ST_RANK[w] ? r.status : w; }, "valid");
+  renderStream();
+  renderDetail();
+  var nb = $("#refetchBtn");
+  if (nb) nb.focus();
+  toast("GET /api/memories \u00B7 refs re-resolved \u00B7 ref_status " + n.ref_status);
+}
+var shellEl = $(".shell"), overlayMq = window.matchMedia("(max-width: 1280px)"), reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+$("#tsList").addEventListener("click", function (ev) {
+  var row = ev.target.closest(".ev"); if (row) selectEvent(row.dataset.id, row.dataset.id, true);
+});
+$("#detail").addEventListener("click", function (ev) {
+  var j = ev.target.closest("[data-jump]");
+  if (j) { selectEvent(j.dataset.jump, null, true); return; }
+  if (ev.target.closest("#dtClose")) { selectEvent(null, null, true); return; }
+  if (ev.target.closest("#touchBtn")) touchNote(); if (ev.target.closest("#touchFailBtn")) touchFailNote(); if (ev.target.closest("#errRefetch") || ev.target.closest("#refetchBtn")) refetchMemories();
+});
+$("#detail").addEventListener("keydown", function (ev) {
+  if (ev.key === "Tab" && overlayMq.matches && state.sel) {
+    var f = focusables(), first = f[0], last = f[f.length - 1];
+    if (f.length) {
+      if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+      else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+    }
+    return;
+  }
+  var j = (ev.key === "Enter" || ev.key === " ") && ev.target.closest("[data-jump]");
+  if (j) { ev.preventDefault(); selectEvent(j.dataset.jump, null, true); }
+});
+function filterWs(name) { state.wt = state.wt === name ? "any" : name; syncFilters(); renderStream(); }
+$(".rail").addEventListener("click", function (ev) {
+  var ws = ev.target.closest(".ws"), db = ev.target.closest("[data-det]"), ag = ev.target.closest("[data-agent]");
+  if (ws) { filterWs(ws.dataset.ws); return; }
+  if (ag) { state.agent = state.agent === ag.dataset.agent ? null : ag.dataset.agent; syncFilters(); renderStream(); return; }
+  if (db) { state.detector = state.detector === db.dataset.det ? null : db.dataset.det; syncFilters(); renderStream(); }
+});
+$("#lanePills").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-lane]"); if (!b) return;
+  state.lane = b.dataset.lane; syncFilters(); renderStream();
+});
+$$(".seg-btn").forEach(function (b) {
+  b.addEventListener("click", function () {
+    state.zoom = b.dataset.zoom;
+    $$(".seg-btn").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+    renderStream();
+  });
+});
+$("#qInput").addEventListener("input", function (ev) { state.q = ev.target.value.trim(); syncFilters(); renderStream(); });
+$("#clearBtn").addEventListener("click", resetFilters);
+$("#emptyReset").addEventListener("click", resetFilters);
+document.addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape" && state.sel) { ev.preventDefault(); selectEvent(null, null, true); return; }
+  if (ev.key === "/" && !(state.sel && overlayMq.matches) && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) {
+    ev.preventDefault(); $("#qInput").focus();
+  }
+});
+overlayMq.addEventListener("change", function () {
+  var d = $("#detail"), open = !!(state.sel && overlayMq.matches);
+  if (open) { d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true"); }
+  else { d.removeAttribute("role"); d.removeAttribute("aria-modal"); }
+  if (open && !document.activeElement.closest("#detail")) { var t = $("#detail .dt-title"); if (t) { t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); } }
+  setInert(open);
+});
+var themeBtn = $("#themeBtn"), schemeMq = window.matchMedia("(prefers-color-scheme: dark)");
+function applyThemeLabel() {
+  var dark = document.documentElement.dataset.theme === "dark";
+  themeBtn.textContent = "Dark theme"; themeBtn.setAttribute("aria-pressed", String(dark));
+}
+applyThemeLabel();
+themeBtn.addEventListener("click", function () {
+  var next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("eg-theme", next); } catch (e) { /* storage unavailable */ }
+  applyThemeLabel();
+});
+/* No explicit user choice: track OS scheme changes so the toggle state stays truthful. */
+schemeMq.addEventListener("change", function (ev) {
+  var saved = null; try { saved = localStorage.getItem("eg-theme"); } catch (e) { saved = null; }
+  if (saved !== "dark" && saved !== "light") { document.documentElement.dataset.theme = ev.matches ? "dark" : "light"; applyThemeLabel(); }
+});
+/* ---------- live simulation: 3-state chip + stale watchdog ----------
+   Tick every 9s; every 5th tick drops the link for 3 ticks. Watchdog marks
+   the age chip stale when no journal event arrives for more than 30s. */
+var SSE_POOL = [
+  { lane: "query", tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 610, args: { name: "summary/payload.rs" } },
+  { lane: "query", tool: "search", repo_name: "app", agent: "claude", exit_code: 0, shown: 7, result_count: 7, latency_us: 380, terms: ["scroll isolation"] },
+  { lane: "query", tool: "context", repo_name: "engram", agent: "codex", exit_code: 0, shown: 10, result_count: 10, latency_us: 700, args: { name: "journal.rs" } },
+  { lane: "build", tool: "build", repo_name: "docs-site", agent: "zcode", exit_code: 0, shown: 0, result_count: 0, latency_us: 512000, args: {} },
+  { lane: "query", tool: "symbols", repo_name: "docs-site", agent: "zcode", exit_code: 0, shown: 14, result_count: 14, latency_us: 170, args: { name: "quickstart-*" } }
+];
+var sse = { mode: "live", userPause: false, reconnectLeft: 0, tick: 0, poolI: 0, lastEventTs: Date.now(), staleSaid: false };
+var ageBase = "Updated \u2014";
+function setChip(mode) {
+  var c = $("#sseChip");
+  c.classList.remove("chip--info", "chip--warning");
+  c.classList.add(mode === "live" ? "chip--info" : mode === "reconnect" ? "chip--warning" : "chip");
+  c.textContent = mode === "live" ? "LIVE \u00B7 SSE /events" : mode === "reconnect" ? "RECONNECTING \u00B7 /events" : "PAUSED \u00B7 click to resume";
+  c.setAttribute("aria-pressed", String(mode === "paused"));
+}
+function setAge(ts) {
+  var c = $("#ageChip"), d = new Date(ts);
+  if (!isFinite(d.getTime())) { ageBase = c.textContent = "Updated just now"; c.classList.remove("chip--warning"); return; }
+  ageBase = c.textContent = "Updated " + fmtClock(ts); c.classList.remove("chip--warning");
+}
+function prependLiveEvent(ev) {
+  var list = $("#tsList"), sc = $("#tscroll");
+  updatePills();
+  if (loadState.journal !== "ok" || !pass(ev)) return;
+  if (list.hidden) { renderStream(); return; }
+  var g = groupOf(ev.ts), head = list.firstElementChild, h0 = list.scrollHeight;
+  if (head && head.classList.contains("day-h") && head.getAttribute("data-k") === g.k) {
+    head.querySelector(".dh-sub").textContent = dayRollup(EVENTS.filter(function (x) { return pass(x) && groupOf(x.ts).k === g.k; }));
+  } else {
+    list.insertAdjacentHTML("afterbegin", '<li class="day-h" data-k="' + esc(g.k) + '"><span class="dh-title">' + g.label + '</span><span class="dh-sub">' + dayRollup([ev]) + "</span></li>");
+    head = list.firstElementChild;
+  }
+  head.insertAdjacentHTML("afterend", rowTpl(ev));
+  if (sc.scrollTop > 0) sc.scrollTop += list.scrollHeight - h0;
+  var row = $('#tsList [data-id="' + ev.id + '"]'); if (row && !reduceMotion.matches) row.classList.add("flash");
+}
+function appendLiveEvent() {
+  var base = SSE_POOL[sse.poolI % SSE_POOL.length];
+  var ev = { id: "live-" + Date.now(), ts: Date.now(), lane: base.lane, tool: base.tool, repo_name: base.repo_name, agent: base.agent,
+    exit_code: base.exit_code, shown: base.shown, result_count: base.result_count, latency_us: base.latency_us };
+  if (base.args) ev.args = base.args; if (base.terms) ev.terms = base.terms;
+  sse.poolI += 1; EVENTS.unshift(ev); if (EVENTS.length > 50) EVENTS.length = 50;
+  prependLiveEvent(ev);
+  sse.lastEventTs = ev.ts; setAge(ev.ts);
+  countAnnounce(fmtInt(EVENTS.length) + " events in retained window");
+}
+setInterval(function () {
+  sse.tick += 1;
+  if (sse.userPause) return;
+  if (sse.mode === "reconnect") { if (--sse.reconnectLeft <= 0) { sse.mode = "live"; setChip("live"); announce("SSE reconnected; live journal resumed"); } return; }
+  if (sse.tick % 5 === 0) { sse.mode = "reconnect"; sse.reconnectLeft = 3; setChip("reconnect"); announce("SSE connection lost; reconnecting"); return; }
+  appendLiveEvent();
+}, 9000);
+setInterval(function () {
+  var stale = !sse.userPause && Date.now() - sse.lastEventTs > 30000, c = $("#ageChip");
+  c.classList.toggle("chip--warning", stale); c.textContent = stale ? "Stale > 30s" : ageBase;
+  if (stale && !sse.staleSaid) announce("Live stream stale: no journal event for over 30 seconds");
+  sse.staleSaid = stale;
+}, 1000);
+$("#sseChip").addEventListener("click", function () {
+  sse.userPause = !sse.userPause;
+  if (sse.userPause) { setChip("paused"); announce("Live stream paused"); }
+  else { setChip(sse.mode === "reconnect" ? "reconnect" : "live"); announce("Live stream resumed"); }
+});
+var loadState = { summary: "pending", journal: "pending", memories: "pending" }, loadCauses = {};
+/* Sources load independently: one failing endpoint must not blank the whole view.
+   Append #load-error to the URL to demo the failure path once; Retry then succeeds. */
+function loadSource(name, delay) {
+  setTimeout(function () {
+    if (name === "journal" && /load-error/.test(location.hash) && !loadCauses.journal) { loadCauses.journal = "GET /api/events failed: connection reset"; loadState.journal = "error"; }
+    else loadState[name] = "ok";
+    if (name === "journal") {
+      $("#loadState").hidden = true;
+      if (loadState.journal === "ok") { renderStream(); if (!overlayMq.matches && !state.sel) selectEvent("e10", "e10", false); }
+    }
+    var names = ["summary", "journal", "memories"], failed = names.filter(function (k) { return loadState[k] === "error"; });
+    if (failed.length) $("#errorCause").textContent = "Failed to load: " + failed.map(function (k) { return k + " (" + loadCauses[k] + ")"; }).join(", ") + ". Previously loaded data stays visible.";
+    $("#errorState").hidden = failed.length === 0;
+  }, delay);
+}
+renderRail(); renderDetail(); syncFilters(); setAge(SUMMARY.generated_at); setChip("live");
+loadSource("summary", 300); loadSource("journal", 450); loadSource("memories", 600);
+$("#errorRetry").addEventListener("click", function () {
+  ["summary", "journal", "memories"].forEach(function (k) { if (loadState[k] === "error") { loadState[k] = "pending"; loadSource(k, 250); } });
+  $("#errorState").hidden = true;
+});
+</script>
+</body>
+</html>

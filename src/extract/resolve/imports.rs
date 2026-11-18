@@ -151,8 +151,12 @@ impl ImportEmitter<'_> {
                 &modules
             };
             match candidates.as_slice() {
-                [dst] if *dst != self.module_sym_idx => {
-                    self.push_edge(Some(*dst), path, Confidence::Extracted, site_line);
+                [dst] => {
+                    // A module importing itself emits no edge (the module
+                    // symbol is already the source of every edge in it).
+                    if *dst != self.module_sym_idx {
+                        self.push_edge(Some(*dst), path, Confidence::Extracted, site_line);
+                    }
                 }
                 [] => {}
                 _ => {

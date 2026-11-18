@@ -61,12 +61,12 @@ fn render_path(ctx: &QueryCtx<'_>, chain_ids: &[i64], hop_sites: &[i64]) -> Resu
     let hops = hop_sites.len();
     // One batched lookup for the chain qualnames (final line) and the hop
     // caller files (pointer lines: the call site lives in the caller's file).
-    let (qn, file) = chain_lookup(conn, chain_ids)?;
+    let info = chain_lookup(conn, chain_ids)?;
     let mut pointers: Vec<String> = Vec::with_capacity(hops);
     let mut hop_files: BTreeSet<String> = BTreeSet::new();
     for (i, &site) in hop_sites.iter().enumerate() {
         let caller = chain_ids[i];
-        let Some(f) = file.get(&caller) else {
+        let Some((_, f)) = info.get(&caller) else {
             return Err(EgError::Internal("path hop file missing".to_string()));
         };
         pointers.push(format!("{}:{site}", sanitize(f)));
@@ -82,7 +82,7 @@ fn render_path(ctx: &QueryCtx<'_>, chain_ids: &[i64], hop_sites: &[i64]) -> Resu
     out.extend(pointers);
     let mut chain_names: Vec<&str> = Vec::with_capacity(chain_ids.len());
     for id in chain_ids {
-        let Some(q) = qn.get(id) else {
+        let Some((q, _)) = info.get(id) else {
             return Err(EgError::Internal("path chain qualname missing".to_string()));
         };
         chain_names.push(q.as_str());
@@ -101,20 +101,16 @@ fn render_path(ctx: &QueryCtx<'_>, chain_ids: &[i64], hop_sites: &[i64]) -> Resu
 fn chain_lookup(
     conn: &Connection,
     chain_ids: &[i64],
-) -> Result<(
-    std::collections::HashMap<i64, String>,
-    std::collections::HashMap<i64, String>,
-)> {
+) -> Result<std::collections::HashMap<i64, (String, String)>> {
     let placeholders = crate::db::sql_placeholders(chain_ids.len());
     let sql = format!(
-        "SELECT s.id, s.qualname, f.path
-         FROM symbols s JOIN files f ON f.id = s.file_id
+        "SELECT s.id, s.qualname, s.file_path
+         FROM symbols s
          WHERE s.id IN ({placeholders})"
     );
     let mut stmt = conn.prepare(&sql)?;
     let params = id_params(chain_ids);
-    let mut qn: std::collections::HashMap<i64, String> = Default::default();
-    let mut file: std::collections::HashMap<i64, String> = Default::default();
+    let mut map: std::collections::HashMap<i64, (String, String)> = Default::default();
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
             r.get::<_, i64>(0)?,
@@ -124,10 +120,9 @@ fn chain_lookup(
     })?;
     for r in rows {
         let (id, qualname, fpath) = r?;
-        qn.insert(id, qualname);
-        file.insert(id, fpath);
+        map.insert(id, (qualname, fpath));
     }
-    Ok((qn, file))
+    Ok(map)
 }
 
 /// `path` BFS outcome (Amendment 13): the found chain with its per-hop call
@@ -146,16 +141,15 @@ enum PathSearch {
 /// 500 ids per the build's insert-batch precedent), not a full-corpus
 /// adjacency load and not a query per node. Expansion order matches the
 /// pinned discipline exactly: frontier nodes in FIFO discovery order, each
-/// node's neighbors sorted by `(dst qualname, dst path, site_line)`,
-/// multi-edges deduped by the visited guard (the first row per pair carries
+/// node's neighbors sorted by `(dst qualname, dst path, site_line)` in SQL,
+/// multi-edges deduped by parent containment (the first row per pair carries
 /// the smallest `site_line`), parent = first discoverer. Worst case fetches
 /// every resolved call edge once; typical queries touch only the reachable
 /// subgraph.
 fn path_bfs(conn: &Connection, from_id: i64, to_id: i64, depth: usize) -> Result<PathSearch> {
     let mut parent: std::collections::HashMap<i64, (i64, i64)> = Default::default();
-    let mut visited: std::collections::HashSet<i64> = Default::default();
     let mut frontier: Vec<i64> = vec![from_id];
-    visited.insert(from_id);
+    parent.insert(from_id, (from_id, 0));
     let mut found = false;
     let mut d = 0usize;
     while !found && !frontier.is_empty() && d < depth {
@@ -165,19 +159,16 @@ fn path_bfs(conn: &Connection, from_id: i64, to_id: i64, depth: usize) -> Result
             let Some(neighbors) = grouped.get(&v) else {
                 continue;
             };
-            // Sorted by (dst qualname, dst path, site_line): the first
-            // unvisited row per destination carries the smallest site_line.
-            for (_, _, site, w) in neighbors {
-                if visited.contains(w) {
+            for &(site, w) in neighbors {
+                if parent.contains_key(&w) {
                     continue;
                 }
-                visited.insert(*w);
-                parent.insert(*w, (v, *site));
-                if *w == to_id {
+                parent.insert(w, (v, site));
+                if w == to_id {
                     found = true;
                     break;
                 }
-                next.push(*w);
+                next.push(w);
             }
             if found {
                 break;
@@ -194,7 +185,7 @@ fn path_bfs(conn: &Connection, from_id: i64, to_id: i64, depth: usize) -> Result
         // maximum distance means a longer path may exist.
         let grouped = path_level_edges(conn, &frontier)?;
         for neighbors in grouped.values() {
-            if neighbors.iter().any(|(_, _, _, w)| !visited.contains(w)) {
+            if neighbors.iter().any(|&(_, w)| !parent.contains_key(&w)) {
                 return Ok(PathSearch::CapTruncated);
             }
         }
@@ -203,17 +194,17 @@ fn path_bfs(conn: &Connection, from_id: i64, to_id: i64, depth: usize) -> Result
 }
 
 /// Out-edges of one BFS frontier, grouped per source and sorted by the pinned
-/// neighbor key `(dst qualname, dst path, site_line)`.
+/// neighbor key `(dst qualname, dst path, site_line)` in SQLite.
 fn path_level_edges(conn: &Connection, ids: &[i64]) -> Result<LevelEdges> {
     let mut grouped: LevelEdges = Default::default();
     crate::db::for_each_chunk(conn, ids, |conn, placeholders, chunk| {
         let sql = format!(
-            "SELECT e.src_id, e.dst_id, e.site_line, ds.qualname, df.path
+            "SELECT e.src_id, e.dst_id, e.site_line
              FROM edges e
              JOIN symbols ds ON ds.id = e.dst_id
-             JOIN files df ON df.id = ds.file_id
              WHERE e.kind = '{}' AND e.dst_id IS NOT NULL
-               AND e.src_id IN ({placeholders})",
+               AND e.src_id IN ({placeholders})
+             ORDER BY e.src_id, ds.qualname, ds.file_path, e.site_line",
             EdgeKind::Calls.as_str()
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -223,19 +214,14 @@ fn path_level_edges(conn: &Connection, ids: &[i64]) -> Result<LevelEdges> {
                 r.get::<_, i64>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
             ))
         })?;
         for r in rows {
-            let (src, dst, site, qn, fpath) = r?;
-            grouped.entry(src).or_default().push((qn, fpath, site, dst));
+            let (src, dst, site) = r?;
+            grouped.entry(src).or_default().push((site, dst));
         }
         Ok(())
     })?;
-    for neighbors in grouped.values_mut() {
-        neighbors.sort();
-    }
     Ok(grouped)
 }
 

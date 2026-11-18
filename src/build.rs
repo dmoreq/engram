@@ -76,14 +76,6 @@ struct FreshExtract {
     secs: f64,
 }
 
-/// Fresh row ids and their position mapping, consumed by the FTS phase.
-struct WriteIds {
-    sym_ids: Vec<i64>,
-    pos: Vec<Option<usize>>,
-    paths: Vec<String>,
-    sym_count: usize,
-}
-
 /// Per-phase wall timings for the final stats line.
 struct PhaseSecs {
     parse: f64,

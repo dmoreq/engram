@@ -6,9 +6,10 @@ use super::*;
 /// Insert unresolved edge sites for the fresh rows (schema v6, Amendment 19).
 pub fn insert_unresolved_calls(
     conn: &Connection,
-    rows: &[(i64, &str, EdgeSiteKind, usize)],
+    unresolved: &[crate::extract::UnresolvedSite],
+    file_ids: &[i64],
 ) -> Result<()> {
-    if rows.iter().any(|(_, _, _, site_line)| *site_line == 0) {
+    if unresolved.iter().any(|u| u.site_line == 0) {
         return Err(crate::error::EgError::Internal(
             "unresolved edge row has site_line 0".to_string(),
         ));
@@ -16,12 +17,12 @@ pub fn insert_unresolved_calls(
     let mut stmt = conn.prepare(
         "INSERT INTO unresolved_calls(file_id, dst_name, kind, site_line) VALUES (?1, ?2, ?3, ?4)",
     )?;
-    for (file_id, name, kind, site_line) in rows {
+    for u in unresolved {
         stmt.execute(rusqlite::params![
-            file_id,
-            name,
-            kind.as_str(),
-            *site_line as i64
+            file_ids[u.file_idx],
+            u.name.as_str(),
+            u.kind.as_str(),
+            u.site_line as i64
         ])?;
     }
     Ok(())
@@ -43,84 +44,68 @@ pub fn load_carried(old: &Connection, rels: &HashSet<String>) -> Result<CarriedI
     })
 }
 
-/// One carried-symbol row: the symbol columns plus its file path. Named so a
-/// column reorder in the SELECT cannot silently swap the adjacent `String`
-/// columns (kind, name, qualname).
-struct CarriedSymbolRow {
-    row_id: i64,
-    kind: String,
-    name: String,
-    qualname: String,
-    path: String,
-}
-
 fn load_carried_symbols(old: &Connection, rel_params: &[&str]) -> Result<Vec<CarriedSymbol>> {
     let mut symbols = Vec::new();
-    // Bound the read to the carried files instead of scanning every symbol.
-    // Chunked placeholders match the inherits query below; the final sort by
-    // symbol id restores the old index order across chunks (resolution tables
-    // are order-sensitive for duplicate qualnames).
-    let mut rows: Vec<CarriedSymbolRow> = Vec::new();
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
             "SELECT s.id, s.kind, s.name, s.qualname, f.path
              FROM symbols s JOIN files f ON f.id = s.file_id
              WHERE f.path IN ({placeholders})"
         ))?;
-        let part = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
-            Ok(CarriedSymbolRow {
-                row_id: r.get::<_, i64>(0)?,
-                kind: r.get::<_, String>(1)?,
-                name: r.get::<_, String>(2)?,
-                qualname: r.get::<_, String>(3)?,
-                path: r.get::<_, String>(4)?,
-            })
-        })?;
-        for row in part {
-            rows.push(row?);
+        let mut part = stmt.query(rusqlite::params_from_iter(chunk.iter().copied()))?;
+        while let Some(r) = part.next()? {
+            let kind_str: String = r.get(1)?;
+            let Some(kind) = SymbolKind::parse(&kind_str) else {
+                continue;
+            };
+            let path: String = r.get(4)?;
+            let (module, _) = crate::extract::module_path_for(&path);
+            symbols.push(CarriedSymbol {
+                row_id: r.get(0)?,
+                kind,
+                name: r.get(2)?,
+                qualname: r.get(3)?,
+                module,
+            });
         }
         Ok(())
     })?;
-    rows.sort_by_key(|row| row.row_id);
-    for row in rows {
-        // A carried trait/interface is a valid impl target on the fast path;
-        // dropping it made incremental Rust impls permanently unresolved
-        // (R12 Critical). Unknown spellings stay dropped, as before.
-        let Some(kind) = SymbolKind::parse(&row.kind) else {
-            continue;
-        };
-        let (module, _) = crate::extract::module_path_for(&row.path);
-        symbols.push(CarriedSymbol {
-            row_id: row.row_id,
-            kind,
-            name: row.name,
-            qualname: row.qualname,
-            module,
-        });
-    }
+    symbols.sort_by_key(|s| s.row_id);
     Ok(symbols)
 }
 
 fn load_carried_inherits(old: &Connection, rel_params: &[&str]) -> Result<Vec<(String, String)>> {
-    let mut inherits = Vec::new();
+    // e.id is the insertion-order anchor: sorting on it makes the carried
+    // MRO edge order identical between fresh and incremental builds, so
+    // multi-inheritance dispatch stays deterministic.
+    let mut inherits: Vec<(i64, String, String)> = Vec::new();
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
-            "SELECT s.qualname, e.dst_name
+            "SELECT e.id, s.qualname, e.dst_name
              FROM edges e JOIN symbols s ON s.id = e.src_id
              JOIN files f ON f.id = s.file_id
              WHERE e.kind = '{}' AND e.dst_name IS NOT NULL
-               AND f.path IN ({placeholders})",
+               AND f.path IN ({placeholders})
+             ORDER BY e.id",
             EdgeKind::Inherits.as_str()
         ))?;
         let pairs = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         for p in pairs {
             inherits.push(p?);
         }
         Ok(())
     })?;
-    Ok(inherits)
+    inherits.sort_by_key(|row| row.0);
+    Ok(inherits
+        .into_iter()
+        .map(|(_, qualname, dst)| (qualname, dst))
+        .collect())
 }
 
 /// One hash-carry row for `carry_forward_unchanged`: the SELECT locates the
@@ -150,15 +135,16 @@ pub fn carry_forward_unchanged(
     {
         let mut stmt = new.prepare(
             "INSERT INTO files(id, path, size, mtime, content_hash, parse_status, error_nodes, unresolved)
-             SELECT id, path, size, mtime, content_hash, parse_status, error_nodes, unresolved
+             SELECT id, path, size, ?4, content_hash, parse_status, error_nodes, unresolved
              FROM olddb.files WHERE path = ?1 AND mtime = ?2 AND size = ?3",
         )?;
-        let mut refresh_mtime = new.prepare("UPDATE files SET mtime = ?1 WHERE path = ?2")?;
         for row in unchanged {
-            let inserted = stmt.execute(rusqlite::params![row.rel, row.old_mtime, row.size])?;
-            if inserted > 0 && row.current_mtime != row.old_mtime {
-                refresh_mtime.execute(rusqlite::params![row.current_mtime, row.rel])?;
-            }
+            stmt.execute(rusqlite::params![
+                row.rel,
+                row.old_mtime,
+                row.size,
+                row.current_mtime
+            ])?;
         }
     }
     new.execute_batch(
@@ -290,39 +276,21 @@ fn fts_text(qualname: &str, name: &str, path: &str, signature: &str) -> String {
 }
 
 pub fn populate_symbols_fts(conn: &Connection) -> Result<()> {
+    // Stream symbol rows straight into the FTS insert: no bulk Vec keeps the
+    // whole symbol corpus (text included) on the heap during a build.
+    let mut ins = conn.prepare("INSERT INTO symbols_fts(rowid, text) VALUES (?1, ?2)")?;
     let mut stmt = conn.prepare(
         "SELECT s.id, s.qualname, s.name, f.path, s.signature
-         FROM symbols s JOIN files f ON f.id = s.file_id",
+         FROM symbols s JOIN files f ON f.id = s.file_id
+         ORDER BY s.id",
     )?;
-    let rows: Vec<(i64, String, String, String, String)> = stmt
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let refs: Vec<(i64, &str, &str, &str, &str)> = rows
-        .iter()
-        .map(|(id, qualname, name, path, signature)| {
-            (
-                *id,
-                qualname.as_str(),
-                name.as_str(),
-                path.as_str(),
-                signature.as_str(),
-            )
-        })
-        .collect();
-    populate_symbols_fts_rows(conn, &refs)
-}
-
-/// Populate FTS from in-memory rows (force path): one row is
-/// `(symbol id, qualname, name, file path, signature)`. Avoids the SELECT +
-/// JOIN over every inserted symbol. The indexed bytes match `fts_text` exactly.
-pub fn populate_symbols_fts_rows(
-    conn: &Connection,
-    rows: &[(i64, &str, &str, &str, &str)],
-) -> Result<()> {
-    let mut ins = conn.prepare("INSERT INTO symbols_fts(rowid, text) VALUES (?1, ?2)")?;
-    for &(id, qualname, name, path, signature) in rows {
+    let mut rows = stmt.query([])?;
+    while let Some(r) = rows.next()? {
+        let id: i64 = r.get(0)?;
+        let qualname = r.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
+        let name = r.get_ref(2)?.as_str().map_err(rusqlite::Error::from)?;
+        let path = r.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
+        let signature = r.get_ref(4)?.as_str().map_err(rusqlite::Error::from)?;
         ins.execute(rusqlite::params![
             id,
             fts_text(qualname, name, path, signature)

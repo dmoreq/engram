@@ -286,7 +286,7 @@ fn walk_fallback(root: &Path, exts: &[&str]) -> Result<WalkStats> {
     builder.hidden(false);
     builder.filter_entry(|entry| {
         let name = entry.file_name();
-        name != std::ffi::OsStr::new(".engram")
+        name != std::ffi::OsStr::new(".engram") && name != std::ffi::OsStr::new(".git")
     });
 
     let mut files = Vec::new();

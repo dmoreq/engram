@@ -368,15 +368,24 @@ fn parse_line(line: &str, now: i64, local_root: Option<&Path>) -> LineOutcome {
     if !(0..=7).contains(&exit_code) {
         return LineOutcome::Invalid;
     }
-    let count = |key: &str| -> Option<i64> {
+    // Outer None = present but invalid (negative / non-integer) -> Invalid.
+    // Inner None = key absent -> legacy lines fall back instead of a 0 that
+    // distorts ratios: missing `shown` falls back to `result_count`.
+    let count = |key: &str| -> Option<Option<i64>> {
         match v.get(key) {
-            None => Some(0),
-            Some(x) => x.as_i64().filter(|n| *n >= 0),
+            None => Some(None),
+            Some(x) => match x.as_i64() {
+                None => None,
+                Some(n) if n < 0 => None,
+                Some(n) => Some(Some(n)),
+            },
         }
     };
-    let (Some(result_count), Some(shown)) = (count("result_count"), count("shown")) else {
+    let (Some(result_count_opt), Some(shown_opt)) = (count("result_count"), count("shown")) else {
         return LineOutcome::Invalid;
     };
+    let result_count = result_count_opt.unwrap_or(0);
+    let shown = shown_opt.unwrap_or(result_count);
     let latency_us = match v.get("latency_us") {
         None => None,
         Some(x) => match x.as_i64() {

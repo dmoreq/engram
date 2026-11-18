@@ -240,19 +240,18 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 corpus.guard();
                 return None;
             }
-            let jaccard = shared.len() as f64 / union_len as f64;
-            let type_jaccard =
-                if !target.type_tokens.is_empty() && !candidate.type_tokens.is_empty() {
-                    let shared_types = target
-                        .type_tokens
-                        .intersection(&candidate.type_tokens)
-                        .count();
-                    let union_types = target.type_tokens.union(&candidate.type_tokens).count();
-                    shared_types as f64 / union_types as f64
-                } else {
-                    0.0
-                };
-            if jaccard < 0.60 && !(jaccard >= 0.40 && type_jaccard >= 0.50) {
+            let jac = jaccard(shared.len(), union_len);
+            let type_jac = if !target.type_tokens.is_empty() && !candidate.type_tokens.is_empty() {
+                let shared_types = target
+                    .type_tokens
+                    .intersection(&candidate.type_tokens)
+                    .count();
+                let union_types = target.type_tokens.union(&candidate.type_tokens).count();
+                jaccard(shared_types, union_types)
+            } else {
+                0.0
+            };
+            if jac < 0.60 && !(jac >= 0.40 && type_jac >= 0.50) {
                 return None;
             }
             let mut reasons = Vec::new();
@@ -264,19 +263,14 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
             }
             let confidence = if !reasons.is_empty() || shared.len() < 3 {
                 ReuseConfidence::Low
-            } else if shared.len() >= 4 && jaccard >= 0.80 && type_jaccard >= 0.50 {
+            } else if shared.len() >= 4 && jac >= 0.80 && type_jac >= 0.50 {
                 ReuseConfidence::High
-            } else if jaccard >= 0.75 {
+            } else if jac >= 0.75 {
                 ReuseConfidence::Medium
             } else {
                 ReuseConfidence::Provisional
             };
-            Some((
-                (jaccard * 100.0).round() as u64,
-                shared,
-                confidence,
-                reasons,
-            ))
+            Some(((jac * 100.0).round() as u64, shared, confidence, reasons))
         },
     )
 }
@@ -297,15 +291,14 @@ fn d3_accept<'a>(
         corpus.guard();
         return None;
     }
-    let mut shared_raw: Vec<&String> = target
+    target
         .all_callees
         .iter()
         .filter(|tc| {
             is_raw_client(tc) && candidate.all_callees.iter().any(|sc| raw_client_eq(tc, sc))
         })
-        .collect();
-    shared_raw.sort();
-    shared_raw.first().map(|name| name.as_str())
+        .min()
+        .map(|s| s.as_str())
 }
 
 fn consider_d3<'a>(

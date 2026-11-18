@@ -188,23 +188,70 @@ fn no_global_memory_error(path: &Path) -> EgError {
 /// Open the memory store for writing, creating `.engram/memory.db` (schema v2)
 /// when absent. An existing store must pass the version gate (read-forward:
 /// older structurally complete stores open read-write).
-pub fn open_memory_store(root: &Path) -> Result<Connection> {
-    let path = memory_store_path(root)?;
-    if !path.exists() {
-        ensure_eg_gitignore(root)?;
-    }
-    open_memory_conn_path(&path, true, || no_memory_error(root))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreLocation<'a> {
+    Local(&'a Path),
+    Global,
 }
-/// Open an existing memory store for mutation WITHOUT creating one: a delete
-/// against a missing store must exit 1, never conjure an empty database.
-/// Open one discovered store for mutation, addressed by its own db path.
-/// Touch uses this after resolving a `store_id`; there is no fallback.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreMode {
+    Query,
+    Mutation,
+    Store,
+}
+
+/// Unified memory store connection gate: handles local (repo-level) and global
+/// stores across Query, Mutation, and Store modes.
+pub fn open_memory(loc: StoreLocation<'_>, mode: StoreMode) -> Result<Connection> {
+    match loc {
+        StoreLocation::Local(root) => match mode {
+            StoreMode::Query => {
+                let path = memory_store_path(root)?;
+                open_memory_query_path(&path, || no_memory_error(root))
+            }
+            StoreMode::Mutation => {
+                let path = memory_store_path(root)?;
+                open_memory_conn_path(&path, false, || no_memory_error(root))
+            }
+            StoreMode::Store => {
+                let path = memory_store_path(root)?;
+                if !path.exists() {
+                    ensure_eg_gitignore(root)?;
+                }
+                open_memory_conn_path(&path, true, || no_memory_error(root))
+            }
+        },
+        StoreLocation::Global => match mode {
+            StoreMode::Query => {
+                let path = global_memory_store_path()?;
+                open_memory_query_path(&path, || no_global_memory_error(&path))
+            }
+            StoreMode::Mutation => {
+                let path = global_memory_store_path()?;
+                open_memory_conn_path(&path, false, || no_global_memory_error(&path))
+            }
+            StoreMode::Store => {
+                let dir = global_eg_dir()?;
+                ensure_global_eg_dir(&dir)?;
+                let path = global_memory_store_path()?;
+                open_memory_conn_path(&path, true, || no_global_memory_error(&path))
+            }
+        },
+    }
+}
+
+#[allow(dead_code)]
+pub fn open_memory_store(root: &Path) -> Result<Connection> {
+    open_memory(StoreLocation::Local(root), StoreMode::Store)
+}
+
+#[allow(dead_code)]
+pub fn open_memory_mutation(root: &Path) -> Result<Connection> {
+    open_memory(StoreLocation::Local(root), StoreMode::Mutation)
+}
+
 pub fn open_memory_mutation_at(db_path: &Path) -> Result<Connection> {
-    // Same write-path guards the CLI enforces: a symlinked store or a
-    // git-tracked .engram is refused, so the dashboard cannot write outside
-    // the directory it resolved. `db_path` is `<root>/.engram/memory.db`;
-    // derive the repository root before probing (the old parent() call probed
-    // `<root>/.engram/.engram` and always passed).
     reject_symlink(db_path, "memory store")?;
     if let Some(eg) = db_path.parent() {
         crate::db::reject_symlink(eg, ".engram directory")?;
@@ -222,21 +269,14 @@ pub fn open_memory_mutation_at(db_path: &Path) -> Result<Connection> {
     })
 }
 
-pub fn open_memory_mutation(root: &Path) -> Result<Connection> {
-    let path = memory_store_path(root)?;
-    open_memory_conn_path(&path, false, || no_memory_error(root))
-}
-
+#[allow(dead_code)]
 pub fn open_global_memory_store() -> Result<Connection> {
-    let dir = global_eg_dir()?;
-    ensure_global_eg_dir(&dir)?;
-    let path = global_memory_store_path()?;
-    open_memory_conn_path(&path, true, || no_global_memory_error(&path))
+    open_memory(StoreLocation::Global, StoreMode::Store)
 }
 
+#[allow(dead_code)]
 pub fn open_global_memory_mutation() -> Result<Connection> {
-    let path = global_memory_store_path()?;
-    open_memory_conn_path(&path, false, || no_global_memory_error(&path))
+    open_memory(StoreLocation::Global, StoreMode::Mutation)
 }
 
 fn memory_store_path(root: &Path) -> Result<PathBuf> {
@@ -397,11 +437,9 @@ fn open_memory_query_path(
 /// Open the memory store read-only for the read commands. Missing -> exit 1
 /// (no-memory), corrupt -> exit 3, skew -> exit 5 — the shared gate chain.
 pub fn open_memory_query(root: &Path) -> Result<Connection> {
-    let path = memory_store_path(root)?;
-    open_memory_query_path(&path, || no_memory_error(root))
+    open_memory(StoreLocation::Local(root), StoreMode::Query)
 }
 
 pub fn open_global_memory_query() -> Result<Connection> {
-    let path = global_memory_store_path()?;
-    open_memory_query_path(&path, || no_global_memory_error(&path))
+    open_memory(StoreLocation::Global, StoreMode::Query)
 }

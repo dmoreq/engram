@@ -72,13 +72,14 @@ pub(super) fn malformed(data: &AuditData) -> CheckResult {
         );
     }
     let rate = (c.malformed_lines + c.invalid_lines) as f64 / c.lines as f64;
+    let threshold = lower(0.005, Some(0.02), None);
     check(
         "telemetry.malformed",
         "telemetry",
-        lower_status(rate, &lower(0.005, Some(0.02), None), None),
+        threshold.evaluate(rate, None),
         Some(rate),
         "ratio",
-        lower(0.005, Some(0.02), None),
+        threshold,
         "inspect",
         format!(
             "{} of {} journal lines are malformed or invalid",
@@ -197,13 +198,16 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
     } else {
         (status_tool, status_p95)
     };
+    // The evaluated tool's own budget, not a global constant: navigation
+    // latency and query latency have different SLOs.
+    let (warn, critical) = budget(&worst_tool).unwrap_or((50.0, 150.0));
     let mut c = check(
         "performance.p95",
         "performance",
         worst,
         Some(worst_p95),
         "ms",
-        lower(50.0, Some(150.0), Some(2.0)),
+        lower(warn, Some(critical), Some(2.0)),
         "usage",
         format!("highest p95 is {:.1} ms for {}", worst_p95, worst_tool),
     );

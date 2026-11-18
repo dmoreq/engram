@@ -193,7 +193,7 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
     if let Some((alias_scope, target)) = nearest_alias_scoped(ctx.fctx, &ctx.site.scope_func, name)
     {
         if !alias_scope.is_empty() {
-            return local_alias_outcome(ctx.t, target, name);
+            return alias_target_outcome(ctx.t, target, name).unwrap_or(Outcome::Unresolved);
         }
     }
     // 0c. A parameter/local variable shadows module and file-level
@@ -202,13 +202,7 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
         return Outcome::Unresolved;
     }
     // 1. Local module definition.
-    if let Some(out) = bare_candidates(
-        ctx.t
-            .by_mod_name
-            .get(&(ctx.fctx.module.to_string(), name.to_string()))
-            .map(|v| v.as_slice()),
-        name,
-    ) {
+    if let Some(out) = bare_candidates(ctx.t.mod_child(&ctx.fctx.module, name), name) {
         return out;
     }
     // 2. Import alias map (follows re-export chains transitively).
@@ -217,13 +211,7 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
     }
     // Star imports: defer to each star module's top-level names.
     for (m, _) in &ctx.fctx.bindings.stars {
-        if let Some(out) = bare_candidates(
-            ctx.t
-                .by_mod_name
-                .get(&(m.clone(), name.to_string()))
-                .map(|v| v.as_slice()),
-            name,
-        ) {
+        if let Some(out) = bare_candidates(ctx.t.mod_child(m, name), name) {
             return out;
         }
     }
@@ -241,10 +229,7 @@ pub(super) fn lexical_scope_lookup(ctx: &CallCtx<'_>, name: &str) -> Option<Outc
     let mut scope = ctx.site.scope_func.clone();
     while Some(scope.as_str()) != ctx.site.scope_class.as_deref() && scope != ctx.fctx.module {
         let candidate = format!("{scope}.{name}");
-        if let Some(out) = bare_candidates(
-            ctx.t.by_qualname.get(&candidate).map(|v| v.as_slice()),
-            name,
-        ) {
+        if let Some(out) = bare_candidates(ctx.t.qualname_child(&candidate), name) {
             return Some(out);
         }
         let Some((parent, _)) = scope.rsplit_once('.') else {
@@ -284,12 +269,7 @@ pub(super) fn alias_target_outcome(
             }
             None
         }
-        ImportTarget::ModuleRoot { path } => bare_candidates(
-            t.by_mod_name
-                .get(&(path.to_string(), name.to_string()))
-                .map(|v| v.as_slice()),
-            name,
-        ),
+        ImportTarget::ModuleRoot { path } => bare_candidates(t.mod_child(path, name), name),
         ImportTarget::Module { .. } => None,
     }
 }

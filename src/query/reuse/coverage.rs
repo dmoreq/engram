@@ -152,7 +152,6 @@ fn class_candidates(conn: &Connection) -> Result<Vec<ReuseCandidate>> {
                 raw_client: None,
                 confidence,
                 reasons: vec![ReasonCode::CoverageClass],
-                freshness: Freshness::Fresh,
             });
             if pool.len() >= MAX_CLASS_CANDIDATES {
                 break 'classes;
@@ -212,7 +211,6 @@ fn unresolved_candidates(symbols: &HashMap<i64, SymbolData>) -> Result<Vec<Reuse
                 raw_client: None,
                 confidence: ReuseConfidence::Low,
                 reasons: vec![ReasonCode::CoverageUnresolved],
-                freshness: Freshness::Fresh,
             });
         }
     }
@@ -283,7 +281,6 @@ fn test_candidates(
             raw_client: None,
             confidence: ReuseConfidence::Low,
             reasons: vec![ReasonCode::CoverageTests],
-            freshness: Freshness::Fresh,
         });
     }
     Ok(pool)

@@ -2,7 +2,36 @@
 //! so same-named helpers in different modules stay distinct.
 
 use super::*;
-use crate::query::reuse::confidence::distinctive_weakness;
+
+/// D1's non-distinctive share: shared project callees called by more than two
+/// sources. A pair whose shared footprint is mostly generic is Low even when
+/// containment is high.
+fn distinctive_weakness(corpus: &Corpus<'_>, shared_ids: &[i64]) -> f64 {
+    if shared_ids.is_empty() {
+        return 1.0;
+    }
+    let distinctive = shared_ids
+        .iter()
+        .filter(|id| {
+            corpus
+                .df_all_excl
+                .is_none_or(|df| df.get(id).copied().unwrap_or(0) <= 2)
+        })
+        .count();
+    (shared_ids.len().saturating_sub(distinctive)) as f64 / shared_ids.len() as f64
+}
+
+fn score_d1_confidence(reasons: &[ReasonCode], weak: f64, ratio: f64, bal: f64) -> ReuseConfidence {
+    if !reasons.is_empty() || weak > 0.75 {
+        ReuseConfidence::Low
+    } else if ratio >= 0.95 && bal >= 0.75 && weak <= 0.25 {
+        ReuseConfidence::High
+    } else if ratio >= 0.90 {
+        ReuseConfidence::Medium
+    } else {
+        ReuseConfidence::Provisional
+    }
+}
 
 /// A two-hop closure this broad describes a hub, not a wrapper. Skipping it
 /// keeps `--deep-callee` linear on generated hub corpora instead of comparing
@@ -111,15 +140,7 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
             reasons.push(ReasonCode::SizeImbalance);
         }
         let weak = distinctive_weakness(corpus, &shared_ids);
-        let confidence = if !reasons.is_empty() || weak > 0.75 {
-            ReuseConfidence::Low
-        } else if ratio >= 0.95 && bal >= 0.75 && weak <= 0.25 {
-            ReuseConfidence::High
-        } else if ratio >= 0.90 {
-            ReuseConfidence::Medium
-        } else {
-            ReuseConfidence::Provisional
-        };
+        let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
         best = Some((pct, candidate, shared, confidence, reasons));
     }
     best.map(|(pct, candidate, shared, confidence, reasons)| {
@@ -215,15 +236,7 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
                 reasons.push(ReasonCode::SizeImbalance);
             }
             let weak = distinctive_weakness(corpus, &shared_ids);
-            let confidence = if !reasons.is_empty() || weak > 0.75 {
-                ReuseConfidence::Low
-            } else if ratio >= 0.95 && bal >= 0.75 && weak <= 0.25 {
-                ReuseConfidence::High
-            } else if ratio >= 0.90 {
-                ReuseConfidence::Medium
-            } else {
-                ReuseConfidence::Provisional
-            };
+            let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
             Some((pct, shared, confidence, reasons))
         },
     )

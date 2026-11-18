@@ -16,20 +16,12 @@ mod typescript;
 use bindings::*;
 pub use chain::split_ident;
 use chain::*;
+pub(crate) use chain::{node_str, text};
 pub(super) use dispatch::walk_children;
 use dispatch::*;
 
-pub(super) fn innermost_scope(ctx: &WalkCtx, module: &str) -> String {
-    [
-        ctx.func_stack.last(),
-        ctx.class_stack.last(),
-        ctx.mod_stack.last(),
-    ]
-    .into_iter()
-    .flatten()
-    .max_by_key(|qualname| qualname.len())
-    .cloned()
-    .unwrap_or_else(|| module.to_string())
+pub(super) fn innermost_scope<'a>(ctx: &'a WalkCtx, module: &'a str) -> &'a str {
+    ctx.enclosing_scope(module)
 }
 
 pub(super) struct WalkCtx {
@@ -51,8 +43,28 @@ impl WalkCtx {
         }
     }
 
-    fn scope_func(&self) -> String {
+    pub(super) fn scope_func(&self) -> String {
         self.func_stack.last().cloned().unwrap_or_default()
+    }
+
+    pub(super) fn parent_container(&self) -> Option<&str> {
+        self.class_stack
+            .last()
+            .or_else(|| self.mod_stack.last())
+            .map(|s| s.as_str())
+    }
+
+    pub(super) fn enclosing_scope<'a>(&'a self, fallback: &'a str) -> &'a str {
+        [
+            self.func_stack.last(),
+            self.class_stack.last(),
+            self.mod_stack.last(),
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|qualname| qualname.len())
+        .map(|s| s.as_str())
+        .unwrap_or(fallback)
     }
 }
 
@@ -62,9 +74,6 @@ pub(super) struct CallableSpec<'a> {
     pub name: &'a str,
     pub qualname: &'a str,
     pub is_test: bool,
-    /// Python pushes the scope before the body check and pops it when there
-    /// is no body; Rust/TS push it only when a body exists.
-    pub always_push_scope: bool,
 }
 
 /// One node's mutable walk state, so the callable helpers need only a spec.
@@ -95,14 +104,10 @@ impl<'a, 's> Walker<'a, 's, '_> {
         if let Some(params) = self.node.child_by_field_name("parameters") {
             collect_param_types(self, params, spec.qualname, spec.kind == SymbolKind::Method);
         }
-        if spec.always_push_scope || self.node.child_by_field_name("body").is_some() {
-            self.ctx.func_stack.push(spec.qualname.to_string());
-        }
         if let Some(body) = self.node.child_by_field_name("body") {
+            self.ctx.func_stack.push(spec.qualname.to_string());
             self.work.push(Step::PopFunc);
             push_children_rev(self.work, body);
-        } else if spec.always_push_scope {
-            self.ctx.func_stack.pop();
         }
     }
 
@@ -119,7 +124,6 @@ impl<'a, 's> Walker<'a, 's, '_> {
             name,
             qualname,
             is_test: is_test_item(self.fx, self.ctx, name),
-            always_push_scope: false,
         }
     }
 }

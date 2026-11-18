@@ -194,24 +194,7 @@ pub fn memory_write_batch(
         let rev = current.as_ref().map_or(1, |row| row.rev + 1);
         insert_revision(&tx, note, now, hash, rev).map_err(map_memory_err)?;
         let new_id = tx.last_insert_rowid();
-        if let Some(row) = &current {
-            // Supersede only a live row: a dead row keeps its original
-            // superseded_by/superseded_at chain (re-stamping it toward a
-            // same-key revision would corrupt the chain it already carries).
-            if row.is_active(now) {
-                supersede_current(&tx, new_id, now, row.id)?;
-            }
-        }
-        tx.execute(
-            "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
-            rusqlite::params![new_id, fts_legacy],
-        )
-        .map_err(map_memory_err)?;
-        tx.execute(
-            "INSERT INTO memories_fts_v2(rowid, text) VALUES (?1, ?2)",
-            rusqlite::params![new_id, fts_unicode],
-        )
-        .map_err(map_memory_err)?;
+        write_fts_and_supersede(&tx, &current, new_id, now, &fts_legacy, &fts_unicode)?;
         stats.imported += 1;
     }
     tx.commit().map_err(map_memory_err)?;
@@ -294,15 +277,29 @@ fn try_write_revision(
         return Err(map_memory_err(e));
     }
     let new_id = tx.last_insert_rowid();
-    if let Some(row) = &current {
-        // Supersede only a live row; a dead row keeps its original
-        // superseded_by/superseded_at chain (see `memory_write_batch`).
-        if row.is_active(now) {
-            supersede_current(&tx, new_id, now, row.id)?;
-        }
-    }
+    write_fts_and_supersede(&tx, &current, new_id, now, &fts_legacy, &fts_unicode)?;
     if let Some(target) = note.supersedes {
         supersede_cross_key(&tx, new_id, now, target)?;
+    }
+    tx.commit().map_err(map_memory_err)?;
+    Ok(WriteAttempt::Written(MemWriteOutcome::Written {
+        rev: new_rev,
+        superseded_rev: current.as_ref().map(|row| row.rev),
+    }))
+}
+
+fn write_fts_and_supersede(
+    tx: &rusqlite::Transaction<'_>,
+    current: &Option<Revision>,
+    new_id: i64,
+    now: i64,
+    fts_legacy: &str,
+    fts_unicode: &str,
+) -> Result<()> {
+    if let Some(row) = current {
+        if row.is_active(now) {
+            supersede_current(tx, new_id, now, row.id)?;
+        }
     }
     tx.execute(
         "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
@@ -314,11 +311,7 @@ fn try_write_revision(
         rusqlite::params![new_id, fts_unicode],
     )
     .map_err(map_memory_err)?;
-    tx.commit().map_err(map_memory_err)?;
-    Ok(WriteAttempt::Written(MemWriteOutcome::Written {
-        rev: new_rev,
-        superseded_rev: current.as_ref().map(|row| row.rev),
-    }))
+    Ok(())
 }
 
 fn insert_revision(

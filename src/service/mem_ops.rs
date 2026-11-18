@@ -173,7 +173,12 @@ pub(super) fn mem_ranked(
     let mut by_id: std::collections::HashMap<i64, crate::db::MemRow> =
         std::collections::HashMap::new();
     for row in ref_rows {
-        hit_map.entry(row.id).or_insert(0.0);
+        // Ref hits carry no lexical score of their own; seeding with the
+        // graph-lex raw ceiling (not 0.0) keeps min-max normalization from
+        // inflating them above every FTS-matched note.
+        hit_map
+            .entry(row.id)
+            .or_insert(crate::memory::GRAPH_LEX_RAW);
         by_id.insert(row.id, row);
     }
 
@@ -308,17 +313,6 @@ pub(super) enum MemoryMode {
     Store,
 }
 
-/// Resolve the repo root and open the memory store in `mode` for the mem
-/// commands (the same root gate as `open_query`).
-fn open_memory(root_arg: Option<&Path>, mode: MemoryMode) -> Result<rusqlite::Connection> {
-    let root = crate::walk::discover_root(root_arg)?;
-    match mode {
-        MemoryMode::Query => crate::db::open_memory_query(&root),
-        MemoryMode::Mutation => crate::db::open_memory_mutation(&root),
-        MemoryMode::Store => crate::db::open_memory_store(&root),
-    }
-}
-
 /// The single mem-command connection gate: `global` routes to the home-dir
 /// store, otherwise the project store under `root_arg`, both in `mode`.
 pub(super) fn open_mem_conn(
@@ -326,14 +320,16 @@ pub(super) fn open_mem_conn(
     global: bool,
     mode: MemoryMode,
 ) -> Result<rusqlite::Connection> {
+    let store_mode = match mode {
+        MemoryMode::Query => crate::db::StoreMode::Query,
+        MemoryMode::Mutation => crate::db::StoreMode::Mutation,
+        MemoryMode::Store => crate::db::StoreMode::Store,
+    };
     if global {
-        match mode {
-            MemoryMode::Query => crate::db::open_global_memory_query(),
-            MemoryMode::Mutation => crate::db::open_global_memory_mutation(),
-            MemoryMode::Store => crate::db::open_global_memory_store(),
-        }
+        crate::db::open_memory(crate::db::StoreLocation::Global, store_mode)
     } else {
-        open_memory(root_arg, mode)
+        let root = crate::walk::discover_root(root_arg)?;
+        crate::db::open_memory(crate::db::StoreLocation::Local(&root), store_mode)
     }
 }
 

@@ -99,7 +99,6 @@ mod tests {
             raw_client: None,
             confidence,
             reasons: Vec::new(),
-            freshness: Freshness::Fresh,
         }
     }
 

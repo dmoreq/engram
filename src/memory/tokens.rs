@@ -34,71 +34,69 @@ fn strip_ref_extension(ref_text: &str) -> &str {
     }
 }
 
-/// Split one ASCII alphanumeric run at camelCase boundaries: `calleeEmptyReason`
-/// -> `callee empty reason`; `HTTPServer` -> `http server`; digits break
-/// letter runs (`v2Fix` -> `v 2 fix`).
-fn split_run(run: &str) -> Vec<String> {
+fn split_run_generic(run: &str, unicode: bool) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let chars: Vec<char> = run.chars().collect();
     let mut cur = String::new();
     for (i, &c) in chars.iter().enumerate() {
         let prev = if i == 0 { None } else { chars.get(i - 1) };
         let next = chars.get(i + 1);
-        let boundary = match (prev, c, next) {
-            // lower/digit -> upper boundary
-            (Some(p), u, _)
-                if u.is_ascii_uppercase() && (p.is_ascii_lowercase() || p.is_ascii_digit()) =>
-            {
-                true
+        let boundary = if unicode {
+            match (prev, c, next) {
+                (Some(p), u, _) if u.is_uppercase() && (p.is_lowercase() || p.is_numeric()) => true,
+                (Some(p), u, Some(n))
+                    if u.is_uppercase() && p.is_uppercase() && n.is_lowercase() =>
+                {
+                    true
+                }
+                (Some(p), d, _) if d.is_numeric() && p.is_alphabetic() => true,
+                _ => false,
             }
-            // upper-run -> Upper+lower boundary: HTTP|Server splits before S
-            (Some(p), u, Some(n))
-                if u.is_ascii_uppercase() && p.is_ascii_uppercase() && n.is_ascii_lowercase() =>
-            {
-                true
+        } else {
+            match (prev, c, next) {
+                (Some(p), u, _)
+                    if u.is_ascii_uppercase() && (p.is_ascii_lowercase() || p.is_ascii_digit()) =>
+                {
+                    true
+                }
+                (Some(p), u, Some(n))
+                    if u.is_ascii_uppercase()
+                        && p.is_ascii_uppercase()
+                        && n.is_ascii_lowercase() =>
+                {
+                    true
+                }
+                (Some(p), d, _) if d.is_ascii_digit() && p.is_ascii_alphabetic() => true,
+                _ => false,
             }
-            // letter -> digit boundary
-            (Some(p), d, _) if d.is_ascii_digit() && p.is_ascii_alphabetic() => true,
-            _ => false,
         };
         if boundary && !cur.is_empty() {
-            parts.push(std::mem::take(&mut cur).to_ascii_lowercase());
+            if unicode {
+                push_clean(&mut parts, &std::mem::take(&mut cur));
+            } else {
+                parts.push(std::mem::take(&mut cur).to_ascii_lowercase());
+            }
         }
         cur.push(c);
     }
     if !cur.is_empty() {
-        parts.push(cur.to_ascii_lowercase());
+        if unicode {
+            push_clean(&mut parts, &cur);
+        } else {
+            parts.push(cur.to_ascii_lowercase());
+        }
     }
     parts
 }
 
-/// Unicode variant of [`split_run`]. Case boundaries use Unicode predicates;
-/// each part is lowercased and stripped of any non-alphanumeric character
-/// introduced by case expansion (for example `İ` -> `i` + combining dot).
+/// Split one ASCII alphanumeric run at camelCase boundaries.
+fn split_run(run: &str) -> Vec<String> {
+    split_run_generic(run, false)
+}
+
+/// Unicode variant of [`split_run`]. Case boundaries use Unicode predicates.
 fn split_run_unicode(run: &str) -> Vec<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let chars: Vec<char> = run.chars().collect();
-    let mut cur = String::new();
-    for (i, &c) in chars.iter().enumerate() {
-        let prev = if i == 0 { None } else { chars.get(i - 1) };
-        let next = chars.get(i + 1);
-        let boundary = match (prev, c, next) {
-            (Some(p), u, _) if u.is_uppercase() && (p.is_lowercase() || p.is_numeric()) => true,
-            (Some(p), u, Some(n)) if u.is_uppercase() && p.is_uppercase() && n.is_lowercase() => {
-                true
-            }
-            (Some(p), d, _) if d.is_numeric() && p.is_alphabetic() => true,
-            _ => false,
-        };
-        if boundary && !cur.is_empty() {
-            push_clean(&mut parts, &std::mem::take(&mut cur));
-        }
-        cur.push(c);
-    }
-    if !cur.is_empty() {
-        push_clean(&mut parts, &cur);
-    }
-    parts
+    split_run_generic(run, true)
 }
 
 /// A character that stays inside one Unicode word token: alphanumeric letters

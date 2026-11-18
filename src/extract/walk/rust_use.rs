@@ -57,23 +57,48 @@ fn emit_scoped_use_list(node: Node<'_>, ctx: UseTreeCtx<'_>, fx: &mut FileExtrac
     let Some(path) = node.child_by_field_name("path") else {
         return;
     };
-    let Some(base) = resolve_use_path(path, ctx) else {
+    let Some(list) = node.child_by_field_name("list") else {
+        return;
+    };
+    let base = resolve_use_path(path, ctx).or_else(|| {
+        // A relative first segment with no enclosing prefix (`use
+        // inner::{self}`) resolves to None above, but it still anchors the
+        // brace group. Absolute paths and the crate/self/super keywords
+        // keep their existing semantics; the anchor is qualified against
+        // the file module because resolution tables hold absolute paths.
+        let raw = text(path, ctx.src);
+        if raw.starts_with("::") {
+            return None;
+        }
+        let segs: Vec<String> = raw
+            .split("::")
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect();
+        match segs.first().map(String::as_str) {
+            Some(first) if !matches!(first, "crate" | "self" | "super") => {
+                let mut out = vec![fx.module.clone()];
+                out.extend(segs);
+                Some(out)
+            }
+            _ => None,
+        }
+    });
+    let Some(base) = base else {
         return;
     };
     if !base.is_empty() {
         fx.import_edges
             .push(ImportEdgeCandidate::module(ctx.line, base.join(".")));
     }
-    if let Some(list) = node.child_by_field_name("list") {
-        walk_use_tree(
-            list,
-            UseTreeCtx {
-                prefix: &base,
-                ..ctx
-            },
-            fx,
-        );
-    }
+    walk_use_tree(
+        list,
+        UseTreeCtx {
+            prefix: &base,
+            ..ctx
+        },
+        fx,
+    );
 }
 
 fn emit_use_wildcard(node: Node<'_>, ctx: UseTreeCtx<'_>, fx: &mut FileExtraction) {
@@ -152,7 +177,9 @@ fn emit_module_leaf(
     fx.import_edges
         .push(ImportEdgeCandidate::module(ctx.line, qn.clone()));
     let binding = alias.clone().or_else(|| {
-        if node.kind() == "self" {
+        // Bare `use self;` binds nothing; `use a::b::{self}` binds `b` so
+        // scoped self imports keep their module alias.
+        if node.kind() == "self" && ctx.prefix.is_empty() {
             None
         } else {
             full.last().cloned()

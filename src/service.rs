@@ -171,7 +171,6 @@ mod run;
 mod scope;
 mod tools;
 
-use from_cli::*;
 use mem_export::*;
 use mem_import::*;
 use mem_ops::*;

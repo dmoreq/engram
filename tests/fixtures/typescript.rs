@@ -99,3 +99,51 @@ fn typescript_namespaces_are_scopes() {
     assert!(qns.iter().any(|q| q.ends_with(".A.shared")), "{qns:?}");
     assert!(qns.iter().any(|q| q.ends_with(".B.shared")), "{qns:?}");
 }
+
+#[test]
+fn ts_object_literal_method_call_sites_resolve() {
+    // Object-literal method shorthand is not a class member: the walker
+    // descends into the body so its call sites resolve, and defines no
+    // bogus method symbol for the shorthand name.
+    let src = "function helper(): number {\n  return 1\n}\n\nconst handlers = {\n  run(): number {\n    return helper()\n  },\n}\n";
+    let parsed = parse_source(src.as_bytes(), Lang::TypeScript).unwrap();
+    let fx = extract_file(0, "pkg/handlers.ts", src.as_bytes(), &parsed);
+    let names: Vec<&str> = fx.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    assert!(
+        !names.iter().any(|n| n.ends_with(".handlers.run")),
+        "object-literal shorthand must not define a method symbol: {names:?}"
+    );
+    let resolution = engram::extract::resolve(vec![fx], Default::default());
+    assert!(
+        resolution.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name.ends_with(".helper")
+        }),
+        "call inside the shorthand body must resolve: {:?}",
+        resolution.edges
+    );
+}
+
+#[test]
+fn ts_export_default_class_binds_default_alias() {
+    // `export default class Foo` binds the "default" alias like a
+    // default-exported function does, so a consumer `import Repo from
+    // './repo'` resolves `new Repo()` to the class.
+    let src1 = "export default class Repo {}\n";
+    let src2 = "import Repo from './repo'\n\nexport function pick(): Repo {\n  const r = new Repo()\n  return r\n}\n";
+    let p1 = parse_source(src1.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(src2.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/repo.ts", src1.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/pick.ts", src2.as_bytes(), &p2);
+    let resolution = engram::extract::resolve(vec![fx1, fx2], Default::default());
+    assert!(
+        resolution.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name.ends_with(".Repo")
+        }),
+        "default-imported class constructor must resolve: {:?}",
+        resolution.edges
+    );
+}

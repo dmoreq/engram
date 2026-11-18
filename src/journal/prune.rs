@@ -12,6 +12,10 @@ fn prune_matching(
     if !safe_prunable_log(log_path) {
         return Ok(0);
     }
+    // TOCTOU guard: a concurrent appender that grew the log between this
+    // read and the rewrite makes the kept list stale; defer the prune
+    // instead of silently dropping the appended lines.
+    let initial_len = fs::symlink_metadata(log_path).map(|m| m.len()).unwrap_or(0);
     let content = match fs::read_to_string(log_path) {
         Ok(c) => c,
         Err(_) => return Ok(0),
@@ -32,6 +36,11 @@ fn prune_matching(
         kept.push(trimmed);
     }
     if pruned > 0 {
+        if let Ok(meta) = fs::symlink_metadata(log_path) {
+            if meta.len() != initial_len {
+                return Ok(0);
+            }
+        }
         let mut new_text = kept.join("\n");
         if !new_text.is_empty() {
             new_text.push('\n');

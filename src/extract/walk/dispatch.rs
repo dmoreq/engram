@@ -76,7 +76,7 @@ fn visit_node<'a>(w: &mut Walker<'a, '_, '_>) {
     let handled = match w.fx.lang {
         Lang::Rust => rust::visit_rust_node(w),
         Lang::Python => python::visit_python_node(w),
-        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => visit_ts_node(w),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => typescript::visit_ts_node(w),
     };
     if handled {
         return;
@@ -96,14 +96,7 @@ pub(super) fn define_class_symbol<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKi
         return;
     };
     let name = text(name_node, w.src);
-    let parent_qn = w
-        .ctx
-        .class_stack
-        .last()
-        .or_else(|| w.ctx.func_stack.last())
-        .or_else(|| w.ctx.mod_stack.last())
-        .cloned()
-        .unwrap_or_else(|| w.fx.module.clone());
+    let parent_qn = w.ctx.enclosing_scope(&w.fx.module);
     let qualname = format!("{parent_qn}.{name}");
     let sym_idx = w.fx.symbols.len();
     w.fx.push_symbol(NewSymbol::from_node(
@@ -117,6 +110,8 @@ pub(super) fn define_class_symbol<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKi
     ));
     // Heritage: extends X / implements Y / trait bounds.
     collect_type_heritage(w.node, w.src, w.fx, sym_idx);
+    // `export default class Foo` binds the "default" alias like functions do.
+    bind_default_export(w, &name);
     if let Some(body) = w.node.child_by_field_name("body") {
         w.ctx.class_stack.push(qualname);
         w.work.push(Step::PopClass);
@@ -137,49 +132,6 @@ fn collect_type_heritage(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, sy
     if let Some(bounds) = node.child_by_field_name("bounds") {
         typescript::collect_heritage(bounds, src, fx, sym_idx);
     }
-}
-
-fn visit_ts_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
-    match w.node.kind() {
-        "class_declaration" | "abstract_class_declaration" => {
-            define_class_symbol(w, SymbolKind::Class);
-        }
-        "function_declaration" | "generator_function_declaration" => {
-            define_function(w, SymbolKind::Function);
-        }
-        "interface_declaration" => define_class_symbol(w, SymbolKind::Interface),
-        "method_definition" => typescript::define_method_ts(w),
-        "variable_declarator" => {
-            if !typescript::record_ts_arrow_function(w) {
-                typescript::record_ts_variable_binding(w.node, w.src, w.fx, w.ctx);
-                push_children_rev(w.work, w.node);
-            }
-        }
-        "arrow_function" | "function_expression" => {
-            let start = w.node.start_position().row + 1;
-            let end = w.node.end_position().row + 1;
-            let node = w.node;
-            let scope = w.ctx.scope_func();
-            collect_arrow_params(w, node, &scope, Some((start, end)));
-            push_children_rev(w.work, w.node);
-        }
-        "new_expression" => {
-            record_call(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
-        }
-        "import_statement" => typescript::record_import_ts(w.node, w.src, w.fx),
-        "export_statement" => {
-            typescript::record_export_ts(w.node, w.src, w.fx);
-            push_children_rev(w.work, w.node);
-        }
-        "internal_module" | "module" => visit_internal_module(w),
-        "assignment_expression" => {
-            record_reassignment(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
-        }
-        _ => return false,
-    }
-    true
 }
 
 /// Register one module/namespace scope symbol.
@@ -207,38 +159,13 @@ pub(super) fn is_test_item(fx: &FileExtraction, ctx: &WalkCtx, name: &str) -> bo
     fx.is_test_file || ctx.test_scope || crate::extract::is_test_name(name)
 }
 
-fn visit_internal_module<'a>(w: &mut Walker<'a, '_, '_>) {
-    let name = w
-        .node
-        .child_by_field_name("name")
-        .map(|n| text(n, w.src))
-        .unwrap_or_default();
-    let qualname = if w.ctx.class_stack.is_empty() {
-        format!("{}.{}", w.fx.module, name)
-    } else {
-        format!("{}.{}", w.ctx.class_stack.last().unwrap(), name)
-    };
-    let item_is_test = is_test_item(w.fx, w.ctx, &name);
-    push_scope_symbol(w.fx, w.node, name, &qualname, item_is_test);
-    w.ctx.class_stack.push(qualname);
-    let mut cursor = w.node.walk();
-    let children: Vec<_> = w.node.children(&mut cursor).collect();
-    w.work.push(Step::PopClass);
-    for child in children.into_iter().rev() {
-        if child.child_by_field_name("body").is_some() || child.kind() == "statement_block" {
-            push_children_rev(w.work, child);
-        }
-    }
-}
-
 fn visit_call<'a>(w: &mut Walker<'a, '_, '_>) {
     record_call(w.node, w.src, w.fx, w.ctx);
     let ts_test_call = matches!(w.fx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript)
         && matches!(
             w.node
                 .child_by_field_name("function")
-                .map(|f| text(f, w.src))
-                .as_deref(),
+                .map(|f| node_str(f, w.src)),
             Some("describe" | "it")
         );
     if ts_test_call {
@@ -286,7 +213,7 @@ fn try_ts_module_import(node: Node<'_>, f: Node<'_>, src: &[u8], fx: &mut FileEx
     if !matches!(fx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
         return false;
     }
-    let callee = text(f, src);
+    let callee = node_str(f, src);
     if callee != "require" && callee != "import" {
         return false;
     }
@@ -322,13 +249,7 @@ pub(super) fn define_callable<'a>(w: &mut Walker<'a, '_, '_>, spec: &CallableSpe
 }
 
 fn parent_qualname(ctx: &WalkCtx, fx: &FileExtraction, name: &str) -> String {
-    let parent = ctx
-        .func_stack
-        .last()
-        .or_else(|| ctx.class_stack.last())
-        .or_else(|| ctx.mod_stack.last())
-        .cloned()
-        .unwrap_or_else(|| fx.module.clone());
+    let parent = ctx.enclosing_scope(&fx.module);
     format!("{parent}.{name}")
 }
 

@@ -16,6 +16,25 @@ pub struct MemFilter {
     pub window: crate::memory::TimeWindow,
 }
 
+/// SQL clause builder for the shared window and expiration predicates.
+fn window_expiry_clause(
+    prefix: &str,
+    now_idx: usize,
+    since_idx: usize,
+    until_idx: usize,
+) -> String {
+    let p = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}.")
+    };
+    format!(
+        "({p}expires_at = 0 OR {p}expires_at > ?{now_idx}) \
+         AND (?{since_idx} = -1 OR {p}created_at >= ?{since_idx}) \
+         AND (?{until_idx} = -1 OR {p}created_at < ?{until_idx})"
+    )
+}
+
 /// The one "current row" rule set, stated in Rust: not superseded (unless the
 /// listing extends to superseded revisions), not expired, and matching the
 /// optional kind/scope filters. `memory_current_rows` compiles the same rules
@@ -69,15 +88,14 @@ pub fn memory_current_rows(
     // export-side cap; -1 (`None`) means no SQL LIMIT, which the listing paths
     // use because they cap at render time.
     let superseded_clause = "AND (superseded_by IS NULL OR ?4 = 1)";
+    let win_exp = window_expiry_clause("", 1, 6, 7);
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {MEM_ROW_SQL} FROM memories
-             WHERE (expires_at = 0 OR expires_at > ?1)
+             WHERE {win_exp}
                {superseded_clause}
                AND (?2 = '' OR kind = ?2)
                AND (?3 = '' OR scope = ?3)
-               AND (?6 = -1 OR created_at >= ?6)
-               AND (?7 = -1 OR created_at < ?7)
              ORDER BY created_at DESC, key ASC, rev DESC
              LIMIT ?5"
         ))
@@ -125,14 +143,13 @@ pub fn memory_fts_candidates(
     } else {
         "memories_fts"
     };
+    let win_exp = window_expiry_clause("m", 2, 3, 4);
     let sql = format!(
         "SELECT {table}.rowid, bm25({table}) FROM {table}
          JOIN memories m ON m.id = {table}.rowid
          WHERE {table} MATCH ?1
            AND m.superseded_by IS NULL
-           AND (m.expires_at = 0 OR m.expires_at > ?2)
-           AND (?3 = -1 OR m.created_at >= ?3)
-           AND (?4 = -1 OR m.created_at < ?4)
+           AND {win_exp}
          ORDER BY rank, {table}.rowid LIMIT ?5"
     );
     let mut stmt = conn.prepare(&sql).map_err(map_memory_err)?;
@@ -184,19 +201,13 @@ pub fn memory_ref_candidate_rows(
     }
     let n = tokens.len();
     let clauses: Vec<String> = (1..=n).map(|i| format!("refs LIKE ?{i}")).collect();
+    let win_exp = window_expiry_clause("", n + 1, n + 2, n + 3);
     let sql = format!(
         "SELECT {MEM_ROW_SQL} FROM memories
          WHERE superseded_by IS NULL AND refs != ''
-           AND (expires_at = 0 OR expires_at > ?{})
-           AND (?{} = -1 OR created_at >= ?{})
-           AND (?{} = -1 OR created_at < ?{})
+           AND {win_exp}
            AND ({})
          ORDER BY id DESC LIMIT ?{}",
-        n + 1,
-        n + 2,
-        n + 2,
-        n + 3,
-        n + 3,
         clauses.join(" OR "),
         n + 4
     );
@@ -240,14 +251,13 @@ pub fn memory_current_keys(
     let since_param = values.len();
     values.push(rusqlite::types::Value::Integer(window.until.unwrap_or(-1)));
     let until_param = values.len();
+    let win_exp = window_expiry_clause("", now_param, since_param, until_param);
     let mut stmt = conn
         .prepare(&format!(
             "SELECT DISTINCT key FROM memories
              WHERE key IN ({placeholders})
                AND superseded_by IS NULL
-               AND (expires_at = 0 OR expires_at > ?{now_param})
-               AND (?{since_param} = -1 OR created_at >= ?{since_param})
-               AND (?{until_param} = -1 OR created_at < ?{until_param})"
+               AND {win_exp}"
         ))
         .map_err(map_memory_err)?;
     let rows = stmt

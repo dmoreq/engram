@@ -99,9 +99,18 @@ fn mixin_bases(
 pub(super) fn define_method_ts<'a>(w: &mut Walker<'a, '_, '_>) {
     // method_definition: name field is a property_identifier inside a class body.
     let Some(name_node) = w.node.child_by_field_name("name") else {
+        push_children_rev(w.work, w.node);
         return;
     };
+    // Object-literal method shorthand `{ foo() { bar(); } }` is not a class
+    // member: descend into the body so its call sites are traversed instead
+    // of silently dropping them.
+    if w.node.parent().map(|p| p.kind()) != Some("class_body") {
+        push_children_rev(w.work, w.node);
+        return;
+    }
     let Some(class_qn) = w.ctx.class_stack.last().cloned() else {
+        push_children_rev(w.work, w.node);
         return;
     };
     let name = text(name_node, w.src);
@@ -110,13 +119,13 @@ pub(super) fn define_method_ts<'a>(w: &mut Walker<'a, '_, '_>) {
     define_callable(w, &spec);
 }
 
-/// Walk the TS wrapper chain. `on_export` decides the answer at the first
-/// `export_statement`; the chain only continues through wrapper nodes.
-fn ts_ancestor(node: Node<'_>, on_export: impl Fn(Node<'_>) -> bool) -> bool {
+/// True when a TS declaration is the target of `export default`.
+pub(super) fn ts_default_export_ancestor(node: Node<'_>) -> bool {
     let mut cur = node.parent();
     while let Some(n) = cur {
         if n.kind() == "export_statement" {
-            return on_export(n);
+            let mut cursor = n.walk();
+            return n.children(&mut cursor).any(|c| c.kind() == "default");
         }
         match n.kind() {
             "variable_declarator"
@@ -127,15 +136,6 @@ fn ts_ancestor(node: Node<'_>, on_export: impl Fn(Node<'_>) -> bool) -> bool {
         }
     }
     false
-}
-
-/// True when a TS declaration is the target of `export default`.
-pub(super) fn ts_default_export_ancestor(node: Node<'_>) -> bool {
-    ts_ancestor(node, |n| {
-        let mut cursor = n.walk();
-        let is_default = n.children(&mut cursor).any(|c| c.kind() == "default");
-        is_default
-    })
 }
 
 /// Module-level `const X = () => {...}` / `= function() {...}` -> function
@@ -387,4 +387,73 @@ pub(super) fn resolve_ts_module(source: &str, dir: &str) -> String {
         return "root".to_string();
     }
     parts.join(".")
+}
+
+pub(super) fn visit_ts_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
+    match w.node.kind() {
+        "class_declaration" | "abstract_class_declaration" => {
+            define_class_symbol(w, SymbolKind::Class);
+        }
+        "function_declaration" | "generator_function_declaration" => {
+            define_function(w, SymbolKind::Function);
+        }
+        "interface_declaration" => define_class_symbol(w, SymbolKind::Interface),
+        "method_definition" => define_method_ts(w),
+        "variable_declarator" => {
+            if !record_ts_arrow_function(w) {
+                record_ts_variable_binding(w.node, w.src, w.fx, w.ctx);
+                push_children_rev(w.work, w.node);
+            }
+        }
+        "arrow_function" | "function_expression" => {
+            let start = w.node.start_position().row + 1;
+            let end = w.node.end_position().row + 1;
+            let node = w.node;
+            let scope = w.ctx.scope_func();
+            collect_arrow_params(w, node, &scope, Some((start, end)));
+            push_children_rev(w.work, w.node);
+        }
+        "new_expression" => {
+            record_call(w.node, w.src, w.fx, w.ctx);
+            push_children_rev(w.work, w.node);
+        }
+        "import_statement" => record_import_ts(w.node, w.src, w.fx),
+        "export_statement" => {
+            record_export_ts(w.node, w.src, w.fx);
+            push_children_rev(w.work, w.node);
+        }
+        "internal_module" | "module" => visit_internal_module(w),
+        "assignment_expression" => {
+            record_reassignment(w.node, w.src, w.fx, w.ctx);
+            push_children_rev(w.work, w.node);
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn visit_internal_module<'a>(w: &mut Walker<'a, '_, '_>) {
+    let name = w
+        .node
+        .child_by_field_name("name")
+        .map(|n| text(n, w.src))
+        .unwrap_or_default();
+    let parent = w
+        .ctx
+        .class_stack
+        .last()
+        .map(|s| s.as_str())
+        .unwrap_or(&w.fx.module);
+    let qualname = format!("{parent}.{name}");
+    let item_is_test = is_test_item(w.fx, w.ctx, &name);
+    push_scope_symbol(w.fx, w.node, name, &qualname, item_is_test);
+    w.ctx.class_stack.push(qualname);
+    let mut cursor = w.node.walk();
+    let children: Vec<_> = w.node.children(&mut cursor).collect();
+    w.work.push(Step::PopClass);
+    for child in children.into_iter().rev() {
+        if child.child_by_field_name("body").is_some() || child.kind() == "statement_block" {
+            push_children_rev(w.work, child);
+        }
+    }
 }

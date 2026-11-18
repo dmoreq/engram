@@ -469,7 +469,7 @@ fn call_tool(root: &Path, tool: &str, args: &Value) -> (String, bool, i32, Optio
     });
     match outcome {
         Ok((mut stdout, stderr, 0, shown)) => {
-            if matches!(tool, "build" | "reuse") && !stderr.is_empty() {
+            if matches!(tool, "build" | "reuse" | "mem_import") && !stderr.is_empty() {
                 if !stdout.is_empty() && !stdout.ends_with('\n') {
                     stdout.push('\n');
                 }

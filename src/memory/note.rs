@@ -115,39 +115,44 @@ fn validate_body(body: &str) -> Result<()> {
     Ok(())
 }
 
-fn normalize_token_set(raw: &str, max: usize, max_len: usize, label: &str) -> Result<String> {
-    let tokens: Vec<String> = raw.split_whitespace().map(str::to_string).collect();
-    if tokens.len() > max {
-        return Err(EgError::Usage(format!(
-            "mem write: more than {max} {label}"
-        )));
+fn normalize_token_set(
+    raw: &str,
+    max: usize,
+    max_len: usize,
+    label: &str,
+    lowercase: bool,
+) -> Result<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    for tok in raw.split_whitespace() {
+        if tokens.len() >= max {
+            return Err(EgError::Usage(format!(
+                "mem write: more than {max} {label}"
+            )));
+        }
+        if tok.len() > max_len {
+            return Err(EgError::Usage(format!(
+                "mem write: {label} token exceeds {max_len} bytes: '{tok}'"
+            )));
+        }
+        tokens.push(if lowercase {
+            tok.to_ascii_lowercase()
+        } else {
+            tok.to_string()
+        });
     }
-    if let Some(t) = tokens.iter().find(|t| t.len() > max_len) {
-        return Err(EgError::Usage(format!(
-            "mem write: {label} token exceeds {max_len} bytes: '{t}'"
-        )));
-    }
+    tokens.sort();
     Ok(tokens.join(" "))
 }
 
 /// Canonical set form: tags are lowercased and sorted so the stored bytes —
 /// and therefore the content hash — are order-insensitive.
 fn normalize_tags(raw: &str) -> Result<String> {
-    let tokens = normalize_token_set(raw, MAX_TAGS, MAX_TAG_BYTES, "tags")?;
-    let mut tags: Vec<String> = tokens
-        .split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect();
-    tags.sort();
-    Ok(tags.join(" "))
+    normalize_token_set(raw, MAX_TAGS, MAX_TAG_BYTES, "tags", true)
 }
 
 /// Refs use the same canonical set rule (a set of qualnames/paths).
 fn normalize_refs(raw: &str) -> Result<String> {
-    let tokens = normalize_token_set(raw, MAX_REFS, MAX_REF_BYTES, "refs")?;
-    let mut refs: Vec<String> = tokens.split_whitespace().map(str::to_string).collect();
-    refs.sort();
-    Ok(refs.join(" "))
+    normalize_token_set(raw, MAX_REFS, MAX_REF_BYTES, "refs", false)
 }
 
 /// Validate the raw scope flag and resolve the relative lifetime together:

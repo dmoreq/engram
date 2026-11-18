@@ -8,15 +8,6 @@ pub(super) fn run(
     root_arg: Option<&Path>,
     surface: Surface,
 ) -> Result<ArmOut> {
-    match req.family() {
-        Family::Diag => run_diag(req, root_arg),
-        Family::Graph | Family::Analysis => run_query(req, root_arg),
-        Family::Memory => run_memory(req, root_arg, surface),
-    }
-}
-
-/// Build, doctor, and usage (the CLI's MCP hand-off is handled before this).
-fn run_diag(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
     match req {
         CommandRequest::Build {
             force,
@@ -61,7 +52,16 @@ fn run_diag(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
                 exit_code: Some(out.exit_code),
             })
         }
-        _ => unreachable!("run_diag called with a non-diagnostic request"),
+        CommandRequest::MemWrite { .. } => run_mem_write(req, root_arg, surface),
+        CommandRequest::MemTouch { .. } => run_mem_touch(req, root_arg),
+        CommandRequest::MemQuery { .. } => run_mem_query(req, root_arg),
+        CommandRequest::MemGet { .. } => run_mem_get(req, root_arg),
+        CommandRequest::MemDelete { .. } => run_mem_delete(req, root_arg),
+        CommandRequest::MemGc { .. } => run_mem_gc(req, root_arg),
+        CommandRequest::MemExport { .. } => run_mem_export(req, root_arg),
+        CommandRequest::MemImport { .. } => run_mem_import(req, root_arg, surface),
+        CommandRequest::MemReindex { .. } => run_mem_reindex(req, root_arg),
+        _ => run_query(req, root_arg),
     }
 }
 
@@ -97,6 +97,109 @@ pub(super) fn run_usage(root_arg: Option<&Path>, quality: bool, global: bool) ->
     }
 }
 
+fn validate_reuse_args(
+    paths: &[String],
+    limit: usize,
+    min_confidence: &str,
+    propose: Option<&str>,
+    callees: &[String],
+    coverage: &[String],
+) -> Result<()> {
+    if !(1..=100).contains(&limit) {
+        return Err(EgError::Usage("limit must be 1..=100".to_string()));
+    }
+    if !min_confidence.is_empty()
+        && crate::query::reuse::ReuseConfidence::parse(min_confidence).is_none()
+    {
+        return Err(EgError::Usage(
+            "min-confidence must be low|provisional|medium|high".to_string(),
+        ));
+    }
+    match propose {
+        Some(signature) => {
+            if !paths.is_empty() {
+                return Err(EgError::Usage(
+                    "--propose cannot be combined with paths".to_string(),
+                ));
+            }
+            if signature.trim().is_empty() {
+                return Err(EgError::Usage("propose must be non-empty".to_string()));
+            }
+            if !coverage.is_empty() {
+                return Err(EgError::Usage(
+                    "--coverage cannot be combined with --propose".to_string(),
+                ));
+            }
+        }
+        None if !callees.is_empty() => {
+            return Err(EgError::Usage("--callees requires --propose".to_string()));
+        }
+        None if !coverage.is_empty() && !paths.is_empty() => {
+            return Err(EgError::Usage(
+                "--coverage cannot be combined with paths".to_string(),
+            ));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn execute_reuse(
+    req: &CommandRequest,
+    ctx: &crate::query::QueryCtx<'_>,
+) -> Result<crate::query::LineQuery> {
+    let CommandRequest::Reuse {
+        paths,
+        limit,
+        deep_callee,
+        min_confidence,
+        propose,
+        callees,
+        explain,
+        show_suppressed,
+        coverage,
+        judge,
+    } = req
+    else {
+        unreachable!()
+    };
+    let min_conf = if min_confidence.is_empty() {
+        crate::query::reuse::ReuseConfidence::Low
+    } else {
+        crate::query::reuse::ReuseConfidence::parse(min_confidence).ok_or_else(|| {
+            EgError::Usage("min-confidence must be low|provisional|medium|high".to_string())
+        })?
+    };
+    match propose {
+        Some(signature) => crate::query::reuse::run_reuse_proposal(
+            ctx,
+            crate::query::reuse::ProposalRunArgs {
+                signature: signature.clone(),
+                callees: callees.clone(),
+                limit: *limit,
+                deep_callee: *deep_callee,
+                min_confidence: min_conf,
+                explain: *explain,
+                show_suppressed: *show_suppressed,
+                judge: *judge,
+            },
+        ),
+        None => crate::query::run_reuse(
+            ctx,
+            crate::query::reuse::ReuseRunArgs {
+                paths: paths.clone(),
+                limit: *limit,
+                deep_callee: *deep_callee,
+                min_confidence: min_conf,
+                explain: *explain,
+                show_suppressed: *show_suppressed,
+                coverage: coverage.clone(),
+                judge: *judge,
+            },
+        ),
+    }
+}
+
 /// Index-only query arms: graph traversal, analysis, and inventory.
 fn run_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
     if let CommandRequest::Reuse {
@@ -109,59 +212,31 @@ fn run_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
         ..
     } = req
     {
-        if !(1..=100).contains(limit) {
-            return Err(EgError::Usage("limit must be 1..=100".to_string()));
-        }
-        if !min_confidence.is_empty()
-            && crate::query::reuse::ReuseConfidence::parse(min_confidence).is_none()
-        {
-            return Err(EgError::Usage(
-                "min-confidence must be low|provisional|medium|high".to_string(),
-            ));
-        }
-        match propose {
-            Some(signature) => {
-                if !paths.is_empty() {
-                    return Err(EgError::Usage(
-                        "--propose cannot be combined with paths".to_string(),
-                    ));
-                }
-                if signature.trim().is_empty() {
-                    return Err(EgError::Usage("propose must be non-empty".to_string()));
-                }
-                if !coverage.is_empty() {
-                    return Err(EgError::Usage(
-                        "--coverage cannot be combined with --propose".to_string(),
-                    ));
-                }
-            }
-            None if !callees.is_empty() => {
-                return Err(EgError::Usage("--callees requires --propose".to_string()));
-            }
-            None if !coverage.is_empty() && !paths.is_empty() => {
-                return Err(EgError::Usage(
-                    "--coverage cannot be combined with paths".to_string(),
-                ));
-            }
-            None => {}
-        }
+        validate_reuse_args(
+            paths,
+            *limit,
+            min_confidence,
+            propose.as_deref(),
+            callees,
+            coverage,
+        )?;
     }
-    match req.family() {
-        Family::Graph => run_graph_query(req, root_arg),
-        Family::Analysis => run_analysis_query(req, root_arg),
-        Family::Diag | Family::Memory => unreachable!("run_query called with a non-query request"),
-    }
-}
-
-/// Graph traversal and call-site queries.
-fn run_graph_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
     let (root, conn) = open_query(root_arg)?;
     let ctx = crate::query::QueryCtx {
         conn: &conn,
         root: &root,
     };
     match req {
-        CommandRequest::Callers { .. } | CommandRequest::Callees { .. } => run_traversal(req, &ctx),
+        CommandRequest::Callers { name, limit, depth } => emit(crate::query::callers(
+            &ctx,
+            name,
+            graph_opts(*limit, *depth),
+        )?),
+        CommandRequest::Callees { name, limit, depth } => emit(crate::query::callees(
+            &ctx,
+            name,
+            graph_opts(*limit, *depth),
+        )?),
         CommandRequest::Context { name, limit } => Ok(ArmOut::from_line_query(
             crate::query::context(&ctx, name, *limit)?,
         )),
@@ -169,70 +244,44 @@ fn run_graph_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmO
         CommandRequest::Path { from, to, depth } => Ok(ArmOut::from_line_query(
             crate::query::path(&ctx, from, to, *depth)?,
         )),
-        CommandRequest::Impact { .. } => run_impact(req, &ctx),
-        _ => unreachable!("run_graph_query called with a non-graph request"),
-    }
-}
-
-/// `callers`/`callees`: one name plus the shared limit/depth bundle.
-fn run_traversal(req: &CommandRequest, ctx: &crate::query::QueryCtx<'_>) -> Result<ArmOut> {
-    match req {
-        CommandRequest::Callers { name, limit, depth } => emit(crate::query::callers(
-            ctx,
-            name,
-            graph_opts(*limit, *depth),
+        CommandRequest::Impact {
+            file,
+            sites,
+            depth,
+            edges,
+            limit,
+        } => emit(crate::query::impact(
+            &ctx,
+            file,
+            *limit,
+            crate::query::ImpactOpts {
+                sites: *sites,
+                depth: *depth,
+                kinds: edges.clone(),
+            },
         )?),
-        CommandRequest::Callees { name, limit, depth } => emit(crate::query::callees(
-            ctx,
-            name,
-            graph_opts(*limit, *depth),
-        )?),
-        _ => unreachable!("run_traversal called with a non-traversal request"),
-    }
-}
-
-/// Shared graph-traversal knobs for `callers`/`callees` (ImpactOpts-style).
-fn graph_opts(limit: usize, depth: usize) -> crate::query::GraphQueryOpts {
-    crate::query::GraphQueryOpts { limit, depth }
-}
-
-/// `impact`: one file plus the extended ImpactOpts bundle.
-fn run_impact(req: &CommandRequest, ctx: &crate::query::QueryCtx<'_>) -> Result<ArmOut> {
-    let CommandRequest::Impact {
-        file,
-        sites,
-        depth,
-        edges,
-        limit,
-    } = req
-    else {
-        unreachable!("run_impact called with a non-impact request")
-    };
-    let out = crate::query::impact(
-        ctx,
-        file,
-        *limit,
-        crate::query::ImpactOpts {
-            sites: *sites,
-            depth: *depth,
-            kinds: edges.clone(),
-        },
-    )?;
-    emit(out)
-}
-
-/// Inventory, analysis, and reuse queries.
-fn run_analysis_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let (root, conn) = open_query(root_arg)?;
-    let ctx = crate::query::QueryCtx {
-        conn: &conn,
-        root: &root,
-    };
-    match req {
-        CommandRequest::Unresolved { .. }
-        | CommandRequest::Symbols { .. }
-        | CommandRequest::Reuse { .. }
-        | CommandRequest::Search { .. } => run_line_query(req, &ctx),
+        CommandRequest::Unresolved { names, path, limit } => {
+            let out = if *names {
+                crate::query::unresolved_names(&ctx, path.as_deref(), *limit)?
+            } else {
+                crate::query::unresolved(&ctx, path.as_deref(), *limit)?
+            };
+            Ok(ArmOut::from_line_query(out))
+        }
+        CommandRequest::Symbols {
+            file,
+            outline,
+            limit,
+        } => Ok(ArmOut::from_line_query(crate::query::symbols(
+            &ctx,
+            file,
+            *limit,
+            crate::query::SymbolsOpts { outline: *outline },
+        )?)),
+        CommandRequest::Reuse { .. } => Ok(ArmOut::from_line_query(execute_reuse(req, &ctx)?)),
+        CommandRequest::Search { terms, limit } => Ok(ArmOut::from_line_query(
+            crate::query::search(&ctx, terms, *limit)?,
+        )),
         CommandRequest::Stats { path } => {
             let line = crate::insights::stats(&ctx, path.as_deref())?;
             crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
@@ -243,101 +292,13 @@ fn run_analysis_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<A
                 exit_code: None,
             })
         }
-        _ => unreachable!("run_analysis_query called with a non-analysis request"),
+        _ => unreachable!("run_query called with a non-query request"),
     }
 }
 
-/// Analysis arms that render plain lines (no QueryOutput journaling). The
-/// stderr half carries the queries' cap notices (the single cap-notice
-/// channel).
-fn run_line_query(req: &CommandRequest, ctx: &crate::query::QueryCtx<'_>) -> Result<ArmOut> {
-    let out = match req {
-        CommandRequest::Unresolved { names, path, limit } => {
-            if *names {
-                crate::query::unresolved_names(ctx, path.as_deref(), *limit)?
-            } else {
-                crate::query::unresolved(ctx, path.as_deref(), *limit)?
-            }
-        }
-        CommandRequest::Symbols {
-            file,
-            outline,
-            limit,
-        } => crate::query::symbols(
-            ctx,
-            file,
-            *limit,
-            crate::query::SymbolsOpts { outline: *outline },
-        )?,
-        CommandRequest::Reuse {
-            paths,
-            limit,
-            deep_callee,
-            min_confidence,
-            propose,
-            callees,
-            explain,
-            show_suppressed,
-            coverage,
-            judge,
-        } => {
-            let min_confidence = if min_confidence.is_empty() {
-                crate::query::reuse::ReuseConfidence::Low
-            } else {
-                crate::query::reuse::ReuseConfidence::parse(min_confidence).ok_or_else(|| {
-                    EgError::Usage("min-confidence must be low|provisional|medium|high".to_string())
-                })?
-            };
-            match propose {
-                Some(signature) => crate::query::reuse::run_reuse_proposal(
-                    ctx,
-                    crate::query::reuse::ProposalRunArgs {
-                        signature: signature.clone(),
-                        callees: callees.clone(),
-                        limit: *limit,
-                        deep_callee: *deep_callee,
-                        min_confidence,
-                        explain: *explain,
-                        show_suppressed: *show_suppressed,
-                        judge: *judge,
-                    },
-                )?,
-                None => crate::query::run_reuse(
-                    ctx,
-                    crate::query::reuse::ReuseRunArgs {
-                        paths: paths.clone(),
-                        limit: *limit,
-                        deep_callee: *deep_callee,
-                        min_confidence,
-                        explain: *explain,
-                        show_suppressed: *show_suppressed,
-                        coverage: coverage.clone(),
-                        judge: *judge,
-                    },
-                )?,
-            }
-        }
-        CommandRequest::Search { terms, limit } => crate::query::search(ctx, terms, *limit)?,
-        _ => unreachable!("run_line_query called with a non-line request"),
-    };
-    Ok(ArmOut::from_line_query(out))
-}
-
-/// Memory-store dispatcher. Each command owns its request shape in a small
-/// helper; the outer match only selects the command.
-fn run_memory(req: &CommandRequest, root_arg: Option<&Path>, surface: Surface) -> Result<ArmOut> {
-    match req {
-        CommandRequest::MemWrite { .. } => run_mem_write(req, root_arg, surface),
-        CommandRequest::MemTouch { .. } => run_mem_touch(req, root_arg),
-        CommandRequest::MemQuery { .. } => run_mem_query(req, root_arg),
-        CommandRequest::MemGet { .. } => run_mem_get(req, root_arg),
-        CommandRequest::MemDelete { .. } => run_mem_delete(req, root_arg),
-        CommandRequest::MemGc { .. } => run_mem_gc(req, root_arg),
-        CommandRequest::MemExport { .. } => run_mem_export(req, root_arg),
-        CommandRequest::MemImport { .. } => run_mem_import(req, root_arg, surface),
-        CommandRequest::MemReindex { .. } => run_mem_reindex(req, root_arg),
-        _ => unreachable!("run_memory called with a non-memory request"),
-    }
+/// Shared graph-traversal knobs for `callers`/`callees`.
+fn graph_opts(limit: usize, depth: usize) -> crate::query::GraphQueryOpts {
+    crate::query::GraphQueryOpts { limit, depth }
 }
 
 fn run_mem_gc(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {

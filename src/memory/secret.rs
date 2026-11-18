@@ -143,7 +143,7 @@ fn has_private_key(text: &str) -> bool {
     let Some(begin) = text.find("-----BEGIN ") else {
         return false;
     };
-    text[begin..].contains("PRIVATE KEY-----")
+    text[begin..].contains("PRIVATE KEY-----") || text[begin..].contains("PRIVATE KEY BLOCK-----")
 }
 
 fn has_slack_token(text: &str) -> bool {
@@ -165,15 +165,29 @@ fn has_slack_token(text: &str) -> bool {
 
 fn has_bearer_token(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.match_indices("bearer ").any(|(idx, _)| {
-        boundary(&lower, idx)
-            && run_len(
-                &lower,
-                idx + "bearer ".len(),
-                |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '+' | '/' | '-'),
-                20,
-            )
-    })
+    for (idx, _) in lower.match_indices("bearer") {
+        if !boundary(&lower, idx) {
+            continue;
+        }
+        // Tolerate any run of spaces/tabs between the scheme and the token;
+        // no separator at all ("bearerxyz") is not a scheme occurrence.
+        let rest = &lower[idx + "bearer".len()..];
+        let Some(offset) = rest.find(|c: char| c != ' ' && c != '\t') else {
+            continue;
+        };
+        if offset == 0 {
+            continue;
+        }
+        if run_len(
+            &lower,
+            idx + "bearer".len() + offset,
+            |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '+' | '/' | '-'),
+            20,
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 fn has_database_url(text: &str) -> bool {

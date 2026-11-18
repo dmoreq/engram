@@ -170,19 +170,6 @@ pub fn dirty_closure(old: &Connection, changed: &[String]) -> Result<HashSet<Str
     Ok(dirty)
 }
 
-/// Every symbol name and qualname in the old index (Amendment 15): the fast
-/// path compares fresh extraction names against this set to detect names that
-/// did not exist before the change.
-pub fn symbol_names(conn: &Connection) -> Result<HashSet<String>> {
-    let mut out = HashSet::new();
-    let mut stmt = conn.prepare("SELECT qualname FROM symbols")?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    for r in rows {
-        out.insert(r?);
-    }
-    Ok(out)
-}
-
 /// Old symbol qualnames grouped by the files that declare them. Used to detect
 /// a newly added duplicate candidate, not just a brand-new name.
 pub fn symbol_qualname_files(conn: &Connection) -> Result<HashMap<String, HashSet<String>>> {

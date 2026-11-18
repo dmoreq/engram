@@ -13,7 +13,7 @@ check() { # dir -> prints violations
   python3 - "$1" <<'PY'
 import pathlib, re, sys
 src = pathlib.Path(sys.argv[1])
-prim = re.compile(r"fs::write|fs::rename|OpenOptions|File::create|File::create_new|File::options|fs::copy|remove_file|remove_dir|create_dir|create_dir_all")
+prim = re.compile(r"fs::write|fs::rename|fs::hard_link|hard_link|OpenOptions|File::create|File::create_new|File::options|fs::copy|remove_file|remove_dir|create_dir|create_dir_all")
 allowed = {"db.rs", "doctor.rs", "journal.rs"}
 bad = []
 def strip_test_modules(text):

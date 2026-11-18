@@ -414,7 +414,6 @@ mod tests {
             raw_client: None,
             confidence: ReuseConfidence::Low,
             reasons: Vec::new(),
-            freshness: Freshness::Fresh,
         };
         assert!(!is_judgeable(&candidate(44), ReuseMode::Scan));
         assert!(is_judgeable(&candidate(45), ReuseMode::Scan));

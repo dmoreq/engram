@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>eg — Graph Canvas</title>
+<script>
+/* Theme bootstrap pre-paint (key eg-theme): applied before first paint to avoid a light flash for dark users. */
+try { document.documentElement.dataset.theme = localStorage.getItem('eg-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (e) {}
+</script>
+<style>
+/* Shibumi tokens mirrored from src/dashboard/assets/style.css:1-60. 25 semantic tokens, every one with an active caller. Soft alpha .10 light / .15 dark. */
+:root{
+  --bg-canvas:#F7F4EE;--bg-surface:#FBF9F5;--bg-subtle:#EFECE4;--bg-elevated:#FFFFFF;
+  --text-primary:#1E1C1A;--text-secondary:#4A4640;--text-muted:#666059;
+  --border-subtle:rgba(30,28,26,.09);--border-strong:rgba(30,28,26,.18);
+  --intent-primary:#8A4A2E;--intent-primary-soft:rgba(138,74,46,.10);
+  --intent-success:#246A49;--intent-success-soft:rgba(36,106,73,.10);
+  --intent-warning:#945807;--intent-warning-soft:rgba(148,88,7,.10);
+  --intent-danger:#B8322C;
+  --intent-info:#2E5A70;--intent-info-soft:rgba(46,90,112,.10);
+  --font-display:Georgia,serif;--font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius-sm:4px;--radius-md:8px;--radius-lg:12px;--transition-fast:.15s cubic-bezier(.4,0,.2,1);
+}
+:root[data-theme="dark"]{
+  --bg-canvas:#121110;--bg-surface:#1A1816;--bg-subtle:#24211E;--bg-elevated:#2A2724;
+  --text-primary:#F3EFEA;--text-secondary:#C4BDB3;--text-muted:#968E84;
+  --border-subtle:rgba(243,239,234,.09);--border-strong:rgba(243,239,234,.18);
+  --intent-primary:#D9825B;--intent-primary-soft:rgba(217,130,91,.15);
+  --intent-success:#52B788;--intent-success-soft:rgba(82,183,136,.15);
+  --intent-warning:#E9A84A;--intent-warning-soft:rgba(233,168,74,.15);
+  --intent-danger:#F06A63;
+  --intent-info:#6BA3BE;--intent-info-soft:rgba(107,163,190,.15);
+}
+/* Type ramp (5 sizes): 0.75rem / 0.8125rem / 0.875rem / 1rem / 1.25rem. Floor 12px; muted text >= 12px in both themes. */
+*{box-sizing:border-box;margin:0;padding:0} html,body{height:100%;overflow:hidden}
+body{background:var(--bg-canvas);color:var(--text-primary);font:.875rem/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;font-size:.8125rem;color:inherit;background:var(--bg-elevated);border:1px solid var(--text-muted);border-radius:var(--radius-sm);padding:.25rem .6rem;min-height:24px;min-width:24px;cursor:pointer;transition:background var(--transition-fast)}
+button:hover{background:var(--bg-subtle)} button:disabled{opacity:.5;cursor:default} :focus-visible{outline:2px solid var(--intent-info);outline-offset:1px}
+button[aria-pressed="true"]{background:var(--intent-primary);border-color:var(--intent-primary);color:var(--bg-canvas)}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums} .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.app{display:grid;grid-template-rows:52px 1fr 34px;height:100%}
+.topbar{display:flex;align-items:center;gap:1rem;padding:0 1rem;background:var(--bg-surface);border-bottom:1px solid var(--border-subtle)}
+.brand{display:flex;align-items:center;gap:.65rem;min-width:0}
+.brand-mark{font-family:var(--font-display);font-size:1.25rem;font-weight:700;background:var(--intent-primary);color:var(--bg-canvas);border-radius:var(--radius-md);padding:.05rem .5rem}
+.brand strong{font-size:1rem;display:block} .brand small{font-size:.75rem;color:var(--text-muted);white-space:nowrap}
+.chips{display:flex;gap:.4rem;margin-left:auto;overflow-x:auto}
+.chip{background:var(--bg-elevated);border:1px solid var(--text-muted);border-radius:var(--radius-md);padding:.2rem .55rem;display:inline-flex;gap:.45rem;align-items:baseline;white-space:nowrap}
+.chip b{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600}
+.chip span{font-family:var(--font-mono);font-size:.8125rem;color:var(--text-primary)} .chip small{font-size:.75rem;color:var(--text-muted);font-family:var(--font-mono)}
+.chip.ok{color:var(--intent-success);border-color:var(--intent-success)} .chip.warn{color:var(--intent-warning);border-color:var(--intent-warning)}
+.chip.bad{color:var(--intent-danger);border-color:var(--intent-danger)} .chip.info{color:var(--intent-info);border-color:var(--intent-info)}
+.top-actions{display:flex;gap:.4rem;align-items:center}
+.deck{display:grid;grid-template-columns:252px 1fr 340px;min-height:0}
+.dock{background:var(--bg-surface);overflow-y:auto;padding:.75rem;min-height:0}
+.dock-left{border-right:1px solid var(--border-subtle)} .dock-right{border-left:1px solid var(--border-subtle);display:flex;flex-direction:column}
+.sec{margin-bottom:1.1rem} summary.sec-title{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);cursor:pointer}
+.mrow{display:flex;justify-content:space-between;align-items:baseline;gap:.4rem;font-size:.8125rem;padding:.16rem 0;border-top:1px solid var(--border-subtle)}
+.mrow:first-of-type{border-top:0} .mrow span{color:var(--text-secondary)} .mrow b{font-family:var(--font-mono);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.track{background:var(--border-subtle);height:3px;border-radius:2px;overflow:hidden;margin-top:.2rem}
+.fill{background:var(--intent-primary);height:100%;transition:width .3s} .fill.ok{background:var(--intent-success)}
+.det-none{font-size:.75rem;color:var(--text-muted);font-family:var(--font-mono);align-self:center}
+.filter-row{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;margin:.45rem 0}
+.search{background:var(--bg-elevated);border:1px solid var(--text-muted);border-radius:var(--radius-sm);padding:.2rem .5rem;font-size:.8125rem;color:inherit;width:140px;min-height:24px}
+.note-row{display:flex;width:100%;justify-content:space-between;align-items:center;gap:.4rem;font-size:.8125rem;padding:.3rem .35rem;border:0;border-bottom:1px solid var(--border-subtle);border-radius:var(--radius-sm);background:none;text-align:left;min-height:24px}
+.note-row:hover{background:var(--bg-subtle)} .note-row[aria-pressed="true"]{background:var(--intent-primary-soft);color:var(--text-primary)}
+.action{width:100%;margin-top:.6rem;background:var(--intent-primary);color:var(--bg-canvas);border-color:var(--intent-primary);font-weight:600;min-height:28px}
+.action:hover{background:var(--intent-primary);opacity:.88}
+.ghost{background:none;border:0;color:var(--intent-primary);padding:.25rem .1rem;min-width:0;text-decoration:underline;text-underline-offset:2px}
+.ghost:hover{background:none;text-decoration-thickness:2px}
+.canvas-wrap{position:relative;min-width:0;min-height:0;background:var(--bg-canvas)}
+#graph{width:100%;height:100%;display:block;cursor:grab} #graph:focus-visible{outline:2px solid var(--intent-info);outline-offset:-2px} #graph.panning{cursor:grabbing}
+.canvas-bar{position:absolute;top:.6rem;left:.6rem;right:.6rem;display:flex;justify-content:space-between;gap:.5rem;pointer-events:none}
+.canvas-bar>*{pointer-events:auto}
+.crumb{background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:.3rem .7rem;font-family:var(--font-mono);font-size:.75rem;color:var(--text-secondary)}
+.crumb b{color:var(--text-primary)} .crumb-btn{background:none;border:0;min-height:0;min-width:0;padding:0;font:inherit;color:var(--intent-info);text-decoration:underline;text-underline-offset:2px} .crumb-btn:hover{background:none}
+.canvas-tools{display:flex;gap:.3rem;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:.25rem .35rem;align-items:center}
+#zoom-label{font-size:.75rem;min-width:3.5ch;text-align:center;font-family:var(--font-mono);color:var(--text-secondary)}
+.legend{position:absolute;bottom:.6rem;left:.6rem;max-width:calc(100% - 1.2rem);background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:.35rem .6rem;font-size:.75rem;color:var(--text-secondary)}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block;margin-right:.3rem;vertical-align:-1px;border:1px solid var(--text-muted)}
+.lg-repo{background:var(--intent-primary-soft);border-color:var(--intent-primary)} .lg-mod{background:var(--intent-info-soft);border-style:dashed} .lg-sym{background:var(--bg-elevated)}
+.lg-cand{background:none;border:2px dashed var(--intent-danger);border-radius:4px} .lg-anchor{width:9px;height:9px;border-radius:50%;background:var(--bg-surface);border:2px solid var(--intent-warning)} .lg-anchor.ok{background:var(--intent-success);border-color:var(--intent-success)} .lg-anchor.bad{background:var(--intent-danger);border-color:var(--intent-danger);position:relative} .lg-anchor.bad::after{content:"";position:absolute;left:-2px;right:-2px;top:2px;height:2px;background:var(--bg-surface);transform:rotate(-45deg)}
+/* Edge ink reuses the muted ink ramp: lowest-contrast token that still passes 3:1 as a graphic on both canvases. */
+#world .edge{stroke:var(--text-muted);fill:none;stroke-width:1.25} #world .edge.cand{stroke:var(--intent-danger);stroke-dasharray:5 3;stroke-width:1.75}
+#world .edge.hid,#world text.hid,#world .anchor-g.hid{display:none}
+.edge-label{font-family:var(--font-mono);font-size:.75rem;font-weight:600;fill:var(--intent-danger);paint-order:stroke;stroke:var(--bg-canvas);stroke-width:3px}
+.node{cursor:pointer}
+.node rect{fill:var(--bg-elevated);stroke:var(--text-muted);transition:stroke var(--transition-fast)}
+.node:hover rect{stroke:var(--intent-info)} .node.selected rect{stroke:var(--intent-primary);stroke-width:2} .node.flash rect{stroke:var(--intent-info);stroke-width:2.5} #world .node:focus-visible rect{stroke:var(--intent-info);stroke-width:2}
+/* Partial state uses tonal de-emphasis (no opacity) so dim node text keeps >= 4.5:1 on its own fill. */
+.node.dim rect{fill:var(--bg-subtle)} .node.dim .lbl{fill:var(--text-secondary)} .node.dim.selected .lbl,.node.dim:hover .lbl{fill:var(--text-primary)}
+.node.repo rect{fill:var(--intent-primary-soft);stroke:var(--intent-primary)}
+/* Dashed carries one meaning: derived layer — candidate edges (not yet canonical) and module nodes (structural demo). */
+.node.module rect{fill:var(--intent-info-soft);stroke-dasharray:4 3}
+.node .lbl{font-size:.8125rem;font-weight:600;fill:var(--text-primary);font-family:var(--font-sans)} .node .sub{font-size:.75rem;fill:var(--text-muted);font-family:var(--font-mono)}
+/* Sub text on tinted node fills (repo/module/dim) upgrades to secondary: muted would drop below 4.5:1 in dark. */
+.node.repo .sub,.node.module .sub,.node.dim .sub{fill:var(--text-secondary)}
+.anchor-hit{fill:transparent} .anchor-g{cursor:pointer} .anchor-g:hover .anchor{stroke:var(--text-muted)}
+/* Anchor states are shape + color: filled dot = valid, hollow ring = modified, slashed dot = broken (WCAG 1.4.1). */
+.anchor{fill:var(--bg-surface);stroke:var(--intent-warning);stroke-width:3} .anchor.ok{fill:var(--intent-success);stroke:var(--intent-success);stroke-width:2} .anchor.bad{fill:var(--intent-danger);stroke:var(--intent-danger);stroke-width:2} .anchor-slash{stroke:var(--bg-surface);stroke-width:2;stroke-linecap:round;pointer-events:none}
+.ping{fill:none;stroke:var(--intent-info);stroke-width:2;pointer-events:none}
+.tabs{display:flex;border-bottom:1px solid var(--border-subtle);position:sticky;top:-.75rem;margin:-.75rem -.75rem .75rem;background:var(--bg-surface);z-index:2}
+.tabs button{flex:1;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:.55rem .2rem;font-size:.8125rem;color:var(--text-muted);min-width:0}
+.tabs button:hover{background:none;color:var(--text-secondary)}
+.tabs button[aria-selected="true"]{color:var(--intent-primary);border-bottom-color:var(--intent-primary);font-weight:600}
+.panel{display:none;min-height:0} .panel.active{display:block}
+.panel h2{font-family:var(--font-display);font-size:1rem;margin-bottom:.15rem} .panel .path{font-family:var(--font-mono);font-size:.75rem;color:var(--text-muted);margin-bottom:.6rem;word-break:break-all}
+.kv{display:grid;grid-template-columns:1fr auto;gap:.1rem .6rem;font-size:.8125rem} .kv dt{color:var(--text-secondary)} .kv dd{font-family:var(--font-mono);text-align:right;font-weight:600}
+.note-body{background:var(--intent-warning-soft);border-left:3px solid var(--intent-warning);border-radius:var(--radius-sm);padding:.5rem .6rem;font-size:.8125rem;margin:.5rem 0}
+.snips{display:grid;gap:.5rem;margin-top:.5rem}
+.snip pre{background:var(--bg-subtle);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:.45rem;font-family:var(--font-mono);font-size:.75rem;line-height:1.45;overflow-x:auto}
+.snip h5{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.25rem;font-family:var(--font-mono)}
+.snip.can h5{color:var(--intent-danger)} .snip.ref h5{color:var(--intent-success)}
+.reasons-list{margin:.5rem 0 0 1.1rem;font-size:.8125rem} .mt{margin-top:.6rem}
+.feed{display:grid;gap:.3rem}
+.frow{display:grid;grid-template-columns:auto auto 1fr auto;gap:.45rem;align-items:baseline;background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:.3rem .45rem;font-size:.75rem;text-align:left;width:100%;min-height:24px}
+.frow:hover{background:var(--bg-subtle)}
+.frow time{font-family:var(--font-mono);color:var(--text-muted)} .frow .tool{font-family:var(--font-mono);font-weight:600;color:var(--intent-info)}
+.frow .meta{font-family:var(--font-mono);color:var(--text-secondary);text-align:right}
+.tag-ok{color:var(--intent-success)} .tag-warn{color:var(--intent-warning)}
+.resp{background:var(--bg-subtle);border-radius:var(--radius-sm);padding:.4rem .5rem;font-family:var(--font-mono);font-size:.75rem;margin-top:.4rem;white-space:pre-wrap;word-break:break-all}
+.resp[aria-busy="true"]{color:var(--intent-info)}
+.hint{font-size:.8125rem;color:var(--text-muted);background:var(--bg-subtle);border-radius:var(--radius-md);padding:.5rem .6rem}
+.overflow-note{font-size:.75rem;color:var(--text-muted);margin-top:.4rem;min-height:1em}
+.statusbar{background:var(--bg-surface);border-top:1px solid var(--border-subtle);padding:0 .8rem;display:flex;align-items:center;gap:1rem;font-size:.75rem;color:var(--text-secondary)}
+.statusbar b{font-family:var(--font-mono);color:var(--text-primary);font-weight:600}
+.statusbar .right{margin-left:auto;display:flex;gap:.4rem;align-items:center}
+#live-chip{border:0;background:none;padding:.2rem .3rem;min-width:0;color:var(--text-secondary)} #live-chip:hover{background:none;color:var(--text-primary)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--text-muted);display:inline-block;margin-right:.35rem}
+.live-dot.on{background:var(--intent-success);animation:pulse 2s infinite} .live-dot.warn{background:var(--intent-warning)} @keyframes pulse{50%{opacity:.35}}
+#stream-btn[aria-pressed="true"]{background:var(--intent-success-soft);color:var(--intent-success);border-color:var(--intent-success)}
+.palette{position:fixed;inset:0;display:none;align-items:flex-start;justify-content:center;padding-top:14vh;z-index:10}
+.palette.open{display:flex}
+/* The single elevated shadow in this file, reserved for the palette overlay; everything else is hairline + tonal shift. */
+.palette-box{width:560px;max-width:92vw;background:var(--bg-elevated);border:1px solid var(--text-muted);border-radius:var(--radius-lg);box-shadow:0 18px 48px var(--border-strong);overflow:hidden}
+.palette-box input{width:100%;border:0;border-bottom:1px solid var(--border-subtle);background:var(--bg-elevated);color:var(--text-primary);padding:.7rem .9rem;font:.875rem var(--font-sans)} .palette-box input:focus-visible{outline:2px solid var(--intent-info);outline-offset:-2px}
+.palette-list{max-height:320px;overflow-y:auto;padding:.3rem}
+.palette-list button{display:flex;width:100%;gap:.6rem;align-items:baseline;border:0;border-radius:var(--radius-sm);padding:.45rem .6rem;text-align:left;background:none}
+.palette-list button.active,.palette-list button:hover{background:var(--intent-primary-soft)}
+.palette-list .kind{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);min-width:52px} /* secondary keeps >=4.5:1 on elevated and primary-soft rows in both themes */
+.palette-list .lab{font-size:.8125rem;color:var(--text-primary)} .palette-list .ext{margin-left:auto;font-size:.75rem;font-family:var(--font-mono);color:var(--text-secondary)}
+::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:4px}
+@media (prefers-reduced-motion: reduce){.live-dot.on{animation:none}.node.flash rect{transition:none}}
+/* Reflow (WCAG 1.4.10): below 900px the fixed 252/1fr/340 deck stacks and the page scrolls vertically; no content is lost at 320px or 200% zoom. */
+@media (max-width:900px){html,body{overflow:auto;height:auto}.app{display:block;height:auto;min-height:100%}.deck{display:block}.dock{overflow-y:visible;border:0;border-top:1px solid var(--border-subtle)}.canvas-wrap{height:64vw;min-height:340px}.canvas-bar{flex-wrap:wrap}.statusbar{flex-wrap:wrap;height:auto;min-height:34px}}
+</style>
+</head>
+<body>
+<div class="app"><h1 class="sr-only">eg Graph Canvas dashboard</h1>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">eg</span>
+      <div><strong>Graph Canvas</strong><small>Spatial code graph · impact inference</small></div>
+    </div>
+    <div class="chips" id="kpi-chips"></div>
+    <div class="top-actions">
+      <button id="palette-btn" title="Jump to symbol, repo, tool or note">Ctrl K</button>
+      <button id="theme-btn">Theme</button>
+    </div>
+  </header>
+  <main class="deck">
+    <aside class="dock dock-left">
+      <details class="sec" open><summary class="sec-title">Agents</summary>
+        <div id="agent-list"></div><div class="filter-row" id="agent-filter" role="group" aria-label="Filter journal by agent"></div>
+      </details>
+      <details class="sec" open><summary class="sec-title">Anti-reinvention — /api/reuse</summary><div id="sec-reuse"></div></details>
+      <details class="sec" open><summary class="sec-title">Memory health — /api/memories</summary><div id="sec-memory"></div></details>
+    </aside>
+    <section class="canvas-wrap" aria-label="Code graph canvas">
+      <svg id="graph" role="application" tabindex="0" aria-label="Spatial code graph: repo, module and symbol nodes. Arrow keys pan; plus and minus zoom; F fits.">
+        <defs><pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1.3" cy="1.3" r="1.3" fill="var(--border-subtle)"/></pattern></defs>
+        <g id="world" role="group" aria-label="Node map: repo, module and symbol nodes joined by containment edges and one candidate edge; the full adjacency list follows this canvas."><rect x="-2000" y="-1500" width="5200" height="3600" fill="url(#dots)"></rect></g>
+      </svg>
+      <div class="canvas-bar">
+        <div class="crumb" id="crumb">workspace / <b>app</b></div>
+        <div class="canvas-tools">
+          <button id="ly-cand" aria-pressed="true">Candidates</button><button id="ly-mem" aria-pressed="true">Memory</button>
+          <button id="z-out" aria-label="Zoom out">-</button><span id="zoom-label">100%</span><button id="z-in" aria-label="Zoom in">+</button><button id="z-fit">Fit</button>
+        </div>
+      </div>
+      <div class="legend" title="Module nodes and containment edges are structural demo. Without a symbol-inventory endpoint the canvas degrades to repo nodes, candidate pairs and memory anchors."><i class="lg-repo"></i>repo · <i class="lg-mod"></i>module (structural demo) · <i class="lg-sym"></i>symbol · <i class="lg-cand"></i>candidate edge · <i class="lg-anchor ok"></i>valid · <i class="lg-anchor"></i>modified · <i class="lg-anchor bad"></i>broken</div>
+    </section>
+    <aside class="dock dock-right" aria-label="Inspector">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="selection" aria-selected="true">Selection</button><button role="tab" data-tab="impact" aria-selected="false">Impact</button>
+        <button role="tab" data-tab="memory" aria-selected="false">Memory</button><button role="tab" data-tab="live" aria-selected="false">Live</button>
+      </div>
+      <div class="panel active" id="p-selection" role="tabpanel"></div>
+      <div class="panel" id="p-impact" role="tabpanel"></div>
+      <div class="panel" id="p-memory" role="tabpanel"></div>
+      <div class="panel" id="p-live" role="tabpanel">
+        <div class="filter-row" id="live-filters">
+          <button class="chip" data-fstatus="all" aria-pressed="true">All</button><button class="chip" data-fstatus="ok" aria-pressed="false">Ok</button><button class="chip" data-fstatus="err" aria-pressed="false">Errors</button>
+          <input id="live-search" class="search" type="text" placeholder="filter tool / agent / args" aria-label="Filter journal">
+        </div>
+        <div class="feed" id="live-rows"></div>
+        <p class="overflow-note mono" id="live-overflow"></p>
+      </div>
+    </aside>
+  </main>
+  <footer class="statusbar">
+    <span>Journal <b id="sb-count">8</b>/50</span>
+    <span>Data age <b id="sb-age">—</b></span>
+    <span class="right"><button id="live-chip" title="EventSource readyState mapping: open=streaming, connecting=reconnecting, closed=offline. Demo starts idle."></button><button id="stream-btn" aria-pressed="false">Demo stream</button></span>
+  </footer>
+</div>
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palette-box">
+    <input id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Jump to symbol, module, repo, tool or memory note" aria-label="Search">
+    <div class="palette-list" id="palette-list" role="listbox" aria-label="Matching jump targets"></div><p class="hint" id="palette-empty" hidden>No match for the current query.</p>
+  </div>
+</div>
+<div class="sr-only" aria-live="polite" id="announce"></div><ul class="sr-only" id="edge-list" aria-label="Canvas adjacency: source -> target"></ul>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+/* ---- Bound data: field names exactly as served by /api/summary, /api/reuse, /api/memories, POST /api/memory/touch
+   (see src/dashboard/server.rs:219,232,251,409). graph_calls 906 and generated_at are real /api/summary fields. ---- */
+const SUMMARY = { generated_at:1794645800.2, total_calls:1284, reliability_pct:99.3, p50_ms:0.8, graph_p50_ms:0.7, graph_calls:906, saved_tokens:412000, graph_saved_tokens:305000, session_count:18, session_recall_pct:66.7, tool_aggs:{ callers:{ calls:210, p50:0.6 } }, agent_aggs:{ zcode:{ calls:846, errors:6, reliability_pct:99.3 }, claude:{ calls:438, errors:3, reliability_pct:99.3 } } };
+const REPO = { path:'/ws/app', display:'app', calls:640, graph_calls:512, errors:2, reliability_pct:99.7, graph_reliability_pct:99.8, saved_tokens:204000, reuse_calls:96, search_hit_rate_pct:92, last_reuse_scan:{ result_count:21, limit_capped:false } };
+const REUSE = { total_candidates:38, preventable_loc:1240, preventable_loc_estimated:true, prewrite_count:112, avg_callers:6.4, detector_counts:{ D1:14, D1L:5 }, repo_candidate_pools:{ '/ws/app':21 }, resolved_twins:{ resolved:3, surfaced:6 } };
+const CAND = { id:'app:parse_token->normalize_token', detector:'D1', symbol:'parse_token', canonical:'normalize_token', canonical_callers:14, canonical_file:'src/tokens.rs', canonical_line:88, overlap_pct:83, confidence:'high', loc_saving:22, candidate_info:{ file:'src/legacy.rs', line_start:120, loc:22 }, canonical_info:{ file:'src/tokens.rs', line_start:88, loc:17 }, reasons:['shared trim-then-branch control flow','identical sign/word token split'], prevention_narrative:'Route parsing through normalize_token and delete the 22-loc duplicate.', candidate_snippet:'pub fn parse_token(input: &str) -> Option<Token> {\n    let t = input.trim();\n    if t.is_empty() { return None; }\n    match &t[..1] {\n        "+" | "-" => Some(Token::sign(t)),\n        _ => Some(Token::word(t)),\n    }\n}', canonical_snippet:'pub fn normalize_token(raw: &str) -> Token {\n    let v = raw.trim();\n    if v.is_empty() { return Token::empty(); }\n    match v.as_bytes()[0] {\n        b\'+\' | b\'-\' => Token::signed(v),\n        _ => Token::word(v),\n    }\n}' };
+/* Multi-note store: sample note 42 plus demo notes for broken and valid states (real /api/memories note shape). */
+const NOTES = [
+  { id:42, store:'engram', store_id:'/ws/app/.engram/memory.db', key:'allowlist-refs', rev:3, kind:'gotcha', body:'Ref freshness must branch on index resolution.', ref_status:'modified', recall_count:4, created_at:1794630000, anchored_at:1794635000, is_current:true, resolved_refs:[{ ref:'src/query/reuse.rs', status:'modified', type:'file', location:'src/query/reuse.rs' }] },
+  { id:57, store:'engram', store_id:'/ws/app/.engram/memory.db', key:'impact-cache-window', rev:2, kind:'gotcha', body:'Impact depth cache must key on graph revision, not wall clock.', ref_status:'broken', recall_count:2, created_at:1794625000, anchored_at:1794626000, is_current:true, resolved_refs:[{ ref:'src/query/impact.rs', status:'broken', type:'file', location:'src/query/impact.rs' }] },
+  { id:51, store:'engram', store_id:'/ws/app/.engram/memory.db', key:'walk-ignorelist', rev:1, kind:'convention', body:'Skip vendored trees before walking; keep ignore rules in one place.', ref_status:'valid', recall_count:7, created_at:1794610000, anchored_at:1794612000, is_current:true, resolved_refs:[{ ref:'src/tokens.rs', status:'valid', type:'file', location:'src/tokens.rs' }] }
+];
+/* Journal entries: same shape as graph_recent_queries[0] and SSE /events messages. */
+let JOURNAL = [
+  { ts:1794645800, tool:'callers', repo_name:'app', agent:'zcode', exit_code:0, shown:7, latency_us:640, args:{ name:'read_bounded' } },
+  { ts:1794645662, tool:'search', repo_name:'app', agent:'claude', exit_code:0, shown:12, latency_us:890, args:{ terms:'token normalize' } },
+  { ts:1794645521, tool:'reuse', repo_name:'app', agent:'zcode', exit_code:0, shown:21, latency_us:1450, args:{ path:'src/legacy.rs' } },
+  { ts:1794645410, tool:'callees', repo_name:'app', agent:'zcode', exit_code:1, shown:0, latency_us:512, args:{ name:'parse_token' } },
+  { ts:1794645332, tool:'context', repo_name:'app', agent:'claude', exit_code:0, shown:5, latency_us:730, args:{ name:'normalize_token' } },
+  { ts:1794645201, tool:'impact', repo_name:'app', agent:'zcode', exit_code:0, shown:9, latency_us:604, args:{ name:'normalize_token' } },
+  { ts:1794645140, tool:'symbols', repo_name:'app', agent:'zcode', exit_code:0, shown:24, latency_us:388, args:{ query:'token' } },
+  { ts:1794645011, tool:'imports', repo_name:'app', agent:'claude', exit_code:0, shown:3, latency_us:299, args:{ path:'src/tokens.rs' } }
+];
+/* Canvas topology. Repo/symbol layers carry bound fields; module layer is structural grouping (disclosed in legend title). */
+const NODES = [
+  { id:'repo-app', kind:'repo', label:'app', sub:'/ws/app', x:64, y:364, w:184, h:72 },
+  { id:'mod-tokens', kind:'module', label:'tokens.rs', sub:'src/tokens.rs', x:392, y:72, w:188, h:58 },
+  { id:'mod-legacy', kind:'module', label:'legacy.rs', sub:'src/legacy.rs', x:392, y:252, w:188, h:58 },
+  { id:'mod-reuse', kind:'module', label:'query/reuse.rs', sub:'src/query/reuse.rs', x:392, y:432, w:188, h:58 },
+  { id:'mod-impact', kind:'module', label:'query/impact.rs', sub:'src/query/impact.rs', x:392, y:560, w:188, h:58 },
+  { id:'mod-service', kind:'module', label:'service.rs', sub:'src/service.rs', x:392, y:672, w:188, h:58, dim:true },
+  { id:'sym-normalize', kind:'symbol', label:'normalize_token', sub:'canonical · D1 target', x:672, y:56, w:244, h:92 },
+  { id:'sym-parse', kind:'symbol', label:'parse_token', sub:'D1 candidate · src/legacy.rs:120', x:672, y:236, w:244, h:92 },
+  { id:'sym-read', kind:'symbol', label:'read_bounded', sub:'last query · shown 7', x:672, y:416, w:244, h:92 }
+];
+const EDGES = [
+  { from:'repo-app', to:'mod-tokens' }, { from:'repo-app', to:'mod-legacy' }, { from:'repo-app', to:'mod-reuse' },
+  { from:'repo-app', to:'mod-impact' }, { from:'repo-app', to:'mod-service' }, { from:'mod-tokens', to:'sym-normalize' },
+  { from:'mod-legacy', to:'sym-parse' }, { from:'mod-reuse', to:'sym-read' },
+  { from:'sym-parse', to:'sym-normalize', kind:'cand', label:'overlap 83%' }
+];
+const state = { agent:'all', fStatus:'all', fSearch:'', sel:null, det:null, layers:{ cand:true, mem:true }, stream:null, live:'idle', verified:{}, noteId:(NOTES.find(n => n.ref_status !== 'valid') || NOTES[0]).id, paletteIdx:0, generatedAt:SUMMARY.generated_at, lastRefresh:0 };
+const svg = $('#graph'), world = $('#world');
+const nodeById = id => NODES.find(n => n.id === id);
+
+/* ---- Helpers ---- */
+const fmtInt = n => n == null ? '—' : n.toLocaleString('en-US');
+const fmtTime = ts => new Date(ts * 1000).toTimeString().slice(0, 8);
+const fmtAge = s => { const d = Math.max(0, Date.now() / 1000 - s); if (d < 60) return Math.round(d) + 's'; if (d < 3600) return Math.round(d / 60) + 'm'; if (d < 86400) return Math.round(d / 3600) + 'h'; return Math.round(d / 86400) + 'd'; };
+const bar = (pct, cls) => '<div class="track"><div class="fill ' + (cls || '') + '" style="width:' + pct + '%"></div></div>';
+const kv = (k, v) => '<dt>' + k + '</dt><dd>' + v + '</dd>';
+const exitTag = c => c === 0 ? '<span class="tag-ok">exit 0 ok</span>' : '<span class="tag-warn">exit ' + c + (c === 1 ? ' empty' : '') + '</span>';
+const say = t => { $('#announce').textContent = t; };
+function filtered() {
+  return JOURNAL.filter(e => (state.agent === 'all' || e.agent === state.agent) && (state.fStatus === 'all' || (state.fStatus === 'ok') === (e.exit_code === 0)) && (!state.fSearch || (e.tool + ' ' + e.agent + ' ' + e.repo_name + ' ' + JSON.stringify(e.args)).toLowerCase().includes(state.fSearch)));
+}
+function nodeForEntry(e) {
+  const a = e.args || {}, q = a.name || a.query || a.terms;
+  if (q) { const s = NODES.find(n => n.kind === 'symbol' && n.label === q); if (s) return s; }
+  if (a.path) { const m = NODES.find(n => n.kind === 'module' && n.sub === a.path); if (m) return m; }
+  return null;
+}
+
+/* ---- Topbar KPI: exactly 4 numbers, one distinct signal each. Per-repo detail lives only in the repo selection panel. ---- */
+$('#kpi-chips').innerHTML = '<div class="chip"><b>Calls</b><span>' + fmtInt(SUMMARY.total_calls) + '</span><small>graph ' + fmtInt(SUMMARY.graph_calls) + '</small></div><div class="chip"><b>Reliability</b><span>' + SUMMARY.reliability_pct + '%</span></div><div class="chip"><b>p50</b><span>' + SUMMARY.p50_ms + ' ms</span><small>graph ' + SUMMARY.graph_p50_ms + '</small></div><div class="chip"><b>Tokens saved</b><span>' + fmtInt(SUMMARY.saved_tokens) + '</span><small>graph ' + fmtInt(SUMMARY.graph_saved_tokens) + '</small></div>';
+function ageTick() { const a = $('#sb-age'); if (a) a.textContent = fmtAge(state.generatedAt); }
+
+/* ---- Left dock: Agents / Anti-reinvention / Memory health (repo stats live in the repo selection panel) ---- */
+function agentCounts() { const m = {}; JOURNAL.forEach(e => { m[e.agent] = (m[e.agent] || 0) + 1; }); return m; }
+function renderAgents() {
+  const win = agentCounts(), act = document.activeElement, ag = $('#agent-filter').contains(act) && act.dataset ? act.dataset.agent : null;
+  $('#agent-list').innerHTML = Object.keys(SUMMARY.agent_aggs).map(a => { const g = SUMMARY.agent_aggs[a]; return '<div class="mrow"><span>' + esc(a) + ' (agent_aggs)</span><b>' + fmtInt(g.calls) + ' calls · ' + fmtInt(g.errors) + ' err · ' + g.reliability_pct + '%</b></div><div class="mrow"><span>in retained window</span><b>' + (win[a] || 0) + ' entries</b></div>'; }).join('');
+  $('#agent-filter').innerHTML = '<button data-agent="all" aria-pressed="' + (state.agent === 'all') + '">All agents</button>' + Object.keys(SUMMARY.agent_aggs).map(a => '<button data-agent="' + esc(a) + '" aria-pressed="' + (state.agent === a) + '">' + esc(a) + '</button>').join('');
+  if (ag) { const b = $('#agent-filter [data-agent="' + ag + '"]'); if (b) b.focus(); } }
+function renderReuseSec() {
+  $('#sec-reuse').innerHTML = '<div class="mrow"><span>total_candidates</span><b>' + REUSE.total_candidates + '</b></div><div class="mrow"><span>pool /ws/app · last scan (cap 25)</span><b>' + REUSE.repo_candidate_pools['/ws/app'] + ' · capped ' + String(REPO.last_reuse_scan.limit_capped) + '</b></div><div class="mrow"><span>preventable_loc</span><b>' + fmtInt(REUSE.preventable_loc) + (REUSE.preventable_loc_estimated ? ' · est' : '') + '</b></div><div class="mrow"><span>prewrite_count</span><b>' + fmtInt(REUSE.prewrite_count) + '</b></div><div class="mrow"><span>avg_callers</span><b>' + REUSE.avg_callers + '</b></div><div class="mrow"><span>resolved_twins</span><b>' + REUSE.resolved_twins.resolved + ' / ' + REUSE.resolved_twins.surfaced + ' surfaced</b></div><div class="filter-row" id="detectors" role="group" aria-label="Filter candidate layer by detector"></div>';
+  /* Only detectors with a real sample count are controls; the rest stay plain text. */
+  $('#detectors').innerHTML = ['D1', 'D1L'].map(d => '<button class="chip" data-det="' + d + '" aria-pressed="false" title="' + REUSE.detector_counts[d] + ' candidates">' + d + ' ' + REUSE.detector_counts[d] + '</button>').join('') + '<span class="det-none">D2 · D3 · D4 · D5 · DT — no sample count</span>';
+}
+function pillFor(n) {
+  const v = state.verified[n.id];
+  if (v === 'resolved') return '<span class="chip ok">valid (demo refetch)</span>';
+  if (v === 'touched') return '<span class="chip info">anchored</span>';
+  if (n.ref_status === 'broken') return '<span class="chip bad">broken</span>';
+  if (n.ref_status === 'modified') return '<span class="chip warn">modified</span>';
+  return '<span class="chip ok">valid</span>';
+}
+function renderMemorySec() {
+  const c = { broken: 0, modified: 0, valid: 0 };
+  NOTES.forEach(n => { c[n.ref_status] = (c[n.ref_status] || 0) + 1; });
+  const head = c.broken + c.modified === 0 ? '<span class="chip ok">all anchors held</span>' : '<span class="chip bad">' + c.broken + ' broken</span> <span class="chip warn">' + c.modified + ' modified</span>';
+  $('#sec-memory').innerHTML = '<div class="mrow"><span>notes</span><b>' + NOTES.length + '</b></div><div class="mrow"><span>sessions / session_recall_pct</span><b>' + SUMMARY.session_count + ' · ' + SUMMARY.session_recall_pct + '%</b></div><div class="mrow"><span>action needed</span>' + head + '</div>' + bar(SUMMARY.session_recall_pct, 'ok') + '<button class="ghost" id="goto-memory">Open memory dossier</button>';
+}
+
+/* ---- Canvas build ---- */
+const NS = 'http://www.w3.org/2000/svg';
+function el(name, attrs) { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function buildGraph() {
+  EDGES.forEach(e => {
+    const a = nodeById(e.from), b = nodeById(e.to);
+    const d = e.kind === 'cand' ? 'M' + (a.x + a.w / 2) + ' ' + a.y + ' L' + (b.x + b.w / 2) + ' ' + (b.y + b.h) : 'M' + (a.x + a.w) + ' ' + (a.y + a.h / 2) + ' L' + b.x + ' ' + (b.y + b.h / 2);
+    const ln = el('path', { d: d, class: 'edge' + (e.kind === 'cand' ? ' cand' : '') });
+    ln.appendChild(el('title')).textContent = a.label + ' -> ' + b.label + (e.kind === 'cand' ? ' (' + (e.detector || CAND.detector) + ' candidate)' : ' contains');
+    if (e.kind === 'cand') { ln.dataset.cand = '1'; ln.dataset.det = e.detector || CAND.detector; }
+    world.appendChild(ln);
+    if (e.label) { const t = el('text', { x: (a.x + a.w / 2) + 10, y: (a.y + b.y + b.h) / 2, class: 'edge-label' }); t.textContent = e.label; t.dataset.cand = '1'; t.dataset.det = CAND.detector; world.appendChild(t); }
+  });
+  NODES.forEach(n => {
+    const g = el('g', { class: 'node ' + n.kind + (n.dim ? ' dim' : ''), tabindex: '0', role: 'button', 'aria-pressed': 'false', 'aria-label': n.kind + ' ' + n.label + ', ' + n.sub });
+    g.dataset.id = n.id;
+    const yl = n.kind === 'repo' ? 28 : 24, ys = n.kind === 'repo' ? 46 : 42;
+    g.innerHTML = '<rect x="' + n.x + '" y="' + n.y + '" width="' + n.w + '" height="' + n.h + '" rx="8"/><text class="lbl" x="' + (n.x + 14) + '" y="' + (n.y + yl) + '">' + esc(n.label) + '</text><text class="sub" x="' + (n.x + 14) + '" y="' + (n.y + ys) + '">' + esc(n.sub) + '</text>';
+    g.addEventListener('click', ev => { ev.stopPropagation(); select(n.id); });
+    g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(n.id); } });
+    world.appendChild(g);
+    n.notes = NOTES.filter(nt => nt.resolved_refs.some(r => r.location === n.sub));
+    if (n.notes.length) {
+      const rank = { broken: 3, modified: 2, valid: 1 };
+      const worst = n.notes.reduce((w, nt) => rank[nt.ref_status] > rank[w] ? nt.ref_status : w, 'valid');
+      const cx = n.x + n.w - 8, cy = n.y + 8;
+      /* 24px transparent hit circle gives the small anchor dot a compliant target + keyboard path. */
+      const ag = el('g', { class: 'anchor-g' + (state.layers.mem ? '' : ' hid'), tabindex: '0', role: 'button', 'aria-label': 'memory anchor ' + worst + ' on ' + n.label });
+      ag.dataset.note = n.notes[0].id; ag.dataset.node = n.id;
+      ag.innerHTML = '<circle cx="' + cx + '" cy="' + cy + '" r="12" class="anchor-hit"/><circle cx="' + cx + '" cy="' + cy + '" r="7" class="anchor' + (worst === 'valid' ? ' ok' : worst === 'broken' ? ' bad' : '') + '"/>' + (worst === 'broken' ? '<line x1="' + (cx - 4) + '" y1="' + (cy + 4) + '" x2="' + (cx + 4) + '" y2="' + (cy - 4) + '" class="anchor-slash"/>' : '') + '<title>' + esc('notes: ' + n.notes.map(nt => nt.key + ' · ' + nt.ref_status).join('; ')) + '</title>';
+      const open = () => { state.noteId = n.notes[0].id; setTab('memory'); };
+      ag.addEventListener('click', ev => { ev.stopPropagation(); open(); });
+      ag.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); } });
+      world.appendChild(ag);
+    }
+  });
+  $('#edge-list').innerHTML = EDGES.map(e2 => '<li>' + esc(nodeById(e2.from).label + ' -> ' + nodeById(e2.to).label + (e2.kind === 'cand' ? ' (D1 candidate)' : ' contains')) + '</li>').join('');
+}
+function ping(n) {
+  if (typeof requestAnimationFrame !== 'function' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const c = el('circle', { cx: n.x + n.w / 2, cy: n.y + n.h / 2, r: 10, class: 'ping', opacity: '0.8' });
+  world.appendChild(c);
+  const t0 = performance.now();
+  const step = t => { const p = (t - t0) / 800; if (p >= 1) { c.remove(); return; } c.setAttribute('r', String(10 + 26 * p)); c.setAttribute('opacity', String(0.8 * (1 - p))); requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+function flashNode(id) { const g = world.querySelector('.node[data-id="' + id + '"]'); if (!g) return; g.classList.add('flash'); setTimeout(() => g.classList.remove('flash'), 900); }
+function centerNode(n) { view.k = Math.max(view.k, 0.75); view.x = svg.clientWidth / 2 - (n.x + n.w / 2) * view.k; view.y = svg.clientHeight / 2 - (n.y + n.h / 2) * view.k; applyView(); flashNode(n.id); ping(n); }
+
+/* ---- Pan, zoom, fit; wheel + drag + keyboard paths (arrows pan, +/- zoom, F fit) ---- */
+let view = { k: 1, x: 0, y: 0 };
+function bbox(pad) {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  NODES.forEach(n => { x1 = Math.min(x1, n.x); y1 = Math.min(y1, n.y); x2 = Math.max(x2, n.x + n.w); y2 = Math.max(y2, n.y + n.h); });
+  return { x: x1 - pad, y: y1 - pad, w: (x2 + 70 - x1) + 2 * pad, h: (y2 - y1) + 2 * pad };
+}
+function applyView() { world.setAttribute('transform', 'translate(' + view.x + ' ' + view.y + ') scale(' + view.k + ')'); $('#zoom-label').textContent = Math.round(view.k * 100) + '%'; world.querySelectorAll('.node .sub').forEach(t => t.classList.toggle('hid', view.k < 0.92)); world.querySelectorAll('.anchor-hit').forEach(c => c.setAttribute('r', String(Math.max(7, 12 / view.k)))); }
+function fitView() {
+  const bb = bbox(46);
+  const k = Math.max(0.75, Math.min((svg.clientWidth - 16) / bb.w, (svg.clientHeight - 16) / bb.h, 1.35));
+  view.k = k; view.x = (svg.clientWidth - bb.w * k) / 2 - bb.x * k; view.y = (svg.clientHeight - bb.h * k) / 2 - bb.y * k;
+  applyView();
+}
+function zoomAt(cx, cy, factor) { const k2 = Math.min(3, Math.max(0.75, view.k * factor)); view.x = cx - (cx - view.x) * (k2 / view.k); view.y = cy - (cy - view.y) * (k2 / view.k); view.k = k2; applyView(); }
+svg.addEventListener('wheel', ev => { ev.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.12 : 0.9); }, { passive: false });
+let pan = null;
+svg.addEventListener('pointerdown', ev => { if (ev.target.closest('.node') || ev.target.closest('.anchor-g')) return; pan = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y }; svg.classList.add('panning'); svg.setPointerCapture(ev.pointerId); });
+svg.addEventListener('pointermove', ev => { if (!pan) return; view.x = pan.vx + ev.clientX - pan.x; view.y = pan.vy + ev.clientY - pan.y; applyView(); });
+svg.addEventListener('pointerup', () => { pan = null; svg.classList.remove('panning'); });
+$('#z-in').addEventListener('click', () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25));
+$('#z-out').addEventListener('click', () => zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8));
+$('#z-fit').addEventListener('click', fitView);
+svg.addEventListener('keydown', ev => {
+  if (ev.target.closest('.node') || ev.target.closest('.anchor-g')) return;
+  const step = 48;
+  if (ev.key === 'ArrowLeft') view.x += step;
+  else if (ev.key === 'ArrowRight') view.x -= step;
+  else if (ev.key === 'ArrowUp') view.y += step;
+  else if (ev.key === 'ArrowDown') view.y -= step;
+  else if (ev.key === '+' || ev.key === '=') { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25); return; }
+  else if (ev.key === '-') { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8); return; }
+  else if (ev.key.toLowerCase() === 'f') { fitView(); return; }
+  else return;
+  ev.preventDefault(); applyView();
+});
+if (typeof window !== 'undefined') window.addEventListener('resize', fitView);
+
+/* ---- Selection & inspector: Selection tab = identity + routing; records live in their single home tab ---- */
+const TRAIL = { 'repo-app': ['repo-app'], 'mod-tokens': ['repo-app', 'mod-tokens'], 'mod-legacy': ['repo-app', 'mod-legacy'], 'mod-reuse': ['repo-app', 'mod-reuse'], 'mod-impact': ['repo-app', 'mod-impact'], 'mod-service': ['repo-app', 'mod-service'], 'sym-normalize': ['repo-app', 'mod-tokens', 'sym-normalize'], 'sym-parse': ['repo-app', 'mod-legacy', 'sym-parse'], 'sym-read': ['repo-app', 'mod-reuse', 'sym-read'] };
+function renderCrumb(id) { const ids = TRAIL[id] || ['repo-app']; $('#crumb').innerHTML = 'workspace / ' + ids.map((nid, i) => i === ids.length - 1 ? '<b>' + esc(nodeById(nid).label) + '</b>' : '<button class="crumb-btn" data-node="' + nid + '">' + esc(nodeById(nid).label) + '</button>').join(' / '); } $('#crumb').addEventListener('click', ev => { const b = ev.target.closest('.crumb-btn'); if (!b) return; select(b.dataset.node); centerNode(nodeById(b.dataset.node)); });
+function select(id) {
+  state.sel = id;
+  world.querySelectorAll('.node').forEach(g => { const on = g.dataset.id === id; g.classList.toggle('selected', on); g.setAttribute('aria-pressed', String(on)); });
+  renderCrumb(id);
+  renderSelection(nodeById(id)); setTab('selection'); say('Selected ' + nodeById(id).kind + ' ' + nodeById(id).label);
+}
+function renderSelection(n) {
+  const p = $('#p-selection');
+  if (n.kind === 'repo') {
+    p.innerHTML = '<h2>' + esc(REPO.display) + '</h2><div class="path">' + esc(REPO.path) + '</div><dl class="kv">' + kv('calls', fmtInt(REPO.calls)) + kv('graph_calls', fmtInt(REPO.graph_calls)) + kv('errors', REPO.errors) + kv('reliability_pct', REPO.reliability_pct + '%') + kv('graph_reliability_pct', REPO.graph_reliability_pct + '%') + kv('saved_tokens', fmtInt(REPO.saved_tokens)) + kv('reuse_calls', fmtInt(REPO.reuse_calls)) + kv('search_hit_rate_pct', REPO.search_hit_rate_pct + '%') + '</dl>' + bar(REPO.search_hit_rate_pct) + '<p class="hint mt">Worktree sub-rows of repo_aggs render as expandable children of this node; this sample journal carries none.</p>';
+  } else if (n.kind === 'module') {
+    const mnotes = n.notes || [];
+    p.innerHTML = '<h2>' + esc(n.label) + '</h2><div class="path">' + esc(n.sub) + '</div>' + (n.dim ? '<p class="hint">No journal activity in the retained window for this module.</p>' : '<p class="hint">Module layer is structural demo (dashed): no payload carries a module field. Symbols carry the bound data.</p>') + (mnotes.length ? mnotes.map(nt => '<button class="note-row" data-note="' + nt.id + '"><span>note ' + nt.id + ' · ' + esc(nt.key) + '</span>' + pillFor(nt) + '</button>').join('') : '');
+  } else if (n.id === 'sym-parse') {
+    p.innerHTML = '<h2>' + esc(CAND.symbol) + '</h2><div class="path">' + esc(CAND.candidate_info.file) + ':' + CAND.candidate_info.line_start + '</div><p class="hint">Candidate of detector ' + CAND.detector + '. The full record, reasons and snippets live in the Impact tab.</p><button class="ghost mt" id="open-impact">Open dossier in Impact</button>';
+  } else if (n.id === 'sym-normalize') {
+    p.innerHTML = '<h2>' + esc(CAND.canonical) + '</h2><div class="path">' + esc(CAND.canonical_file) + ':' + CAND.canonical_line + '</div><dl class="kv">' + kv('canonical_callers', CAND.canonical_callers) + kv('canonical_info.loc', CAND.canonical_info.loc) + '</dl><p class="hint mt">Target of candidate <code>' + esc(CAND.id) + '</code> (' + CAND.detector + ').</p>';
+  } else {
+    const e = JOURNAL.find(x => x.tool === 'callers' && x.args && x.args.name === 'read_bounded') || JOURNAL[0];
+    p.innerHTML = '<h2>read_bounded</h2><div class="path">last invocation from journal</div><dl class="kv">' + kv('tool', esc(e.tool)) + kv('agent', esc(e.agent)) + kv('exit_code', e.exit_code) + kv('shown', e.shown) + kv('latency_us', fmtInt(e.latency_us) + ' µs') + kv('ts', fmtTime(e.ts)) + '</dl><p class="hint mt">The API exposes journal touches per symbol; a static symbol inventory needs a new endpoint, which this mockup does not invent.</p>';
+  }
+}
+/* Impact follows the selection; no selection falls back to the repo overview. */
+function renderImpact() {
+  const p = $('#p-impact'), n = state.sel ? nodeById(state.sel) : null;
+  if (!n || n.kind !== 'symbol') { const scope = n || nodeById('repo-app'), kids = !n || n.kind === 'repo' ? NODES.filter(x => x.kind === 'symbol') : EDGES.map(e2 => e2.from === scope.id ? nodeById(e2.to) : null).filter(x => x && x.kind === 'symbol'), calls = n && n.kind === 'module' ? JOURNAL.filter(e2 => e2.args && e2.args.path === scope.sub).length : REPO.calls; p.innerHTML = '<h2>Impact · ' + esc(scope.label) + '</h2><div class="path">' + esc(scope.sub) + '</div><dl class="kv">' + kv('calls', fmtInt(calls)) + kv('saved_tokens', n && n.kind === 'module' ? '—' : fmtInt(REPO.saved_tokens)) + kv('symbols', kids.length) + '</dl><ul class="reasons-list">' + kids.map(k2 => '<li>' + esc(k2.label) + ' — ' + esc(k2.sub) + '</li>').join('') + '</ul>' + (n ? '' : '<p class="hint mt">Repo overview — select a module or symbol to scope impact.</p>'); return; }
+  if (n.id === 'sym-parse') { p.innerHTML = '<h2>Duplicate candidate</h2><div class="path">' + esc(CAND.id) + '</div><dl class="kv">' + kv('detector', CAND.detector) + kv('overlap_pct', CAND.overlap_pct + '%') + kv('confidence', CAND.confidence) + kv('loc_saving', CAND.loc_saving) + '</dl><ul class="reasons-list">' + CAND.reasons.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul><div class="note-body">' + esc(CAND.prevention_narrative) + '</div><div class="snips"><div class="snip can"><h5>candidate_snippet · ' + esc(CAND.candidate_info.file) + ':' + CAND.candidate_info.line_start + ' · ' + CAND.candidate_info.loc + ' loc</h5><pre>' + esc(CAND.candidate_snippet) + '</pre></div><div class="snip ref"><h5>canonical_snippet · ' + esc(CAND.canonical_info.file) + ':' + CAND.canonical_info.line_start + ' · ' + CAND.canonical_info.loc + ' loc</h5><pre>' + esc(CAND.canonical_snippet) + '</pre></div></div>'; return; }
+  p.innerHTML = '<h2>Impact · ' + esc(n.label) + '</h2><div class="path">' + esc(n.sub) + '</div>' + (n.id === 'sym-normalize' ? '<dl class="kv">' + kv('affected_candidate', esc(CAND.id)) + '</dl><p class="hint mt">Canonical target of the D1 candidate; caller count lives in the Selection tab.</p>' : '<p class="hint mt">No impact inference for this symbol in the sample payload; journal touches live in the Selection tab.</p>');
+}
+function touchResp(n) { return { ok: true, key: n.key, store: n.store, store_id: n.store_id, rev: n.rev, anchored_at: Math.floor(Date.now() / 1000) }; }
+function resolveDot(n) {
+  const node = NODES.find(nd => nd.sub === (n.resolved_refs[0] || {}).location);
+  const dot = world.querySelector('.anchor-g[data-note="' + n.id + '"]');
+  if (node) node.notes.filter(nt => nt.id === n.id).forEach(nt => { nt.ref_status = 'valid'; });
+  if (dot) { const a = dot.querySelector('.anchor'); a.classList.remove('bad'); a.classList.add('ok'); const sx = dot.querySelector('.anchor-slash'); if (sx) sx.remove(); const nd = nodeById(dot.dataset.node); dot.setAttribute('aria-label', 'memory anchor valid on ' + nd.label); dot.querySelector('title').textContent = 'notes: ' + (node || nd).notes.filter(nt => nt.id === n.id).map(nt => nt.key + ' · valid').join('; '); }
+}
+function renderMemory() {
+  const act = document.activeElement, inMem = $('#p-memory').contains(act), keepNote = inMem && act.closest && act.closest('.note-row') ? act.closest('.note-row').dataset.note : null, keepId = inMem && act && act.id ? act.id : null, n = NOTES.find(x => x.id === state.noteId) || NOTES[0], v = state.verified[n.id];
+  const st = v === 'resolved' ? '<span class="chip ok">valid (demo refetch)</span>' : v === 'loading' ? '<span class="chip info">loading</span>' : v === 'touched' ? '<span class="chip info">anchored · pending re-resolve</span>' : pillFor(n);
+  let tail = '';
+  if (v === 'loading') tail = '<div class="resp" aria-busy="true">GET /api/memories in flight…</div><p class="hint mt">Loading: the demo refetch resolves after the round trip; the note stays untouched until then.</p>';
+  else if (v === 'touched') tail = '<div class="resp">200 ' + esc(JSON.stringify(touchResp(n))) + '</div><p class="hint mt">touch only refreshes anchored_at — ref_status stays ' + esc(n.ref_status) + ' until the index re-resolves the ref.</p><div class="filter-row"><button id="refetch-btn">Refetch /api/memories (demo)</button><button id="conflict-btn">Force 409 (demo)</button></div>';
+  else if (v === 'conflict') tail = '<div class="resp tag-warn">409 ' + esc(JSON.stringify({ ok: false, error: 'revision mismatch: expected rev ' + n.rev })) + '</div><p class="hint mt">Error shape {ok:false,error} handled — note left untouched.</p>';
+  else if (v === 'resolved') tail = '<div class="resp">200 ' + esc(JSON.stringify({ key: n.key, rev: n.rev, ref_status: 'valid', anchored_at: Math.floor(Date.now() / 1000) })) + '</div><p class="hint mt">Refetched /api/memories: ref resolved valid — anchor dot is green now.</p>';
+  $('#p-memory').innerHTML = '<div class="feed">' + NOTES.map(x => '<button class="note-row" data-note="' + x.id + '" aria-pressed="' + (x.id === n.id) + '"><span>' + esc(x.key) + '</span>' + pillFor(x) + '</button>').join('') + '</div><h2 class="mt">' + esc(n.key) + '</h2><div class="path">' + esc(n.store) + ' · store_id ' + esc(n.store_id) + '</div><dl class="kv">' + kv('id / rev', n.id + ' / ' + n.rev) + kv('kind', esc(n.kind)) + kv('ref_status', st) + kv('recall_count', n.recall_count) + kv('is_current', String(n.is_current)) + kv('created_at', fmtTime(n.created_at)) + kv('anchored_at', fmtTime(n.anchored_at)) + '</dl><div class="note-body">' + esc(n.body) + '</div><div class="mrow"><span>resolved_refs</span><b>' + esc(n.resolved_refs.map(r => r.ref + ' · ' + r.type + ' · ' + r.status).join(', ')) + '</b></div><button class="action" id="verify-btn"' + (v ? ' disabled' : '') + '>Verify (POST /api/memory/touch)</button><div id="touch-out">' + tail + '</div>';
+  if (keepNote) { const r = $('#p-memory .note-row[data-note="' + keepNote + '"]'); if (r) r.focus(); } else if (keepId) { const r = $('#' + keepId); if (r && !r.disabled) r.focus(); }
+}
+function feedRow(e) {
+  const name = e.args && (e.args.name || e.args.terms || e.args.path || e.args.query) || '';
+  return '<button class="frow" data-key="' + e.ts + ':' + esc(e.tool) + '"><time>' + fmtTime(e.ts) + '</time><span class="tool">' + esc(e.tool) + '</span><span>' + esc(e.agent) + ' · ' + (name ? esc(name) : esc(e.repo_name)) + '</span><span class="meta">' + exitTag(e.exit_code) + ' · shown ' + e.shown + ' · ' + fmtInt(e.latency_us) + ' µs</span></button>';
+}
+/* Live tab is the single journal surface (the v1 ticker tape is gone; the statusbar only counts the window). */
+function renderLive() {
+  const act = document.activeElement, keepKey = $('#live-rows').contains(act) && act.dataset ? act.dataset.key : null, rows = filtered(), shown = rows.slice(0, 12);
+  $('#live-rows').innerHTML = shown.map(feedRow).join('') || '<p class="hint">No entries match the current filters.</p>';
+  $('#live-overflow').textContent = rows.length > 12 ? 'showing 12 of ' + rows.length + ' retained · window take(50)' : '';
+  if (keepKey) { const r = $('#live-rows [data-key="' + keepKey + '"]'); if (r) r.focus(); } }
+function drill(e) {
+  const n = nodeForEntry(e);
+  if (n) { select(n.id); centerNode(n); say('Journal entry ' + e.tool + ' traced to node ' + n.label); }
+  else { setTab('live'); say('No canvas node for this entry — inspect the journal window'); }
+}
+
+/* ---- Tabs ---- */
+function setTab(name) {
+  if (name === 'impact') renderImpact();
+  if (name === 'memory') renderMemory();
+  if (name === 'live') renderLive();
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'p-' + name));
+}
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
+
+/* ---- Delegated wiring ---- */
+function applyCandFilter() { world.querySelectorAll('[data-cand]').forEach(e2 => e2.classList.toggle('hid', !state.layers.cand || (state.det && e2.dataset.det !== state.det))); }
+$('#detectors').addEventListener('click', ev => {
+  const d = ev.target.dataset.det; if (!d) return;
+  state.det = state.det === d ? null : d;
+  document.querySelectorAll('#detectors button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.det === state.det)));
+  applyCandFilter();
+  say(state.det ? 'Candidates filtered to detector ' + state.det : 'Detector filter cleared');
+});
+$('#sec-memory').addEventListener('click', ev => { if (ev.target.closest('#goto-memory')) setTab('memory'); });
+$('#p-memory').addEventListener('click', ev => {
+  const row = ev.target.closest('.note-row[data-note]');
+  if (row) { state.noteId = Number(row.dataset.note); renderMemory(); return; }
+  const n = NOTES.find(x => x.id === state.noteId) || NOTES[0];
+  if (ev.target.closest('#verify-btn') && !state.verified[n.id]) { state.verified[n.id] = 'touched'; renderMemory(); say('touch accepted for ' + n.key + ' — ref_status unchanged pending re-resolve'); }
+  else if (ev.target.closest('#refetch-btn')) {
+    state.verified[n.id] = 'loading'; renderMemory(); say('Refetching /api/memories for ' + n.key);
+    setTimeout(() => { state.verified[n.id] = 'resolved'; resolveDot(n); renderMemory(); say('Refetched /api/memories: ' + n.key + ' resolved valid'); }, 700);
+  }
+  else if (ev.target.closest('#conflict-btn')) { state.verified[n.id] = 'conflict'; renderMemory(); say('409 revision mismatch for ' + n.key + ' — note untouched'); }
+});
+$('#p-selection').addEventListener('click', ev => { const nr = ev.target.closest('.note-row[data-note]'); if (nr) { state.noteId = Number(nr.dataset.note); setTab('memory'); say('Opening memory dossier for note ' + nr.dataset.note); return; } if (ev.target.closest('#open-impact')) setTab('impact'); });
+$('#agent-filter').addEventListener('click', ev => {
+  const a = ev.target.dataset.agent; if (!a) return;
+  state.agent = a; renderAgents();
+  if ($('#p-live').classList.contains('active')) renderLive();
+});
+$('#live-filters').addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-fstatus]'); if (!b) return;
+  state.fStatus = b.dataset.fstatus;
+  document.querySelectorAll('#live-filters button[data-fstatus]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fstatus === state.fStatus)));
+  renderLive();
+});
+$('#live-search').addEventListener('input', ev => { state.fSearch = ev.target.value.toLowerCase(); renderLive(); });
+function entryFromKey(key) { return JOURNAL.find(x => x.ts + ':' + x.tool === key); }
+$('#live-rows').addEventListener('click', ev => { const b = ev.target.closest('button[data-key]'); if (!b) return; const e = entryFromKey(b.dataset.key); if (e) drill(e); });
+
+/* ---- Layer toggles ---- */
+$('#ly-cand').addEventListener('click', ev => { state.layers.cand = !state.layers.cand; ev.currentTarget.setAttribute('aria-pressed', String(state.layers.cand)); applyCandFilter(); });
+$('#ly-mem').addEventListener('click', ev => { state.layers.mem = !state.layers.mem; ev.currentTarget.setAttribute('aria-pressed', String(state.layers.mem)); world.querySelectorAll('.anchor-g').forEach(a2 => a2.classList.toggle('hid', !state.layers.mem)); });
+
+/* ---- Live status: idle / connecting / streaming / paused (demo maps to EventSource readyState) ---- */
+function updateLiveChip() {
+  const lbl = state.live === 'streaming' ? 'streaming' : state.live === 'connecting' ? 'connecting' : state.live === 'paused' ? 'paused' : 'idle';
+  const cls = state.live === 'streaming' ? 'on' : state.live === 'connecting' || state.live === 'paused' ? 'warn' : '';
+  $('#live-chip').innerHTML = '<span class="live-dot ' + cls + '"></span>Live · ' + lbl;
+}
+$('#live-chip').addEventListener('click', () => {
+  if (state.live === 'streaming') { state.live = 'paused'; say('Live paused — SSE would report reconnecting'); }
+  else if (state.live === 'paused') { state.live = 'streaming'; say('Live resumed'); }
+  else say('Idle: start the demo stream in the statusbar to simulate SSE /events');
+  updateLiveChip();
+});
+
+/* ---- Demo stream: journal-shaped entries, consistent exit/shown, canvas pings ---- */
+$('#stream-btn').addEventListener('click', ev => {
+  const on = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
+  ev.currentTarget.setAttribute('aria-pressed', String(on));
+  if (!on) { clearInterval(state.stream); state.stream = null; state.live = 'idle'; updateLiveChip(); say('Demo stream stopped — live status back to idle'); return; }
+  const tools = ['callers', 'callees', 'search', 'reuse', 'context', 'impact', 'symbols', 'imports'], agents = Object.keys(SUMMARY.agent_aggs), names = ['parse_token', 'normalize_token', 'read_bounded'];
+  state.live = 'connecting'; updateLiveChip();
+  state.generatedAt = Date.now() / 1000; state.lastRefresh = state.generatedAt; ageTick();
+  state.stream = setInterval(() => {
+    const bad = Math.random() < 0.08, t = tools[Math.floor(Math.random() * tools.length)];
+    JOURNAL.unshift({ ts: Math.floor(Date.now() / 1000), tool: t, repo_name: 'app', agent: agents[Math.floor(Math.random() * agents.length)], exit_code: bad ? 1 : 0, shown: bad ? 0 : Math.floor(Math.random() * 22), latency_us: 280 + Math.floor(Math.random() * 1400), args: t === 'search' || t === 'symbols' ? { terms: 'token' } : { name: names[Math.floor(Math.random() * names.length)] } });
+    JOURNAL = JOURNAL.slice(0, 50); /* mirrors payload.rs:285 take(50) */
+    if (state.live === 'connecting') { state.live = 'streaming'; updateLiveChip(); }
+    if (Date.now() / 1000 - state.lastRefresh >= 15) { state.generatedAt = Date.now() / 1000; state.lastRefresh = state.generatedAt; }
+    const n = nodeForEntry(JOURNAL[0]); if (n) { flashNode(n.id); ping(n); }
+    $('#sb-count').textContent = JOURNAL.length;
+    renderAgents();
+    if ($('#p-live').classList.contains('active')) renderLive();
+  }, 2200);
+  say('Demo stream started: journal-shaped entries every 2.2s, canvas pings on matched symbols');
+});
+
+/* ---- Palette with roving focus, focus trap and focus return ---- */
+let palHits = [];
+const PALETTE = NODES.map(n => ({ kind: n.kind, lab: n.label, ext: n.sub, node: n.id })).concat([
+  { kind: 'tool', lab: 'callers', ext: fmtInt(SUMMARY.tool_aggs.callers.calls) + ' calls · p50 ' + SUMMARY.tool_aggs.callers.p50 + ' ms', tab: 'live' },
+  { kind: 'memory', lab: NOTES[0].key, ext: NOTES[0].resolved_refs[0].location, tab: 'memory', noteId: NOTES[0].id },
+  { kind: 'reuse', lab: CAND.id, ext: CAND.candidate_info.file + ':' + CAND.candidate_info.line_start, node: 'sym-parse', tab: 'impact' }
+]);
+function renderPalList() {
+  const list = $('#palette-list');
+  list.innerHTML = palHits.map((h, i) => '<button role="option" id="po-' + i + '" data-i="' + i + '" aria-selected="' + (i === state.paletteIdx) + '" class="' + (i === state.paletteIdx ? 'active' : '') + '"><span class="kind">' + esc(h.kind) + '</span><span class="lab">' + esc(h.lab) + '</span><span class="ext">' + esc(h.ext) + '</span></button>').join('');
+  $('#palette-empty').hidden = palHits.length > 0; $('#palette-input').setAttribute('aria-activedescendant', palHits.length ? 'po-' + state.paletteIdx : '');
+  list.querySelectorAll('button[data-i]').forEach(b => b.addEventListener('click', () => pick(palHits[Number(b.dataset.i)])));
+}
+function filterPalette(q) { const ql = q.toLowerCase(); palHits = PALETTE.filter(p => p.lab.toLowerCase().includes(ql) || p.ext.toLowerCase().includes(ql)).slice(0, 8); if (state.paletteIdx >= palHits.length) state.paletteIdx = 0; renderPalList(); }
+function palMove(d) { if (!palHits.length) return; state.paletteIdx = (state.paletteIdx + d + palHits.length) % palHits.length; renderPalList(); }
+function pick(h) { closePalette(); if (h.noteId) state.noteId = h.noteId; if (h.node) { select(h.node); centerNode(nodeById(h.node)); if (h.tab) setTab(h.tab); } else setTab(h.tab); say('Jumped to ' + h.lab); }
+function openPalette() { $('#palette').classList.add('open'); const i = $('#palette-input'); i.value = ''; state.paletteIdx = 0; filterPalette(''); i.focus(); }
+function closePalette() { $('#palette').classList.remove('open'); const b = $('#palette-btn'); if (b && b.focus) b.focus(); }
+$('#palette-btn').addEventListener('click', openPalette);
+$('#palette-input').addEventListener('input', ev => { state.paletteIdx = 0; filterPalette(ev.target.value); });
+$('#palette').addEventListener('click', ev => { if (ev.target === $('#palette')) closePalette(); });
+document.addEventListener('keydown', ev => {
+  const open = $('#palette').classList.contains('open');
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); open ? closePalette() : openPalette(); return; }
+  if (!open) return;
+  if (ev.key === 'Escape') closePalette();
+  else if (ev.key === 'Tab') ev.preventDefault(); /* single-tab-stop focus trap */
+  else if (ev.key === 'ArrowDown') { ev.preventDefault(); palMove(1); }
+  else if (ev.key === 'ArrowUp') { ev.preventDefault(); palMove(-1); }
+  else if (ev.key === 'Enter') { ev.preventDefault(); if (palHits.length) pick(palHits[state.paletteIdx]); }
+});
+
+/* ---- Theme toggle (bootstrap pre-paint lives in <head>, key eg-theme) ---- */
+$('#theme-btn').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('eg-theme', next); } catch (e) {}
+});
+
+/* ---- Boot ---- */
+buildGraph(); renderCrumb('repo-app');
+fitView();
+renderAgents();
+renderReuseSec();
+renderMemorySec();
+renderLive();
+updateLiveChip();
+ageTick();
+setInterval(ageTick, 1000);
+$('#sb-count').textContent = JOURNAL.length;
+$('#p-selection').innerHTML = '<p class="hint">Select a node on the canvas: repo, module or symbol. The inspector binds journal, reuse-candidate and memory fields to the selection. Live rows drill through to nodes; Ctrl K opens the jump palette.</p>';
+</script>
+</body>
+</html>

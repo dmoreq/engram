@@ -86,31 +86,6 @@ pub(super) struct EmitCtx<'a> {
     pub(super) unresolved_calls: &'a mut Vec<UnresolvedSite>,
 }
 
-/// Emit the AMBIGUOUS inherits edge (no single destination) together with its
-/// unresolved site. One function so the edge/site pair cannot drift apart.
-pub(super) fn push_ambiguous_inherit(
-    ctx: &mut EmitCtx<'_>,
-    src_idx: usize,
-    class_file: usize,
-    name: String,
-    site_line: usize,
-) {
-    ctx.t.edges.push(NewEdge {
-        src_idx,
-        dst_idx: None,
-        dst_name: name.clone(),
-        kind: EdgeKind::Inherits,
-        confidence: Confidence::Ambiguous,
-        site_line,
-    });
-    ctx.unresolved_calls.push(UnresolvedSite {
-        file_idx: class_file,
-        name,
-        kind: EdgeSiteKind::Inherit,
-        site_line,
-    });
-}
-
 /// Resolve one base chain and emit its `inherits` edge or its unresolved
 /// site. Returns the resolved base qualname when the edge is unambiguous;
 /// callers decide whether it joins the MRO table (`class_bases`: fresh
@@ -124,38 +99,24 @@ pub(super) fn emit_inherit_edge(
     let class_file = ctx.t.symbols[src_idx].file_idx;
     let src_qn = ctx.t.symbols[src_idx].qualname.clone();
     let base_qn = resolve_base_chain(ctx.t, class_file, chain, &src_qn);
-    let dsts = base_qn
-        .as_ref()
-        .and_then(|qn| ctx.t.by_qualname.get(qn))
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
-    let class_dsts: Vec<usize> = dsts
-        .iter()
-        .copied()
-        .filter(|i| is_class_kind(ctx.t.symbols[*i].kind))
-        .collect();
-    if class_dsts.len() > 1 {
-        let name = base_qn.clone().unwrap_or_else(|| chain.join("."));
-        push_ambiguous_inherit(ctx, src_idx, class_file, name, site_line);
-        None
-    } else if let Some(&dst) = class_dsts.first() {
-        let qn = ctx.t.symbols[dst].qualname.clone();
-        ctx.t.edges.push(NewEdge {
-            src_idx,
-            dst_idx: Some(dst),
-            dst_name: qn.clone(),
-            kind: EdgeKind::Inherits,
-            confidence: Confidence::Extracted,
-            site_line,
-        });
-        Some(qn)
-    } else {
-        ctx.unresolved_calls.push(UnresolvedSite {
-            file_idx: class_file,
-            name: base_qn.unwrap_or_else(|| chain.join(".")),
-            kind: EdgeSiteKind::Inherit,
-            site_line,
-        });
-        None
+    if let Some(qn) = base_qn {
+        if let Some(dst) = unique_class_index(ctx.t, &qn) {
+            ctx.t.edges.push(NewEdge {
+                src_idx,
+                dst_idx: Some(dst),
+                dst_name: qn.clone(),
+                kind: EdgeKind::Inherits,
+                confidence: Confidence::Extracted,
+                site_line,
+            });
+            return Some(qn);
+        }
     }
+    ctx.unresolved_calls.push(UnresolvedSite {
+        file_idx: class_file,
+        name: chain.join("."),
+        kind: EdgeSiteKind::Inherit,
+        site_line,
+    });
+    None
 }

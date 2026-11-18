@@ -199,58 +199,16 @@ pub(super) fn evaluate(
     } else {
         candidate_files(candidates)
     };
-    let mut prepared = Vec::with_capacity(files.len());
     let mut seen = HashSet::new();
     for file in files {
         if !seen.insert(file.clone()) {
             continue;
         }
-        prepared.push((file.clone(), checker.prepare(&file)?));
-    }
-    let mut outputs: Vec<Option<CheckResult>> = vec![None; prepared.len()];
-    let mut jobs = Vec::new();
-    for (index, (file, prepared)) in prepared.iter().enumerate() {
-        if let Prepared::Hash(job) = prepared {
-            jobs.push((index, file, job));
-        }
-    }
-    for (index, (_, prepared)) in prepared.iter().enumerate() {
-        if let Prepared::Ready(result) = prepared {
-            outputs[index] = Some(*result);
-        }
-    }
-    if !jobs.is_empty() {
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .min(4)
-            .min(jobs.len());
-        if workers <= 1 {
-            for (index, _, job) in &jobs {
-                outputs[*index] = Some(hash_job(job));
-            }
-        } else {
-            let chunk_size = jobs.len().div_ceil(workers);
-            std::thread::scope(|scope| {
-                let mut handles = Vec::new();
-                for chunk in jobs.chunks(chunk_size) {
-                    handles.push(scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|(index, _, job)| (*index, hash_job(job)))
-                            .collect::<Vec<_>>()
-                    }));
-                }
-                for handle in handles {
-                    for (index, result) in handle.join().expect("freshness hash worker") {
-                        outputs[index] = Some(result);
-                    }
-                }
-            });
-        }
-    }
-    for (index, (file, _)) in prepared.into_iter().enumerate() {
-        results.insert(file, outputs[index].expect("prepared freshness result"));
+        let res = match checker.prepare(&file)? {
+            Prepared::Ready(result) => result,
+            Prepared::Hash(job) => hash_job(&job),
+        };
+        results.insert(file, res);
     }
 
     let mut report = FreshnessReport::default();
@@ -309,10 +267,8 @@ pub(super) fn evaluate(
             }
         }
         if state == Freshness::Unknown {
-            candidate.freshness = Freshness::Unknown;
             push_reason(candidate, ReasonCode::FreshnessUnknown);
         } else if state == Freshness::Stale {
-            candidate.freshness = Freshness::Stale;
             push_reason(candidate, ReasonCode::StaleIndex);
         }
         if state != Freshness::Fresh {

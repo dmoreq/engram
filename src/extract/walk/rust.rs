@@ -104,7 +104,7 @@ pub(super) fn has_test_attr(node: Node<'_>, src: &[u8]) -> bool {
     while let Some(p) = prev {
         match p.kind() {
             "attribute_item" => {
-                let t = text(p, src);
+                let t = node_str(p, src);
                 if t.contains("#[test]") || t.contains("#[cfg(test)]") {
                     return true;
                 }
@@ -144,8 +144,8 @@ pub(super) fn record_macro_calls(
     let Some(mac) = node.child_by_field_name("macro") else {
         return;
     };
-    let macro_path = text(mac, src);
-    let macro_name = macro_path.rsplit("::").next().unwrap_or(&macro_path);
+    let macro_path = node_str(mac, src);
+    let macro_name = macro_path.rsplit("::").next().unwrap_or(macro_path);
     if !MACRO_CALL_FAMILIES.contains(&macro_name) {
         return;
     }
@@ -174,9 +174,9 @@ pub(super) fn record_macro_calls(
 }
 
 /// Extend `name` across the `::`-separated path segments starting at `i`
-/// (`a::b::c`); returns the extended name and the new cursor. A bare `::`
-/// with no following identifier stops the walk.
-fn scan_path_suffix(text: &str, bytes: &[u8], mut name: String, mut i: usize) -> (String, usize) {
+/// (`a::b::c`); returns the new cursor. A bare `::` with no following
+/// identifier stops the walk.
+fn scan_path_suffix(bytes: &[u8], mut i: usize) -> usize {
     let n = bytes.len();
     while i + 1 < n && bytes[i] == b':' && bytes[i + 1] == b':' {
         let seg = i + 2;
@@ -187,11 +187,9 @@ fn scan_path_suffix(text: &str, bytes: &[u8], mut name: String, mut i: usize) ->
         if j == seg {
             break;
         }
-        name.push_str("::");
-        name.push_str(&text[seg..j]);
         i = j;
     }
-    (name, i)
+    i
 }
 
 /// Byte scanner over macro token text: captures identifier and `::`-path
@@ -224,10 +222,10 @@ pub(super) fn scan_macro_call_names(raw: &str) -> Vec<String> {
                     i += 1;
                 }
                 // `a::b::c(` — walk the path to its final segment.
-                let (name, next) = scan_path_suffix(text, bytes, text[start..i].to_string(), i);
+                let next = scan_path_suffix(bytes, i);
                 i = next;
                 if i < n && bytes[i] == b'(' && prev_nonspace != b'.' && prev_nonspace != b')' {
-                    calls.push(name);
+                    calls.push(text[start..next].to_string());
                     prev_nonspace = b'(';
                     i += 1;
                 }
@@ -312,16 +310,19 @@ pub(super) fn visit_rust_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
         "function_item" | "function_signature_item" => visit_function_item(w),
         "struct_item" | "enum_item" => define_class_symbol(w, SymbolKind::Class),
         "trait_item" => define_class_symbol(w, SymbolKind::Trait),
-        "mod_item" if w.node.child_by_field_name("body").is_some() => visit_inline_mod(w),
         "impl_item" => visit_impl_item(w),
-        "mod_item" => visit_rust_mod_item(w),
+        "mod_item" => {
+            if w.node.child_by_field_name("body").is_some() {
+                visit_inline_mod(w);
+            } else {
+                visit_rust_mod_item(w);
+            }
+        }
         "use_declaration" => {
             let scope = w
                 .ctx
-                .class_stack
-                .last()
-                .or_else(|| w.ctx.mod_stack.last())
-                .cloned()
+                .parent_container()
+                .map(|s| s.to_string())
                 .unwrap_or_else(|| w.fx.module.clone());
             record_use_decl(w.node, w.src, w.fx, &scope);
             push_children_rev(w.work, w.node);
@@ -349,7 +350,7 @@ fn visit_inline_mod<'a>(w: &mut Walker<'a, '_, '_>) {
         .child_by_field_name("name")
         .map(|n| text(n, w.src))
         .unwrap_or_default();
-    let parent = w.ctx.class_stack.last().or_else(|| w.ctx.mod_stack.last());
+    let parent = w.ctx.parent_container();
     let qualname = match parent {
         Some(parent) => format!("{parent}.{name}"),
         None if w.fx.crate_root.as_deref() == Some("") => name.clone(),
@@ -373,28 +374,26 @@ fn visit_inline_mod<'a>(w: &mut Walker<'a, '_, '_>) {
 fn visit_rust_mod_item<'a>(w: &mut Walker<'a, '_, '_>) {
     if let Some(name_node) = w.node.child_by_field_name("name") {
         let name = text(name_node, w.src);
-        if w.node.child_by_field_name("body").is_none() {
-            let scope = w
-                .ctx
-                .class_stack
-                .last()
-                .cloned()
-                .unwrap_or_else(|| w.fx.module.clone());
-            let path = if w.ctx.class_stack.is_empty() && w.fx.crate_root.as_deref() == Some("") {
-                name.clone()
-            } else {
-                format!("{scope}.{name}")
-            };
-            w.fx.bindings.aliases.push((
-                String::new(),
-                name,
-                ImportTarget::ModuleRoot { path: path.clone() },
-            ));
-            w.fx.import_edges.push(ImportEdgeCandidate::module(
-                w.node.start_position().row + 1,
-                path,
-            ));
-        }
+        let scope = w
+            .ctx
+            .class_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| w.fx.module.clone());
+        let path = if w.ctx.class_stack.is_empty() && w.fx.crate_root.as_deref() == Some("") {
+            name.clone()
+        } else {
+            format!("{scope}.{name}")
+        };
+        w.fx.bindings.aliases.push((
+            String::new(),
+            name,
+            ImportTarget::ModuleRoot { path: path.clone() },
+        ));
+        w.fx.import_edges.push(ImportEdgeCandidate::module(
+            w.node.start_position().row + 1,
+            path,
+        ));
     }
     push_children_rev(w.work, w.node);
 }

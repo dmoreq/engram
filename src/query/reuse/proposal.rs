@@ -69,54 +69,25 @@ pub(super) fn analyze(conn: &Connection, opts: &ReuseOpts) -> Result<Vec<ReuseCa
             shared_tokens.len() as f64 / union as f64
         };
 
-        let mut reasons = Vec::new();
-        let (detector, pct, confidence, items) = if !proposed.is_empty() {
-            let coverage = shared_callees.len() as f64 / proposed.len() as f64;
-            let containment = if candidate.resolved_callees.is_empty() {
-                0.0
-            } else {
-                shared_callees.len() as f64 / candidate.resolved_callees.len() as f64
-            };
-            if shared_callees.is_empty() || coverage.max(containment) < 0.50 {
+        let (detector, pct, confidence, reasons, mut items) = if !proposed.is_empty() {
+            let Some((det, pct, conf, reas)) = score_proposed_callees(
+                &shared_callees,
+                proposed.len(),
+                candidate.resolved_callees.len(),
+                token_overlap,
+            ) else {
                 continue;
-            }
-            if coverage < 1.0 {
-                reasons.push(ReasonCode::ProposalPartial);
-            }
-            let confidence = if shared_callees.len() < 2 {
-                ReuseConfidence::Low
-            } else if coverage >= 0.95 && token_overlap >= 0.50 {
-                ReuseConfidence::High
-            } else if coverage >= 0.75 {
-                ReuseConfidence::Medium
-            } else {
-                ReuseConfidence::Low
             };
-            (
-                DetectorId::D1,
-                (coverage.max(containment) * 100.0).round() as u64,
-                confidence,
-                shared_callees,
-            )
+            (det, pct, conf, reas, shared_callees)
         } else {
-            if shared_tokens.len() < 2 || token_overlap < 0.60 {
+            let Some((det, pct, conf, reas)) =
+                score_proposed_tokens(shared_tokens.len(), token_overlap)
+            else {
                 continue;
-            }
-            reasons.push(ReasonCode::ProposalTokenOnly);
-            let confidence = if token_overlap >= 0.80 {
-                ReuseConfidence::Medium
-            } else {
-                ReuseConfidence::Low
             };
-            (
-                DetectorId::D2,
-                (token_overlap * 100.0).round() as u64,
-                confidence,
-                shared_tokens,
-            )
+            (det, pct, conf, reas, shared_tokens)
         };
 
-        let mut items = items;
         items.sort();
         pool.push(ReuseCandidate {
             detector,
@@ -132,7 +103,6 @@ pub(super) fn analyze(conn: &Connection, opts: &ReuseOpts) -> Result<Vec<ReuseCa
             raw_client: None,
             confidence,
             reasons,
-            freshness: Freshness::Fresh,
         });
     }
 
@@ -149,16 +119,72 @@ pub(super) fn analyze(conn: &Connection, opts: &ReuseOpts) -> Result<Vec<ReuseCa
     Ok(pool)
 }
 
+fn score_proposed_callees(
+    shared_callees: &[String],
+    proposed_len: usize,
+    cand_callees_len: usize,
+    token_overlap: f64,
+) -> Option<(DetectorId, u64, ReuseConfidence, Vec<ReasonCode>)> {
+    let coverage = shared_callees.len() as f64 / proposed_len as f64;
+    let containment = if cand_callees_len == 0 {
+        0.0
+    } else {
+        shared_callees.len() as f64 / cand_callees_len as f64
+    };
+    if shared_callees.is_empty() || coverage.max(containment) < 0.50 {
+        return None;
+    }
+    let mut reasons = Vec::new();
+    if coverage < 1.0 {
+        reasons.push(ReasonCode::ProposalPartial);
+    }
+    let confidence = if shared_callees.len() < 2 {
+        ReuseConfidence::Low
+    } else if coverage >= 0.95 && token_overlap >= 0.50 {
+        ReuseConfidence::High
+    } else if coverage >= 0.75 {
+        ReuseConfidence::Medium
+    } else {
+        ReuseConfidence::Low
+    };
+    Some((
+        DetectorId::D1,
+        (coverage.max(containment) * 100.0).round() as u64,
+        confidence,
+        reasons,
+    ))
+}
+
+fn score_proposed_tokens(
+    shared_len: usize,
+    token_overlap: f64,
+) -> Option<(DetectorId, u64, ReuseConfidence, Vec<ReasonCode>)> {
+    if shared_len < 2 || token_overlap < 0.60 {
+        return None;
+    }
+    let confidence = if token_overlap >= 0.80 {
+        ReuseConfidence::Medium
+    } else {
+        ReuseConfidence::Low
+    };
+    Some((
+        DetectorId::D2,
+        (token_overlap * 100.0).round() as u64,
+        confidence,
+        vec![ReasonCode::ProposalTokenOnly],
+    ))
+}
+
 fn proposal_language(signature: &str) -> Option<String> {
     let trimmed = signature.trim_start();
-    if trimmed.starts_with("def ")
-        || trimmed.starts_with("async def ")
-        || trimmed.starts_with("class ")
-    {
+    // Signatures carry leading modifiers ("pub", "async", "export",
+    // "unsafe"), so keyword detection scans tokens instead of anchoring on
+    // the first word.
+    if trimmed.contains("def ") || trimmed.contains("class ") {
         Some("python".to_string())
-    } else if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
+    } else if trimmed.split_whitespace().any(|tok| tok == "fn") {
         Some("rust".to_string())
-    } else if trimmed.starts_with("function ") {
+    } else if trimmed.contains("function ") || trimmed.contains("function* ") {
         Some("tsjs".to_string())
     } else {
         None
@@ -167,19 +193,24 @@ fn proposal_language(signature: &str) -> Option<String> {
 
 fn proposal_name(signature: &str) -> Option<String> {
     let trimmed = signature.trim();
-    let reduced = [
-        "async def ",
-        "def ",
-        "pub fn ",
-        "fn ",
-        "function ",
-        "class ",
-        "method ",
-    ]
-    .iter()
-    .find_map(|prefix| trimmed.strip_prefix(prefix))
-    .unwrap_or(trimmed);
-    let name = reduced
+    // Skip modifier tokens and take the identifier that follows the
+    // declaration keyword, wherever it sits in the signature.
+    let mut words = trimmed.split_whitespace();
+    while let Some(word) = words.next() {
+        if matches!(word, "def" | "fn" | "function" | "class" | "method") {
+            if let Some(target) = words.next() {
+                let name = target
+                    .split(['(', '<', ' ', ':'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    let name = trimmed
         .split(['(', '<', ' ', ':'])
         .next()
         .unwrap_or("")

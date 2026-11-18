@@ -78,25 +78,62 @@ const KEY_PARAM: ParamSpec = ParamSpec {
     description: "The note's stable identity",
 };
 
-mod memory;
+macro_rules! p_str {
+    ($name:literal, $req:literal, $desc:literal) => {
+        ParamSpec {
+            name: $name,
+            kind: ParamKind::Str,
+            required: $req,
+            description: $desc,
+        }
+    };
+}
+
+macro_rules! p_bool {
+    ($name:literal, $desc:literal) => {
+        ParamSpec {
+            name: $name,
+            kind: ParamKind::Bool,
+            required: false,
+            description: $desc,
+        }
+    };
+}
+
+macro_rules! p_int {
+    ($name:literal, $min:literal, $max:expr, $req:literal, $desc:literal) => {
+        ParamSpec {
+            name: $name,
+            kind: ParamKind::Int {
+                min: $min,
+                max: $max,
+            },
+            required: $req,
+            description: $desc,
+        }
+    };
+}
+
+macro_rules! p_str_arr {
+    ($name:literal, $desc:literal) => {
+        ParamSpec {
+            name: $name,
+            kind: ParamKind::StrArray,
+            required: false,
+            description: $desc,
+        }
+    };
+}
 
 pub const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "build",
         description: "Index the repository into .engram/index.db (full atomic replacement)",
         params: &[
-            ParamSpec {
-                name: "force",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Re-extract everything (disable the fast path) and bypass the parse-error abort",
-            },
+            p_bool!("force", "Re-extract everything (disable the fast path) and bypass the parse-error abort"),
             ParamSpec {
                 name: "max_parse_error_rate",
-                kind: ParamKind::Float {
-                    min: 0.0,
-                    max: 1.0,
-                },
+                kind: ParamKind::Float { min: 0.0, max: 1.0 },
                 required: false,
                 description: "Abort above this fraction of parse-error files (default 0.05)",
             },
@@ -106,30 +143,22 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "callers",
         description: "Who calls this symbol — direct by default; transitive with depth; pointer list path:line",
-        params: &[
-            NAME_PARAM,
-            DEPTH_PARAM,
-            LIMIT_PARAM,
-        ],
+        params: &[NAME_PARAM, DEPTH_PARAM, LIMIT_PARAM],
         core: true,
     },
     ToolSpec {
         name: "callees",
         description: "What does this symbol call — transitive with depth",
-        params: &[
-            NAME_PARAM,
-            DEPTH_PARAM,
-            LIMIT_PARAM,
-        ],
+        params: &[NAME_PARAM, DEPTH_PARAM, LIMIT_PARAM],
         core: true,
     },
     ToolSpec {
         name: "path",
         description: "Shortest call path between two symbols — hop call-site pointers path:line over resolved edges; dynamic dispatch may hide paths",
         params: &[
-            ParamSpec { name: "from", kind: ParamKind::Str, required: true, description: "Symbol the path starts from" },
-            ParamSpec { name: "to", kind: ParamKind::Str, required: true, description: "Symbol the path must reach" },
-            ParamSpec { name: "depth", kind: ParamKind::Int { min: 1, max: Some(10) }, required: false, description: "Maximum hops (default 10)" },
+            p_str!("from", true, "Symbol the path starts from"),
+            p_str!("to", true, "Symbol the path must reach"),
+            p_int!("depth", 1, Some(10), false, "Maximum hops (default 10)"),
         ],
         core: true,
     },
@@ -138,17 +167,14 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         description: "One-call symbol context: definition + signature, direct callers, direct callees over resolved edges plus tagged ambiguous candidates",
         params: &[
             NAME_PARAM,
-            ParamSpec { name: "limit", kind: ParamKind::Int { min: 1, max: Some(50) }, required: false, description: "Callers/callees shown per section (default 10)" },
+            p_int!("limit", 1, Some(50), false, "Callers/callees shown per section (default 10)"),
         ],
         core: true,
     },
     ToolSpec {
         name: "imports",
         description: "What does this file import — outbound resolved imports; external/unresolved omitted",
-        params: &[
-            FILE_PARAM,
-            LIMIT_PARAM,
-        ],
+        params: &[FILE_PARAM, LIMIT_PARAM],
         core: true,
     },
     ToolSpec {
@@ -156,9 +182,9 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         description: "Files that call into <file> — one row per caller file with a site count; an empty calls-only result names import/inherit counts; sites=true lists every call site; edges/depth extend the dependency set",
         params: &[
             FILE_PARAM,
-            ParamSpec { name: "sites", kind: ParamKind::Bool, required: false, description: "List every call site instead of one row per file" },
+            p_bool!("sites", "List every call site instead of one row per file"),
             DEPTH_PARAM,
-            ParamSpec { name: "edges", kind: ParamKind::Str, required: false, description: "Edge kinds: calls,imports,inherits,all (default calls)" },
+            p_str!("edges", false, "Edge kinds: calls,imports,inherits,all (default calls)"),
             LIMIT_PARAM,
         ],
         core: true,
@@ -167,8 +193,8 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         name: "symbols",
         description: "Symbols of one indexed file or directory, ordered by line; outline adds signatures",
         params: &[
-            ParamSpec { name: "file", kind: ParamKind::Str, required: true, description: "Repo-relative path of the indexed file or directory" },
-            ParamSpec { name: "outline", kind: ParamKind::Bool, required: false, description: "Append the one-line signature column" },
+            p_str!("file", true, "Repo-relative path of the indexed file or directory"),
+            p_bool!("outline", "Append the one-line signature column"),
             LIMIT_PARAM,
         ],
         core: true,
@@ -177,66 +203,16 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         name: "reuse",
         description: "Anti-reinvention candidates: detect duplicate helpers and suggest canonical reuse",
         params: &[
-            ParamSpec {
-                name: "paths",
-                kind: ParamKind::StrArray,
-                required: false,
-                description: "File paths or symbols to inspect (default: entire index)",
-            },
-            ParamSpec {
-                name: "limit",
-                kind: ParamKind::Int { min: 1, max: Some(100) },
-                required: false,
-                description: "Maximum candidates shown (default 10)",
-            },
-            ParamSpec {
-                name: "deep_callee",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Extend the callee footprint to second-hop callees (weight 0.5)",
-            },
-            ParamSpec {
-                name: "min_confidence",
-                kind: ParamKind::Str,
-                required: false,
-                description: "Minimum confidence: low, provisional, medium, or high (default low)",
-            },
-            ParamSpec {
-                name: "propose",
-                kind: ParamKind::Str,
-                required: false,
-                description: "Propose a signature before writing it; paths are not allowed",
-            },
-            ParamSpec {
-                name: "callees",
-                kind: ParamKind::StrArray,
-                required: false,
-                description: "Proposed callee names used with propose",
-            },
-            ParamSpec {
-                name: "explain",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Append detector and reason codes to each candidate",
-            },
-            ParamSpec {
-                name: "show_suppressed",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Include allowlisted candidates and report the suppressed count",
-            },
-            ParamSpec {
-                name: "coverage",
-                kind: ParamKind::StrArray,
-                required: false,
-                description: "Opt-in coverage detectors: class, unresolved, tests",
-            },
-            ParamSpec {
-                name: "judge",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Ask a local eg-judge binary to arbitrate gray-zone candidates",
-            },
+            p_str_arr!("paths", "File paths or symbols to inspect (default: entire index)"),
+            p_int!("limit", 1, Some(100), false, "Maximum candidates shown (default 10)"),
+            p_bool!("deep_callee", "Extend the callee footprint to second-hop callees (weight 0.5)"),
+            p_str!("min_confidence", false, "Minimum confidence: low, provisional, medium, or high (default low)"),
+            p_str!("propose", false, "Propose a signature before writing it; paths are not allowed"),
+            p_str_arr!("callees", "Proposed callee names used with propose"),
+            p_bool!("explain", "Append detector and reason codes to each candidate"),
+            p_bool!("show_suppressed", "Include allowlisted candidates and report the suppressed count"),
+            p_str_arr!("coverage", "Opt-in coverage detectors: class, unresolved, tests"),
+            p_bool!("judge", "Ask a local eg-judge binary to arbitrate gray-zone candidates"),
         ],
         core: true,
     },
@@ -244,7 +220,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         name: "search",
         description: "Symbol-level search: bm25 and caller-ranked concise interface cards",
         params: &[
-            ParamSpec { name: "terms", kind: ParamKind::Str, required: true, description: "Space-separated terms; camelCase/snake_case are split and matched" },
+            p_str!("terms", true, "Space-separated terms; camelCase/snake_case are split and matched"),
             LIMIT_PARAM,
         ],
         core: true,
@@ -253,28 +229,108 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         name: "usage",
         description: "Telemetry & performance summary: total calls, p50/p95 latency, error rates, token savings, and anti-reinvention effectiveness",
         params: &[
-            ParamSpec {
-                name: "quality",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Include latency and error breakdown (default false)",
-            },
-            ParamSpec {
-                name: "global",
-                kind: ParamKind::Bool,
-                required: false,
-                description: "Aggregate telemetry globally across all repositories (~/.engram/usage.log) (default false)",
-            },
+            p_bool!("quality", "Include latency and error breakdown (default false)"),
+            p_bool!("global", "Aggregate telemetry globally across all repositories (~/.engram/usage.log) (default false)"),
         ],
         core: true,
     },
-    memory::MEM_WRITE,
-    memory::MEM_QUERY,
-    memory::MEM_TOUCH,
-    memory::MEM_GET,
-    memory::MEM_DELETE,
-    memory::MEM_GC,
-    memory::MEM_EXPORT,
-    memory::MEM_IMPORT,
-    memory::MEM_REINDEX,
+    ToolSpec {
+        name: "mem_write",
+        description: "Persist a project-memory note (agent-authored prose, never source dumps) — identical content under the same key is a no-op; different content opens a new revision",
+        params: &[
+            p_str!("key", true, "Stable identity for the note (<= 200 chars, no control characters)"),
+            p_str!("body", true, "Note body, agent-authored prose (<= 8192 bytes)"),
+            p_str!("kind", true, "One of: decision, gotcha, fact, task, procedure"),
+            p_str!("tags", false, "Whitespace-separated lowercase tags (<= 16 x 32 chars)"),
+            p_str!("refs", false, "Whitespace-separated qualnames / repo paths the note is about"),
+            p_str!("scope", false, "durable (default, never expires) or session (expires at now + ttl, default 7 days)"),
+            p_int!("ttl", 1, None, false, "Session lifetime in seconds; only valid with scope=session (default 604800 = 7 days)"),
+            p_str!("supersedes", false, "Key whose current note this one replaces (cross-key supersession; unknown target is exit 1)"),
+            p_bool!("global", "Write to the cross-project global memory store (~/.engram/memory.db) instead of the local repo"),
+            p_bool!("touch", "Refresh created_at and re-assert the invocation's TTL (expires_at; explicit ttl wins, else the 7-day session default) when content_hash matches an existing current note"),
+            p_bool!("confirm", "Required for reuse-allow/ notes over MCP"),
+        ],
+        core: true,
+    },
+    ToolSpec {
+        name: "mem_query",
+        description: "Rank current project-memory notes for the terms (bm25 + ref-token overlap + recency, deterministic); all=true lists by recency instead",
+        params: &[
+            p_str!("terms", false, "Space-separated terms (mutually exclusive with all)"),
+            p_bool!("all", "List current notes by recency instead of ranking"),
+            p_str!("ref", false, "Restrict search to notes referencing this path or symbol"),
+            p_str!("kind", false, "Restrict to one kind: decision, gotcha, fact, task, procedure"),
+            p_str!("scope", false, "Restrict to one scope: durable or session"),
+            p_int!("limit", 1, Some(100), false, "Maximum results shown (default 10)"),
+            p_bool!("include_superseded", "With all=true, also list superseded revisions (tagged [superseded])"),
+            p_bool!("global", "Restrict search exclusively to the global store (default: searches both local and global)"),
+            p_str!("since", false, "Lower bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
+            p_str!("until", false, "Exclusive upper bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
+            p_bool!("local", "Restrict to the project store only (mutually exclusive with global)"),
+            p_bool!("explain", "Add one causal why: line per shown ranked note"),
+            p_bool!("legacy", "Use legacy ASCII tokens (diagnostic; bypasses the Unicode index)"),
+        ],
+        core: true,
+    },
+    ToolSpec {
+        name: "mem_touch",
+        description: "Refresh anchored_at (last verified) on the active revision without revision churn",
+        params: &[
+            KEY_PARAM,
+            p_bool!("global", "Touch in the cross-project global memory store"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_get",
+        description: "Show the current project-memory note for one exact key plus its revision count",
+        params: &[
+            KEY_PARAM,
+            p_bool!("global", "Fetch from global memory store"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_delete",
+        description: "Hard-delete every revision of one project-memory key (its search-index rows go with it)",
+        params: &[
+            KEY_PARAM,
+            p_bool!("global", "Delete from global memory store"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_gc",
+        description: "Reclaim project-memory disk: purge expired session notes and superseded revisions older than the 30-day retention clock, then report counts",
+        params: &[p_bool!("global", "Run GC on global memory store")],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_export",
+        description: "Write current project-memory notes to the result text as JSONL (default) or fenced Markdown; the caveat is reported separately so the payload parses cleanly",
+        params: &[
+            p_str!("format", false, "Output format: jsonl (default) or markdown"),
+            p_int!("limit", 1, None, false, "Take the N most recent notes instead of all of them"),
+            p_bool!("global", "Export from global memory store"),
+            p_str!("since", false, "Lower bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
+            p_str!("until", false, "Exclusive upper bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_import",
+        description: "Restore project-memory notes from a JSONL or fenced-Markdown file; CLI also accepts '-' for stdin. Conflicting keys are skipped unless force overwrites them. MCP writes are confined to the project store",
+        params: &[
+            p_str!("path", true, "Repo-relative input file over MCP; CLI also accepts '-' for stdin"),
+            p_str!("format", false, "Input format: jsonl or markdown (default: detect from path/first line)"),
+            p_bool!("force", "Overwrite a key whose local content differs (default: reject and skip)"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "mem_reindex",
+        description: "Rebuild the derived Unicode memory index; notes are untouched",
+        params: &[p_bool!("global", "Rebuild the cross-project global memory store")],
+        core: false,
+    },
 ];

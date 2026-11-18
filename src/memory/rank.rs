@@ -31,25 +31,23 @@ pub struct Candidate {
     pub from_fts: bool,
 }
 
-/// Min-max normalize with the design's all-equal convention: an all-equal
-/// signal maps every row to 1.0 (zeromem convention; order-invariant).
-fn minmax(values: &[f64], invert: bool) -> Vec<f64> {
-    let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+fn bounds<I: Iterator<Item = f64>>(iter: I) -> (f64, f64) {
+    iter.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), v| {
+        (min.min(v), max.max(v))
+    })
+}
+
+fn norm(v: f64, (min, max): (f64, f64), invert: bool) -> f64 {
     if !min.is_finite() || !max.is_finite() || (max - min).abs() < f64::EPSILON {
-        return vec![1.0; values.len()];
+        1.0
+    } else {
+        let n = (v - min) / (max - min);
+        if invert {
+            1.0 - n
+        } else {
+            n
+        }
     }
-    values
-        .iter()
-        .map(|v| {
-            let n = (v - min) / (max - min);
-            if invert {
-                1.0 - n
-            } else {
-                n
-            }
-        })
-        .collect()
 }
 
 /// Fuse the candidates: invert bm25 (smaller is better), min-max both
@@ -57,21 +55,15 @@ fn minmax(values: &[f64], invert: bool) -> Vec<f64> {
 /// (score desc, created_at desc, key asc, rev desc). Deterministic: same
 /// rows + same query + same binary -> same order.
 pub fn fuse(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
-    let lex = minmax(
-        &candidates.iter().map(|c| c.lex_raw).collect::<Vec<_>>(),
-        true,
-    );
-    let reference = minmax(
-        &candidates.iter().map(|c| c.ref_raw).collect::<Vec<_>>(),
-        false,
-    );
-    let graph = minmax(
-        &candidates.iter().map(|c| c.graph_raw).collect::<Vec<_>>(),
-        false,
-    );
-    for (i, c) in candidates.iter_mut().enumerate() {
+    let lex_b = bounds(candidates.iter().map(|c| c.lex_raw));
+    let ref_b = bounds(candidates.iter().map(|c| c.ref_raw));
+    let graph_b = bounds(candidates.iter().map(|c| c.graph_raw));
+    for c in &mut candidates {
         let rec = 1.0 / (1.0 + c.age_days);
-        c.score = W_LEX * lex[i] + W_REF * reference[i] + W_REC * rec + W_GRAPH * graph[i];
+        let lex = norm(c.lex_raw, lex_b, true);
+        let reference = norm(c.ref_raw, ref_b, false);
+        let graph = norm(c.graph_raw, graph_b, false);
+        c.score = W_LEX * lex + W_REF * reference + W_REC * rec + W_GRAPH * graph;
     }
     candidates.sort_by(|a, b| {
         b.score

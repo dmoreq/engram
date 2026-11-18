@@ -7,7 +7,9 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
     if chain.len() < 2 {
         return Outcome::Unresolved;
     }
-    let method = chain[1].clone();
+    // The method name is the final segment: `Outer.Inner.m()` must resolve
+    // `m`, not the nested-class penultimate segment.
+    let method = chain.last().unwrap().clone();
     // self/cls (Python) and this (TS) inside a class body.
     if let Some(out) = resolve_receiver_method(ctx, chain, &method) {
         return out;
@@ -78,24 +80,20 @@ pub(super) fn class_path_lookup(
     if chain_is_module_start(ctx.t, ctx.fi, &chain[0], &ctx.site.scope_func) {
         return None;
     }
+    // Nested class constructor: `Outer.Inner()` arrives as ["Outer", "Inner"].
     if let Some(class_qn) = resolve_class_of_chain(ctx.t, ctx.fi, chain, &ctx.site.scope_func) {
-        if chain.len() == 2 {
-            let out = mro_outcome(ctx.t, &class_qn, method);
-            if !matches!(out, Outcome::Unresolved) {
-                return Some(out);
-            }
+        if let Some(idx) = unique_class_index(ctx.t, &class_qn) {
+            return Some(Outcome::Extracted(idx));
         }
     }
-    // Constructor receiver: `Base().m()` arrives as ["Base", "m"]
-    // (Amendment 18). Resolve the single segment as a class, then the
-    // method through its MRO.
-    if chain.len() == 2 {
-        if let Some(class_qn) = resolve_class_of_chain(
-            ctx.t,
-            ctx.fi,
-            std::slice::from_ref(&chain[0]),
-            &ctx.site.scope_func,
-        ) {
+    // Class method call: `Class.m(...)` or `Outer.Inner.m(...)`. A
+    // constructor receiver (`Base().m()`, Amendment 18) arrives as
+    // ["Base", "m"] and resolves through the same path.
+    if chain.len() >= 2 {
+        let class_chain = &chain[..chain.len() - 1];
+        if let Some(class_qn) =
+            resolve_class_of_chain(ctx.t, ctx.fi, class_chain, &ctx.site.scope_func)
+        {
             let out = mro_outcome(ctx.t, &class_qn, method);
             if !matches!(out, Outcome::Unresolved) {
                 return Some(out);
@@ -346,7 +344,9 @@ pub(super) fn nearest_alias_scoped<'a>(
         let binding_scope = entry.0.as_str();
         let visible = binding_scope.is_empty()
             || scope == binding_scope
-            || scope.starts_with(&format!("{binding_scope}."));
+            || scope
+                .strip_prefix(binding_scope)
+                .is_some_and(|r| r.starts_with('.'));
         if visible && best.is_none_or(|b| binding_scope.len() >= b.0.len()) {
             best = Some(entry);
         }
@@ -355,13 +355,7 @@ pub(super) fn nearest_alias_scoped<'a>(
 }
 
 pub(super) fn file_alias<'a>(fctx: &'a FileCtx, name: &str) -> Option<&'a ImportTarget> {
-    fctx.bindings
-        .aliases
-        .get(name)?
-        .iter()
-        .rev()
-        .find(|(scope, _)| scope.is_empty())
-        .map(|(_, target)| target)
+    nearest_alias_scoped(fctx, "", name).map(|(_, target)| target)
 }
 
 /// A parameter or local variable in the current or an enclosing function
@@ -370,7 +364,10 @@ pub(super) fn is_local_binding(fctx: &FileCtx, site: &CallSite, name: &str) -> b
     // Anonymous callback parameters shadow only inside their line range.
     if fctx.bindings.arrow_params.iter().any(|p| {
         (p.scope_func == site.scope_func
-            || site.scope_func.starts_with(&format!("{}.", p.scope_func)))
+            || site
+                .scope_func
+                .strip_prefix(&p.scope_func)
+                .is_some_and(|r| r.starts_with('.')))
             && p.var == name
             && p.start_line <= site.line
             && site.line <= p.end_line
@@ -399,8 +396,4 @@ pub(super) fn is_local_binding(fctx: &FileCtx, site: &CallSite, name: &str) -> b
         scope = parent;
     }
     false
-}
-
-pub(super) fn local_alias_outcome(t: &Tables, target: &ImportTarget, name: &str) -> Outcome {
-    alias_target_outcome(t, target, name).unwrap_or(Outcome::Unresolved)
 }

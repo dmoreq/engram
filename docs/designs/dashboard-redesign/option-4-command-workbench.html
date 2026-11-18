@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eg workbench — Command Workbench concept</title>
+<style>
+/* Design tokens mirrored from src/dashboard/assets/style.css:1-60 (Shibumi light/dark) */
+:root {
+  color-scheme: light;
+  --bg-canvas: #F7F4EE; --bg-surface: #FBF9F5; --bg-subtle: #EFECE4; --bg-elevated: #FFFFFF;
+  --text-primary: #1E1C1A; --text-secondary: #4A4640; --text-muted: #666059;
+  --border-subtle: rgba(30,28,26,.09); --border-strong: rgba(30,28,26,.18);
+  --intent-primary: #8A4A2E; --intent-primary-soft: rgba(158,88,59,.10);
+  --intent-success: #246A49; --intent-success-soft: rgba(36,106,73,.10);
+  --intent-warning: #945807; --intent-warning-soft: rgba(168,100,8,.10);
+  --intent-danger: #B8322C; --intent-danger-soft: rgba(184,50,44,.10);
+  --intent-info: #2E5A70; --intent-info-soft: rgba(46,90,112,.10);
+  --font-display: Georgia, serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --shadow-card: 0 1px 3px rgba(30,28,26,.05), 0 1px 2px rgba(30,28,26,.03);
+  --shadow-elevated: 0 8px 24px rgba(30,28,26,.09), 0 2px 6px rgba(30,28,26,.04);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724;
+  --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84;
+  --border-subtle: rgba(243,239,234,.09); --border-strong: rgba(243,239,234,.18);
+  --intent-primary: #D9825B; --intent-primary-soft: rgba(217,130,91,.15);
+  --intent-success: #52B788; --intent-success-soft: rgba(82,183,136,.15);
+  --intent-warning: #E9A84A; --intent-warning-soft: rgba(233,168,74,.15);
+  --intent-danger: #F06A63; --intent-danger-soft: rgba(240,106,99,.15);
+  --intent-info: #6BA3BE; --intent-info-soft: rgba(107,163,190,.15);
+  --shadow-card: 0 1px 3px rgba(0,0,0,.35);
+  --shadow-elevated: 0 8px 24px rgba(0,0,0,.55);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724;
+    --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84;
+    --border-subtle: rgba(243,239,234,.09); --border-strong: rgba(243,239,234,.18);
+    --intent-primary: #D9825B; --intent-primary-soft: rgba(217,130,91,.15);
+    --intent-success: #52B788; --intent-success-soft: rgba(82,183,136,.15);
+    --intent-warning: #E9A84A; --intent-warning-soft: rgba(233,168,74,.15);
+    --intent-danger: #F06A63; --intent-danger-soft: rgba(240,106,99,.15);
+    --intent-info: #6BA3BE; --intent-info-soft: rgba(107,163,190,.15);
+    --shadow-card: 0 1px 3px rgba(0,0,0,.35);
+    --shadow-elevated: 0 8px 24px rgba(0,0,0,.55);
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg-canvas); color: var(--text-primary); font: 13px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; }
+code, pre, .mono { font-family: var(--font-mono); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--intent-primary); outline-offset: 1px; border-radius: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Chrome: minimal top bar with pillar-segmented digest */
+.chrome { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); flex: none; }
+.brand { display: flex; align-items: center; gap: 9px; flex: none; }
+.brand .name { font-family: var(--font-display); font-size: 17px; font-weight: 700; letter-spacing: .01em; }
+.brand .sub { color: var(--text-muted); font-size: 11px; margin-left: 2px; }
+.palette-trigger { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; max-width: 360px; height: 32px; padding: 0 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-elevated); color: var(--text-muted); box-shadow: var(--shadow-card); transition: border-color .15s, box-shadow .15s; }
+.palette-trigger:hover { border-color: var(--border-strong); box-shadow: var(--shadow-elevated); }
+.palette-trigger svg { flex: none; }
+.palette-trigger .pt-label { flex: 1; text-align: left; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Segmented digest: each segment carries its metric scope (all / graph / value / agents / sessions) */
+.digest { display: flex; margin-left: auto; }
+.digest-seg { display: flex; flex-direction: column; align-items: flex-end; padding: 0 10px; border-left: 1px solid var(--border-subtle); cursor: default; }
+.digest-seg:first-child { border-left: 0; }
+.seg-label { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); }
+.seg-vals { font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); white-space: nowrap; }
+.seg-vals .dim { color: var(--text-muted); }
+.live-chip { display: flex; align-items: center; gap: 6px; flex: none; padding: 4px 10px; border: 1px solid transparent; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.live-chip.live { color: var(--intent-success); background: var(--intent-success-soft); }
+.live-chip.poll { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.live-chip.off { color: var(--intent-danger); background: var(--intent-danger-soft); }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.live-chip.flash .live-dot { animation: pulse .6s ease-out; }
+@keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.7); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .live-chip.flash .live-dot { animation: none; } }
+
+/* Workbench: docked task panels with task-flow weights (dup 1.15 / mem 0.9 / journal 1.3) */
+.bench { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 12px 16px; }
+.panel { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; box-shadow: var(--shadow-card); overflow: hidden; }
+.panel-dup { flex: 1.15 1 0; }
+.panel-mem { flex: 0.9 1 0; }
+.panel-journal { flex: 1.3 1 0; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-elevated); flex: none; }
+.panel-head h2 { font-family: var(--font-display); font-size: 14px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
+.scope-chip { font-family: var(--font-mono); font-size: 10.5px; color: var(--intent-info); background: var(--intent-info-soft); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+.flow-hint { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-close { flex: none; width: 22px; height: 22px; border-radius: 6px; color: var(--text-muted); font-size: 14px; line-height: 1; }
+.panel-close:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.panel-foot { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); flex: none; }
+.panel-foot span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text-muted); }
+.empty-state .es-title { font-family: var(--font-display); font-size: 18px; color: var(--text-secondary); }
+
+/* Shared micro-components */
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+.chip-primary { color: var(--intent-primary); background: var(--intent-primary-soft); }
+.chip-ok { color: var(--intent-success); background: var(--intent-success-soft); }
+.chip-warn { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.chip-err { color: var(--intent-danger); background: var(--intent-danger-soft); }
+.chip-info { color: var(--intent-info); background: var(--intent-info-soft); }
+.kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; background: var(--bg-elevated); font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); white-space: nowrap; }
+.muted { color: var(--text-muted); font-size: 11px; }
+.meta-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kv { display: grid; grid-template-columns: 96px 1fr auto; align-items: center; gap: 10px; padding: 3px 0; }
+.kv .k { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.kv .v { font-family: var(--font-mono); font-size: 11px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar { height: 6px; border-radius: 3px; background: var(--bg-subtle); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--intent-primary); border-radius: 3px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 7px; border: 1px solid var(--border-strong); background: var(--bg-elevated); font-size: 11.5px; font-weight: 600; white-space: nowrap; transition: filter .15s, background .15s; }
+.btn:hover { background: var(--bg-subtle); }
+.btn-primary { background: var(--intent-primary); border-color: var(--intent-primary); color: #fff; }
+.btn-primary:hover { filter: brightness(1.08); background: var(--intent-primary); }
+.btn:disabled { opacity: .55; cursor: wait; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Selection-driven dossier: sampled list + detail */
+.pick-list { display: flex; flex-direction: column; gap: 4px; }
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--bg-elevated); text-align: left; transition: border-color .15s, background .15s; }
+.pick-row:hover { border-color: var(--border-strong); }
+.pick-row.is-on { border-color: var(--intent-primary); background: var(--intent-primary-soft); }
+.pick-row code { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick-row .grow { flex: 1; }
+
+/* Duplicate review panel */
+.pair-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pair-line code { font-size: 13px; font-weight: 600; }
+.pair-line .arrow { color: var(--intent-primary); font-weight: 700; }
+.snips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.snip { border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-elevated); overflow: hidden; min-width: 0; }
+.snip-head { padding: 5px 9px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); background: var(--bg-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.snip pre { padding: 8px 9px; font-size: 10.5px; line-height: 1.55; overflow-x: auto; color: var(--text-secondary); }
+.narrative { font-size: 12px; color: var(--text-secondary); border-left: 3px solid var(--intent-primary-soft); padding: 2px 0 2px 10px; }
+
+/* Memory panel */
+.note-card { border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-elevated); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.note-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.note-head code { font-size: 13px; font-weight: 700; }
+.note-body { font-size: 12.5px; color: var(--text-secondary); }
+.ref-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; padding: 3px 9px; border-radius: 6px; }
+.ref-chip.warn { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.ref-chip.ok { color: var(--intent-success); background: var(--intent-success-soft); }
+.ref-chip.err { color: var(--intent-danger); background: var(--intent-danger-soft); }
+.touch-log { display: flex; flex-direction: column; gap: 3px; }
+.touch-line { font-family: var(--font-mono); font-size: 10.5px; color: var(--intent-success); word-break: break-all; }
+.touch-line.err { color: var(--intent-danger); }
+.touch-line.info { color: var(--text-muted); }
+.touch-hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+
+/* Live journal panel */
+.apply-banner { display: flex; align-items: center; gap: 10px; padding: 6px 9px; border: 1px dashed var(--intent-info); border-radius: 7px; background: var(--intent-info-soft); }
+.btn-apply { background: var(--intent-info); border-color: var(--intent-info); color: #fff; height: 24px; font-size: 11px; }
+.btn-apply:hover { background: var(--intent-info); filter: brightness(1.1); }
+.agent-rollup { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rollup-label { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); }
+.filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pill-set { display: flex; gap: 4px; flex-wrap: wrap; }
+.pill { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.pill:hover { border-color: var(--border-strong); }
+.pill.is-on { background: var(--intent-primary-soft); border-color: var(--intent-primary); color: var(--intent-primary); font-weight: 600; }
+.feed-search { flex: 1; min-width: 100px; height: 26px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--bg-elevated); color: var(--text-primary); font-size: 11.5px; }
+.journal-scroll { overflow-x: auto; min-height: 0; }
+.jrow { display: grid; grid-template-columns: 54px 48px 84px minmax(120px, 1fr) 56px 48px 44px; gap: 6px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 10.5px; min-width: 490px; }
+.jrow:hover { background: var(--bg-subtle); }
+.jrow-err { background: var(--intent-danger-soft); }
+.jrow-err:hover { filter: brightness(.985); }
+.j-time, .j-lat, .j-shown { color: var(--text-muted); }
+.j-lat, .j-shown { text-align: right; }
+.j-tool { color: var(--intent-info); font-weight: 600; }
+.j-who, .j-args { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.j-who { color: var(--text-secondary); }
+.j-args { color: var(--text-primary); }
+.j-exit { font-size: 10px; }
+.j-exit.ok { color: var(--intent-success); }
+.j-exit.err { color: var(--intent-danger); }
+.feed-empty { padding: 14px; font-size: 11.5px; color: var(--text-muted); }
+
+/* Command palette overlay — open at boot, focus trapped to the input */
+.palette-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(18,17,16,.45); display: flex; align-items: flex-start; justify-content: center; padding: 9vh 16px 0; }
+.palette { width: 680px; max-width: 100%; background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-elevated); overflow: hidden; display: flex; flex-direction: column; }
+.p-input-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); }
+.p-input-row input { flex: 1; border: 0; background: transparent; color: var(--text-primary); font-size: 15px; outline: none; }
+.p-input-row input::placeholder { color: var(--text-muted); }
+.p-results { max-height: 54vh; overflow-y: auto; padding: 6px 0 10px; }
+.p-group { padding: 8px 14px 3px; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--text-muted); }
+.p-item { display: flex; align-items: center; gap: 10px; padding: 7px 14px; cursor: pointer; }
+.p-item:hover { background: var(--bg-subtle); }
+.p-item.active { background: var(--intent-primary-soft); box-shadow: inset 2px 0 0 var(--intent-primary); }
+.p-type { flex: none; width: 46px; text-align: center; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: .04em; border-radius: 5px; padding: 2px 0; }
+.t-cmd { color: var(--intent-info); background: var(--intent-info-soft); }
+.t-reuse { color: var(--intent-primary); background: var(--intent-primary-soft); }
+.t-note { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.t-call { color: var(--intent-success); background: var(--intent-success-soft); }
+.t-agnt { color: var(--text-secondary); background: var(--bg-subtle); }
+.t-repo { color: var(--text-muted); border: 1px solid var(--border-strong); }
+.p-label { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-meta { flex: 1; text-align: right; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-empty { padding: 16px; font-size: 12px; color: var(--text-muted); }
+.p-briefing { margin: 4px 14px 8px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-elevated); padding: 8px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
+.b-title { grid-column: 1 / -1; font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--text-muted); padding-bottom: 4px; }
+.b-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; cursor: default; }
+.b-k { font-size: 11.5px; color: var(--text-secondary); }
+.b-v { font-family: var(--font-mono); font-size: 11.5px; }
+.p-foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--border-subtle); font-size: 10.5px; color: var(--text-muted); }
+.p-foot .grow { flex: 1; }
+
+/* Status bar */
+.statusbar { display: flex; align-items: center; gap: 14px; padding: 6px 16px; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); flex: none; }
+.sb-hint { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sb-mid { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-right { display: flex; gap: 14px; white-space: nowrap; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<header class="chrome">
+  <div class="brand">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="1" y="1" width="18" height="18" rx="5" fill="var(--intent-primary)"/><path d="M6 10h8M10 6v8" stroke="var(--bg-elevated)" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="name">eg</span><span class="sub">workbench</span>
+  </div>
+  <button id="paletteBtn" class="palette-trigger" aria-label="Open command palette">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <span class="pt-label">Run a task — candidates, notes, agents, journal…</span>
+    <span class="kbd">cmd</span><span class="kbd">k</span>
+  </button>
+  <div class="digest" id="digest" aria-label="Global KPI digest by pillar scope"></div>
+  <button id="liveChip" class="live-chip live" title="SSE /events state — click to preview poll fallback"><span class="live-dot" aria-hidden="true"></span><span id="liveLabel">LIVE</span></button>
+  <button id="themeBtn" class="btn">Dark</button>
+</header>
+
+<main class="bench" id="bench">
+
+  <!-- Task panel 1: reuse flow (selection-driven over candidates[]) -->
+  <section class="panel panel-dup" id="panel-duplicates" aria-label="Duplicate Review">
+    <header class="panel-head">
+      <h2>Duplicate Review</h2>
+      <span class="scope-chip" id="dupScope">scope: repo app</span>
+      <span class="flow-hint">pool → twin review → resolve</span>
+      <button class="panel-close" data-close="duplicates" aria-label="Close Duplicate Review panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="pick-list" id="candList" aria-label="Sampled reuse candidates — select to review"></div>
+      <div class="meta-line" id="dupMeta"></div>
+      <div class="pair-line" id="dupPair"></div>
+      <div id="dupKvs"></div>
+      <div class="snips" id="dupSnips"></div>
+      <p class="narrative" id="dupNarrative"></p>
+      <div class="actions">
+        <button id="copySiteBtn" class="btn btn-primary">Copy canonical site</button>
+        <button id="copyCliBtn" class="btn">Copy CLI</button>
+      </div>
+      <p class="muted">Twin resolution happens via a code merge in your editor or CLI — resolved_twins is a read-only summary.</p>
+    </div>
+    <footer class="panel-foot">
+      <span>GET /api/reuse · candidates[] · summary</span>
+      <span id="dupFootR">—</span>
+    </footer>
+  </section>
+
+  <!-- Task panel 2: memory flow (Action Center counts computed from notes[]) -->
+  <section class="panel panel-mem" id="panel-memory" aria-label="Memory Ref Health">
+    <header class="panel-head">
+      <h2>Memory Ref Health</h2>
+      <span class="scope-chip">scope: store engram</span>
+      <span class="flow-hint">action center → verify → refetch</span>
+      <button class="panel-close" data-close="memory" aria-label="Close Memory Ref Health panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="meta-line" id="memCounts"></div>
+      <div class="pick-list" id="noteList" aria-label="Memory notes — select to inspect"></div>
+      <div class="note-card" id="noteDossier"></div>
+    </div>
+    <footer class="panel-foot">
+      <span>GET /api/memories · notes[]</span>
+      <span title="rev must match the is_current rev or the touch 404/409s">touch {key, store_id, rev} · rev mismatch → 404/409</span>
+    </footer>
+  </section>
+
+  <!-- Task panel 3: live journal (agent rollup from agent_aggs, staged /events buffer) -->
+  <section class="panel panel-journal" id="panel-journal" aria-label="Live Journal">
+    <header class="panel-head">
+      <h2>Live Journal</h2>
+      <span class="scope-chip">window: retained_journal</span>
+      <span class="flow-hint">tail → filter → inspect</span>
+      <button class="panel-close" data-close="journal" aria-label="Close Live Journal panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="apply-banner" id="applyBanner" hidden>
+        <button id="applyBtn" class="btn btn-apply">Apply 0 new (n)</button>
+        <span class="muted">staged from /events — click or press n</span>
+      </div>
+      <div class="agent-rollup" id="agentRollup"></div>
+      <div class="filter-row">
+        <div class="pill-set" id="agentPills" data-filter="agent" aria-label="Filter by agent"></div>
+        <div class="pill-set" id="repoPills" data-filter="repo" aria-label="Filter by repo or worktree"></div>
+        <div class="pill-set" data-filter="status" aria-label="Filter by exit status">
+          <button class="pill is-on" data-v="all">all</button>
+          <button class="pill" data-v="ok">ok</button>
+          <button class="pill" data-v="err">errors</button>
+        </div>
+        <input id="feedSearch" class="feed-search" type="search" placeholder="filter tool / args…" aria-label="Filter journal by tool or args">
+      </div>
+      <div class="journal-scroll"><div id="journalList"></div></div>
+    </div>
+    <footer class="panel-foot">
+      <span>SSE /events · keepalive 15s · poll 500ms · reset on rotate/prune</span>
+      <span id="feedCount">—</span>
+    </footer>
+  </section>
+
+  <div class="empty-state" id="emptyState" hidden>
+    <p class="es-title">Bench is clear.</p>
+    <p><span class="kbd">cmd</span> <span class="kbd">k</span> to run a task — review a duplicate, re-anchor a note, or tail the journal.</p>
+    <p class="muted"><span class="kbd">alt</span> <span class="kbd">1–3</span> re-opens task panels · <span class="kbd">esc</span> closes the focused panel</p>
+  </div>
+</main>
+
+<footer class="statusbar">
+  <span class="sb-hint"><span class="kbd">cmd</span><span class="kbd">k</span> palette</span>
+  <span class="sb-hint"><span class="kbd">alt</span><span class="kbd">1–3</span> panels</span>
+  <span class="sb-hint"><span class="kbd">esc</span> panel</span>
+  <span class="sb-hint"><span class="kbd">n</span> apply new</span>
+  <span class="sb-hint"><span class="kbd">/</span> search</span>
+  <span class="sb-mid" id="sbLive">window: retained_journal · — · age —</span>
+  <span class="sb-right"><span id="sbPanels">3 panels open</span><span>127.0.0.1 · offline-first</span></span>
+</footer>
+
+<!-- Command palette overlay -->
+<div class="palette-overlay" id="paletteOverlay" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="p-input-row">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteResults" aria-autocomplete="list" placeholder="Search actions, agents, repos, candidates, notes, invocations…" autocomplete="off">
+      <span class="kbd">esc</span>
+    </div>
+    <div class="p-results" id="paletteResults" role="listbox" aria-label="Palette results"></div>
+    <div class="p-foot">
+      <span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>
+      <span><span class="kbd">enter</span> run</span>
+      <span><span class="kbd">esc</span> close</span>
+      <span class="grow"></span>
+      <span>index built from /api/summary · /api/reuse · /api/memories · /events</span>
+    </div>
+  </div>
+</div>
+
+<div class="sr-only" aria-live="polite" id="srLive"></div>
+
+<script>
+"use strict";
+const $ = (s, el) => (el || document).querySelector(s);
+const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* Payload-bound data. First candidate / first note / repo app numbers are the exact brief samples;
+   additional candidates, notes, the engram repo and agent_aggs values are demo rows sharing the real
+   field shapes so the workbench is cardinality-correct (index + counts derived, nothing hard-coded to [0]). */
+const SUMMARY = {schema_version:2, generated_at:1794645800.2, total_calls:1284, error_count:9, reliability_pct:99.3,
+  p50_ms:0.8, saved_tokens:412000, saved_dollars:6.18, saved_dollars_estimated:true,
+  graph_calls:906, graph_p50_ms:0.7, graph_saved_tokens:305000,
+  session_count:18, session_recall_pct:66.7, tool_aggs:{callers:{calls:210, p50:0.6}}};
+const AGENT_AGGS = {
+  zcode:  {display:"zcode",  calls:742, errors:2, graph_calls:531, graph_errors:1, reliability_pct:99.7, saved_tokens:246000, search_hit_rate_pct:94},
+  codex:  {display:"codex",  calls:318, errors:5, graph_calls:214, graph_errors:3, reliability_pct:98.4, saved_tokens:96000,  search_hit_rate_pct:88},
+  claude: {display:"claude", calls:224, errors:2, graph_calls:161, graph_errors:1, reliability_pct:99.1, saved_tokens:70000,  search_hit_rate_pct:90}
+};
+const REPO_AGGS = {
+  "/ws/app":    {display:"app",    calls:640, graph_calls:512, saved_tokens:204000, reuse_calls:96, search_hit_rate_pct:92, last_reuse_scan:{ts:1794600000, result_count:21, limit_capped:false}, worktrees:{main:{calls:512, errors:0, last_ts:1794645800}}},
+  "/ws/engram": {display:"engram", calls:644, graph_calls:394, saved_tokens:208000, reuse_calls:16, search_hit_rate_pct:81, last_reuse_scan:{ts:1794640000, result_count:9,  limit_capped:false}, worktrees:{main:{calls:430, errors:2, last_ts:1794645600}, dashboard:{calls:214, errors:1, last_ts:1794644000}}}
+};
+const REUSE = {summary:{schema_version:4, total_candidates:38, preventable_loc:1240, preventable_loc_estimated:true,
+  prewrite_count:112, avg_callers:6.4, detector_counts:{D1:14, D1L:5},
+  repo_candidate_pools:{"/ws/app":21, "/ws/engram":9}, resolved_twins:{resolved:3, surfaced:6}},
+  candidates:[
+    {id:"app:parse_token->normalize_token", repo:"app", repo_path:"/ws/app", detector:"D1",
+     symbol:"parse_token", canonical:"normalize_token", canonical_callers:14,
+     canonical_file:"src/tokens.rs", canonical_line:88, overlap_pct:83, overlap_applicable:true, confidence:"high",
+     candidate_info:{file:"src/legacy.rs", line_start:120, loc:22}, canonical_info:{file:"src/tokens.rs", line_start:88, loc:17},
+     loc_saving:22,
+     candidate_snippet:"fn parse_token(src: &str, i: &mut usize)\n    -> Option<Token> {\n    let start = *i;\n    let bytes = src.as_bytes();\n    while *i < bytes.len()\n        && (bytes[*i].is_ascii_alphanumeric()\n            || bytes[*i] == b'_') { *i += 1; }\n    if start == *i { return None; }\n    Some(Token { kind: Kind::Ident,\n        text: src[start..*i].to_string() })\n}",
+     canonical_snippet:"pub fn normalize_token(text: &str)\n    -> Token {\n    let kind = match text {\n        \"fn\" | \"let\" | \"mut\" => Kind::Keyword,\n        _ => Kind::Ident,\n    };\n    Token { kind, text: text.to_string() }\n}",
+     prevention_narrative:"22 LOC in src/legacy.rs re-implement token scanning next to normalize_token (14 callers). Delete the local branch and call the canonical implementation. Pool-wide avg_callers 6.4 · 1,240 preventable LOC (est.)."},
+    {id:"app:fetch_page->fetch_bounded", repo:"app", repo_path:"/ws/app", detector:"D1L",
+     symbol:"fetch_page", canonical:"fetch_bounded", canonical_callers:9,
+     canonical_file:"src/http.rs", canonical_line:210, overlap_pct:71, overlap_applicable:true, confidence:"medium",
+     candidate_info:{file:"src/legacy_http.rs", line_start:44, loc:18}, canonical_info:{file:"src/http.rs", line_start:210, loc:15},
+     loc_saving:18,
+     candidate_snippet:"fn fetch_page(url: &str) -> Result<Page> {\n    let resp = http_get(url,\n        Duration::from_secs(30))?;\n    Page::parse(&resp.body)\n}",
+     canonical_snippet:"pub fn fetch_bounded(url: &str,\n        cap: usize) -> Result<Page> {\n    let resp = http_get(url,\n        Duration::from_secs(30), cap)?;\n    Page::parse(&resp.body)\n}",
+     prevention_narrative:"fetch_page duplicates the bounded fetch at src/http.rs:210 with a hardcoded timeout; switch to fetch_bounded and drop 18 LOC."},
+    {id:"engram:parse_manifest->load_manifest", repo:"engram", repo_path:"/ws/engram", detector:"D4",
+     symbol:"parse_manifest", canonical:"load_manifest", canonical_callers:6,
+     canonical_file:"src/config.rs", canonical_line:52, overlap_pct:null, overlap_applicable:false, confidence:"medium",
+     candidate_info:{file:"src/boot.rs", line_start:301, loc:31}, canonical_info:{file:"src/config.rs", line_start:52, loc:24},
+     loc_saving:31,
+     candidate_snippet:"fn parse_manifest(raw: &str) -> Manifest {\n    let lines: Vec<_> = raw.lines().collect();\n    Manifest { entries: lines.iter()\n        .filter_map(parse_entry).collect() }\n}",
+     canonical_snippet:"pub fn load_manifest(path: &Path)\n        -> Result<Manifest> {\n    let raw = fs::read_to_string(path)?;\n    Ok(Manifest { entries: raw.lines()\n        .filter_map(parse_entry).collect() })\n}",
+     prevention_narrative:"parse_manifest mirrors load_manifest control flow (D4 structural match — overlap_pct is not computed for D3/D4). 31 LOC collapsible."}
+  ]};
+const NOTES = [
+  {id:42, store:"engram", store_id:"/ws/app/.engram/memory.db", key:"allowlist-refs", rev:3,
+   kind:"gotcha", body:"Ref freshness must branch on index resolution.", ref:"src/query/reuse.rs",
+   ref_status:"modified", created_at:1794630000, anchored_at:1794635000, is_current:true, recall_count:4},
+  {id:43, store:"engram", store_id:"/ws/engram/.engram/memory.db", key:"flock-build-lock", rev:1,
+   kind:"gotcha", body:"Advisory flock on build.lock serializes concurrent builds — never index while a build holds the lock.", ref:"src/build.rs",
+   ref_status:"valid", created_at:1794000000, anchored_at:1794640000, is_current:true, recall_count:11},
+  {id:44, store:"engram", store_id:"/ws/engram/.engram/memory.db", key:"schema-gate-exit-code", rev:2,
+   kind:"gotcha", body:"Schema skew must exit 5 before any query path runs.", ref:"src/db.rs",
+   ref_status:"broken", created_at:1793800000, anchored_at:1794500000, is_current:true, recall_count:7}
+];
+
+/* Journal: shape of graph_recent_queries[i] / SSE /events message. First row is the exact sample entry. */
+const SAMPLE_ENTRY = {ts:1794645800, tool:"callers", repo_name:"app", agent:"zcode", exit_code:0, shown:7, latency_us:640, args:{name:"read_bounded"}};
+let FEED = [
+  SAMPLE_ENTRY,
+  {ts:1794645792, tool:"search", repo_name:"app", agent:"zcode", exit_code:0, shown:12, result_count:23, latency_us:810, args:{terms:"parse_token"}},
+  {ts:1794645786, tool:"context", repo_name:"app", agent:"codex", exit_code:0, shown:5, result_count:5, latency_us:1204, args:{symbol:"build_index"}},
+  {ts:1794645775, tool:"reuse", repo_name:"app", agent:"zcode", exit_code:0, shown:19, result_count:19, latency_us:1420, args:{terms:"normalize token parse"}},
+  {ts:1794645760, tool:"impact", repo_name:"app", agent:"claude", exit_code:0, shown:9, result_count:9, latency_us:940, args:{name:"resolve_twin"}},
+  {ts:1794645755, tool:"impact", repo_name:"dashboard", repo_main_name:"engram", agent:"claude", exit_code:0, shown:4, result_count:4, latency_us:1120, args:{name:"apply_staged"}},
+  {ts:1794645748, tool:"callees", repo_name:"engram", agent:"zcode", exit_code:0, shown:11, result_count:11, latency_us:520, args:{name:"parse_token"}},
+  {ts:1794645730, tool:"symbols", repo_name:"engram", agent:"codex", exit_code:0, shown:40, result_count:40, latency_us:380, args:{query:"token"}},
+  {ts:1794645711, tool:"imports", repo_name:"app", agent:"claude", exit_code:0, shown:6, result_count:6, latency_us:300, args:{file:"src/legacy.rs"}},
+  {ts:1794645690, tool:"mem", repo_name:"engram", agent:"zcode", exit_code:0, shown:3, result_count:3, latency_us:260, args:{key:"allowlist-refs"}},
+  {ts:1794645675, tool:"context", repo_name:"engram", agent:"codex", exit_code:1, shown:0, result_count:0, latency_us:190, args:{symbol:"missing_sym"}},
+  {ts:1794645666, tool:"path", repo_name:"app", agent:"claude", exit_code:1, shown:0, result_count:0, latency_us:210, args:{from:"parse_token", to:"normalize_token"}}
+];
+
+const fmtInt = n => n.toLocaleString("en-US");
+const fmtCompact = n => n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + "k" : String(n);
+const fmtTime = ts => new Date(ts * 1000).toTimeString().slice(0, 8);
+const fmtMs = us => (us / 1000).toFixed(1) + " ms";
+const fmtDate = ts => new Date(ts * 1000).toISOString().slice(0, 19).replace("T", " ");
+const fmtAge = ms => { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + "s"; const m = Math.round(s / 60); if (m < 60) return m + "m"; const h = Math.round(m / 60); if (h < 48) return h + "h"; return Math.round(h / 24) + "d"; };
+const argsPreview = e => Object.entries(e.args).map(([k, v]) => k + "=" + v).join(" ");
+const announce = msg => { $("#srLive").textContent = msg; };
+function copyText(t, okMsg) {
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(() => announce(okMsg), () => announce("Clipboard unavailable — " + t));
+  else announce("Clipboard unavailable — " + t);
+}
+
+/* Chrome digest: pillar-segmented (all / graph / value / agents / sessions) — scope labels fix the
+   mixed-scope weakness; agents segment comes from agent_aggs. */
+function renderDigest() {
+  const S = SUMMARY;
+  const segs = [
+    ["all", fmtInt(S.total_calls) + " · " + S.reliability_pct.toFixed(1) + "% ok · p50 " + S.p50_ms.toFixed(1) + " ms", "summary.total_calls · reliability_pct · p50_ms — GET /api/summary"],
+    ["graph", fmtInt(S.graph_calls) + " · p50 " + S.graph_p50_ms.toFixed(1) + " ms", "summary.graph_calls · graph_p50_ms — graph pillar only"],
+    ["value", fmtCompact(S.saved_tokens) + " tok · $" + S.saved_dollars.toFixed(2), "summary.saved_tokens · saved_dollars (*_estimated; $15/MTok blended)"],
+    ["agents", AGENT_AGGS.zcode.display + " " + fmtInt(AGENT_AGGS.zcode.calls) + " · " + S.error_count + " err total", "agent_aggs — top agent by calls · summary.error_count total"],
+    ["sessions", S.session_count + " · " + S.session_recall_pct.toFixed(1) + "% recall", "summary.session_count · session_recall_pct"]
+  ];
+  $("#digest").innerHTML = segs.map(([l, v, t]) =>
+    '<div class="digest-seg" title="' + escapeHtml(t) + '"><span class="seg-label">' + l + '</span><span class="seg-vals">' + v + '</span></div>'
+  ).join("");
+}
+
+/* Duplicate panel: selection-driven dossier over REUSE.candidates[] */
+let selCand = 0;
+function repoEntry(c) { return REPO_AGGS[c.repo_path]; }
+function renderCandList() {
+  $("#candList").innerHTML = REUSE.candidates.map((c, i) =>
+    '<button class="pick-row' + (i === selCand ? " is-on" : "") + '" data-i="' + i + '" title="' + escapeHtml(c.id) + '">' +
+    '<code>' + escapeHtml(c.symbol) + ' → ' + escapeHtml(c.canonical) + '</code><span class="grow"></span>' +
+    '<span class="chip chip-primary">' + escapeHtml(c.detector) + '</span>' +
+    '<span class="muted mono">' + (c.overlap_pct == null ? "structural" : c.overlap_pct + "%") + '</span></button>'
+  ).join("");
+}
+function renderDuplicates() {
+  const c = REUSE.candidates[selCand], r = repoEntry(c), R = REUSE.summary;
+  $("#dupScope").textContent = "scope: repo " + c.repo;
+  $("#dupMeta").innerHTML =
+    '<span class="chip chip-primary" title="candidates[' + selCand + '].detector — GET /api/reuse">' + escapeHtml(c.detector) + '</span>' +
+    '<span class="chip chip-ok" title="candidates[' + selCand + '].confidence">' + escapeHtml(c.confidence) + ' confidence</span>' +
+    '<span class="muted" title="reuse.summary.detector_counts — counts come from the global sampled candidate list (src/dashboard/data/reuse.rs:464-470), not per-repo">global sample D1 ×' + R.detector_counts.D1 + ' · D1L ×' + R.detector_counts.D1L + '</span>' +
+    '<span class="muted" title="reuse.summary.total_candidates · preventable_loc extrapolated">pool ' + R.total_candidates + ' (est.)</span>' +
+    '<span class="muted" title="reuse.summary.repo_candidate_pools[' + escapeHtml(c.repo_path) + '] — sample floor is the 25/repo cap">repo pool ' + (R.repo_candidate_pools[c.repo_path] || 0) + ' · cap 25/repo</span>';
+  $("#dupPair").innerHTML =
+    '<code title="candidates[' + selCand + '].symbol">' + escapeHtml(c.symbol) + '</code>' +
+    '<span class="arrow" aria-hidden="true">→</span>' +
+    '<code title="candidates[' + selCand + '].canonical">' + escapeHtml(c.canonical) + '</code>' +
+    '<span class="muted" title="candidates[' + selCand + '].canonical_callers">' + c.canonical_callers + ' callers rely on canonical</span>';
+  const overlap = c.overlap_pct == null
+    ? '<div class="kv" title="overlap_pct is null and overlap_applicable false for D3/D4"><span class="k">overlap_pct</span><span class="muted">n/a — structural match (' + escapeHtml(c.detector) + ')</span><span class="v">—</span></div>'
+    : '<div class="kv" title="candidates[' + selCand + '].overlap_pct · overlap_applicable true"><span class="k">overlap_pct</span><div class="bar"><i style="width:' + c.overlap_pct + '%"></i></div><span class="v">' + c.overlap_pct + '%</span></div>';
+  $("#dupKvs").innerHTML = overlap +
+    '<div class="kv" title="candidates[' + selCand + '].loc_saving · candidate_info.loc · canonical_info.loc"><span class="k">loc_saving</span><span class="muted mono">candidate ' + c.candidate_info.file + ':' + c.candidate_info.line_start + ' (' + c.candidate_info.loc + ' loc) · canonical ' + c.canonical_info.file + ':' + c.canonical_info.line_start + ' (' + c.canonical_info.loc + ' loc)</span><span class="v">−' + c.loc_saving + ' loc</span></div>';
+  $("#dupSnips").innerHTML =
+    '<div class="snip"><div class="snip-head" title="candidate_info.file · line_start · loc">candidate · ' + escapeHtml(c.candidate_info.file) + ':' + c.candidate_info.line_start + ' · ' + c.candidate_info.loc + ' loc</div><pre>' + escapeHtml(c.candidate_snippet) + '</pre></div>' +
+    '<div class="snip"><div class="snip-head" title="canonical_info.file · line_start · loc · canonical_callers">canonical · ' + escapeHtml(c.canonical_file) + ':' + c.canonical_line + ' · ' + c.canonical_info.loc + ' loc · ' + c.canonical_callers + ' callers</div><pre>' + escapeHtml(c.canonical_snippet) + '</pre></div>';
+  $("#dupNarrative").textContent = c.prevention_narrative;
+  $("#copySiteBtn").textContent = "Copy canonical site · " + c.canonical_file + ":" + c.canonical_line;
+  $("#copyCliBtn").textContent = "Copy CLI: eg callers " + c.canonical;
+  $("#dupFootR").textContent = "last scan(" + c.repo + ") " + r.last_reuse_scan.result_count + " results" + (r.last_reuse_scan.limit_capped ? " · cap hit" : " · cap not hit") + " · pre-write hit " + r.search_hit_rate_pct + "% · twins " + R.resolved_twins.resolved + " resolved / " + R.resolved_twins.surfaced + " surfaced";
+}
+
+/* Memory panel: Action Center counts derived from NOTES[]; dossier shows the selected note */
+let selNote = 0;
+function renderNoteList() {
+  $("#noteList").innerHTML = NOTES.map((n, i) =>
+    '<button class="pick-row' + (i === selNote ? " is-on" : "") + '" data-i="' + i + '" title="' + escapeHtml(n.store_id) + '">' +
+    '<code>' + escapeHtml(n.key) + '</code><span class="grow"></span>' +
+    '<span class="muted mono">rev ' + n.rev + '</span>' +
+    '<span class="chip ' + (n.ref_status === "valid" ? "chip-ok" : n.ref_status === "modified" ? "chip-warn" : "chip-err") + '">' + escapeHtml(n.ref_status) + '</span></button>'
+  ).join("");
+}
+function renderMemCounts() {
+  const c = {modified:0, broken:0, valid:0};
+  NOTES.forEach(n => { c[n.ref_status] = (c[n.ref_status] || 0) + 1; });
+  $("#memCounts").innerHTML =
+    '<span class="chip chip-warn">' + c.modified + ' modified ref' + (c.modified === 1 ? "" : "s") + '</span>' +
+    '<span class="chip chip-err">' + c.broken + ' broken</span>' +
+    '<span class="chip chip-ok">' + c.valid + ' valid</span>' +
+    '<span class="muted">' + NOTES.filter(n => n.is_current).length + ' / ' + NOTES.length + ' notes is_current</span>';
+}
+function refChipHtml(n) {
+  const cls = n.ref_status === "valid" ? "ok" : n.ref_status === "modified" ? "warn" : "err";
+  return '<span class="ref-chip ' + cls + '" id="refChip" title="resolved_refs[0].ref · status · type">' + escapeHtml(n.ref) + ' · ' + escapeHtml(n.ref_status) + '</span>';
+}
+function renderNote() {
+  const n = NOTES[selNote];
+  $("#noteDossier").innerHTML =
+    '<div class="note-head"><code title="notes[' + selNote + '].key">' + escapeHtml(n.key) + '</code>' +
+    '<span class="chip chip-info" title="notes[' + selNote + '].kind">' + escapeHtml(n.kind) + '</span>' +
+    '<span class="muted" title="notes[' + selNote + '].rev · id · recall_count · is_current">rev ' + n.rev + ' · id ' + n.id + ' · ' + n.recall_count + ' recalls' + (n.is_current ? " · is_current" : "") + '</span></div>' +
+    '<p class="note-body" title="notes[' + selNote + '].body">' + escapeHtml(n.body) + '</p>' +
+    '<div>' + refChipHtml(n) + '</div>' +
+    '<p class="muted">touch re-anchors only — ref_status changes on the next GET /api/memories refetch, not on a 200 touch</p>' +
+    '<div class="kv" title="notes[' + selNote + '].created_at"><span class="k">created_at</span><span class="muted">journal-local time</span><span class="v">' + fmtDate(n.created_at) + '</span></div>' +
+    '<div class="kv" title="notes[' + selNote + '].anchored_at — moves forward on a 200 touch"><span class="k">anchored_at</span><span class="muted">re-anchor to refresh</span><span class="v" id="anchoredVal">' + fmtDate(n.anchored_at) + '</span></div>' +
+    '<div class="kv" title="notes[' + selNote + '].store_id"><span class="k">store_id</span><span class="muted">per-repo memory store</span><span class="v">' + escapeHtml(n.store_id) + '</span></div>' +
+    '<div class="actions">' +
+    '<button id="verifyBtn" class="btn btn-primary">Verify · POST /api/memory/touch</button>' +
+    '<button id="errBtn" class="btn">Simulate 409</button>' +
+    '<button id="refetchBtn" class="btn">Refetch /api/memories</button></div>' +
+    '<div class="touch-log" id="touchLog"><div class="touch-hint">contract: {key, store_id, rev} → 200 {ok, key, store, store_id, rev, anchored_at} · 400 / 404 / 409 / 503 {ok:false, error}</div></div>';
+}
+function logTouch(html, cls) {
+  $("#touchLog").insertAdjacentHTML("beforeend", '<div class="touch-line ' + (cls || "") + '">' + html + '</div>');
+}
+
+/* Touch semantics: a 200 touch re-anchors anchored_at only. ref_status stays until a
+   GET /api/memories refetch reports a new resolved_refs status — only then does the chip change. */
+let verifying = false;
+function verifyRef() {
+  if (verifying) return;
+  verifying = true;
+  const n = NOTES[selNote], btn = $("#verifyBtn");
+  btn.disabled = true;
+  btn.textContent = "POST /api/memory/touch …";
+  setTimeout(() => {
+    const res = {ok:true, key:n.key, store:n.store, store_id:n.store_id, rev:n.rev, anchored_at:Math.floor(Date.now() / 1000)};
+    n.anchored_at = res.anchored_at;
+    $("#anchoredVal").textContent = fmtDate(res.anchored_at);
+    logTouch("200 ok · key " + escapeHtml(res.key) + " · rev " + res.rev + " · anchored_at " + fmtDate(res.anchored_at) + " — ref_status " + escapeHtml(n.ref_status) + " (unchanged)");
+    announce("POST /api/memory/touch returned 200 ok — anchored_at re-anchored; ref_status still " + n.ref_status + ".");
+    btn.disabled = false;
+    btn.textContent = "Verify · POST /api/memory/touch";
+    verifying = false;
+  }, 450);
+}
+function simulateTouchError() {
+  const n = NOTES[selNote];
+  logTouch("409 conflict · {ok:false, error:\"rev mismatch — is_current rev is " + n.rev + "\"}", "err");
+  announce("touch rejected — 409 conflict, {ok:false, error:rev mismatch}.");
+}
+function refetchMemories() {
+  const n = NOTES[selNote];
+  /* Simulated refetch: the store re-resolves refs server-side. In this demo the status is unchanged;
+     if it did change, the chip below would flip to the new status. */
+  const chip = $("#refChip");
+  const cls = n.ref_status === "valid" ? "ok" : n.ref_status === "modified" ? "warn" : "err";
+  chip.className = "ref-chip " + cls;
+  chip.textContent = n.ref + " · " + n.ref_status;
+  logTouch("GET /api/memories · refetched — " + escapeHtml(n.key) + " ref_status \"" + escapeHtml(n.ref_status) + "\" (server re-resolves refs)", "info");
+  announce("GET /api/memories refetched — " + n.key + " ref_status " + n.ref_status + ".");
+}
+
+/* Live journal: agent/repo pills generated from agent_aggs + repo_aggs; staged /events buffer */
+const feedFilters = {agent:"all", repo:"all", status:"all", q:""};
+let staged = [];
+function whoLabel(e) {
+  const wt = e.repo_main_name && e.repo_main_name !== e.repo_name ? " (wt of " + e.repo_main_name + ")" : "";
+  return escapeHtml(e.repo_name) + wt + " · " + escapeHtml(e.agent);
+}
+function renderFeed() {
+  const q = feedFilters.q.trim().toLowerCase();
+  const rows = FEED.filter(e =>
+    (feedFilters.agent === "all" || e.agent === feedFilters.agent) &&
+    (feedFilters.repo === "all" || e.repo_name === feedFilters.repo || e.repo_main_name === feedFilters.repo) &&
+    (feedFilters.status === "all" || (feedFilters.status === "ok" ? e.exit_code === 0 : e.exit_code !== 0)) &&
+    (!q || e.tool.includes(q) || argsPreview(e).toLowerCase().includes(q))
+  );
+  $("#journalList").innerHTML = rows.length ? rows.map(e =>
+    '<div class="jrow' + (e.exit_code !== 0 ? " jrow-err" : "") + '">' +
+    '<span class="j-time">' + fmtTime(e.ts) + '</span>' +
+    '<span class="j-tool" title="' + escapeHtml(e.tool) + '">' + escapeHtml(e.tool) + '</span>' +
+    '<span class="j-who" title="' + escapeHtml(whoLabel(e)) + '">' + whoLabel(e) + '</span>' +
+    '<span class="j-args" title="' + escapeHtml(argsPreview(e)) + '">' + escapeHtml(argsPreview(e)) + '</span>' +
+    '<span class="j-shown">' + (e.result_count != null && e.result_count !== e.shown ? e.shown + " / " + e.result_count : "shown " + e.shown) + '</span>' +
+    '<span class="j-lat">' + fmtMs(e.latency_us) + '</span>' +
+    '<span class="j-exit ' + (e.exit_code === 0 ? "ok" : "err") + '">' + (e.exit_code === 0 ? "ok" : "exit " + e.exit_code) + '</span>' +
+    '</div>'
+  ).join("") : '<div class="feed-empty">No entries match within the 50-entry retained journal window.</div>';
+  $("#feedCount").textContent = rows.length + " / " + FEED.length + " entries · window cap 50 latest";
+}
+function renderRollup() {
+  $("#agentRollup").innerHTML = '<span class="rollup-label">agents</span>' + Object.keys(AGENT_AGGS).map(k => {
+    const a = AGENT_AGGS[k];
+    return '<button class="pill" data-agent="' + escapeHtml(k) + '" title="agent_aggs.' + escapeHtml(k) + ' — calls · errors · reliability ' + a.reliability_pct.toFixed(1) + '% · graph_calls ' + a.graph_calls + '">' + escapeHtml(a.display) + ' ' + fmtInt(a.calls) + ' · ' + a.errors + ' err</button>';
+  }).join("");
+}
+function renderFilterPills() {
+  $("#agentPills").innerHTML = '<button class="pill is-on" data-v="all">all agents</button>' + Object.keys(AGENT_AGGS).map(k =>
+    '<button class="pill" data-v="' + escapeHtml(k) + '">' + escapeHtml(k) + '</button>').join("");
+  $("#repoPills").innerHTML = '<button class="pill is-on" data-v="all">all repos</button>' + Object.keys(REPO_AGGS).map(p => {
+    const r = REPO_AGGS[p];
+    return '<button class="pill" data-v="' + escapeHtml(r.display) + '" title="' + escapeHtml(p) + ' · ' + Object.keys(r.worktrees || {}).length + ' worktree(s)">' + escapeHtml(r.display) + '</button>';
+  }).join("");
+}
+function setFilter(name, v) {
+  feedFilters[name] = v;
+  const set = name === "agent" ? $("#agentPills") : name === "repo" ? $("#repoPills") : null;
+  if (set) $$(".pill", set).forEach(p => p.classList.toggle("is-on", p.dataset.v === v));
+  renderFeed();
+}
+function updateApplyBanner() {
+  const b = $("#applyBanner");
+  b.hidden = staged.length === 0;
+  $("#applyBtn").textContent = "Apply " + staged.length + " new (n)";
+}
+function stageEntry(e) {
+  if (!e.ts) e.ts = Math.floor(Date.now() / 1000);
+  staged.push(e);
+  updateApplyBanner();
+  const chip = $("#liveChip");
+  chip.classList.add("flash");
+  setTimeout(() => chip.classList.remove("flash"), 650);
+}
+function applyStaged() {
+  if (!staged.length) return;
+  FEED = staged.slice().reverse().concat(FEED).slice(0, 20);
+  const n = staged.length;
+  staged = [];
+  updateApplyBanner();
+  renderFeed();
+  announce("Applied " + n + " staged journal entries to the retained window.");
+}
+
+/* Live states: real EventSource over http(s), synthetic stand-in for file://; poll fallback at 15s.
+   The chip carries live / poll / off states instead of an unconditional green. */
+let liveState = "live", lastSummarySync = SUMMARY.generated_at * 1000;
+function setLive(state) {
+  liveState = state;
+  const chip = $("#liveChip");
+  chip.classList.remove("live", "poll", "off");
+  chip.classList.add(state);
+  $("#liveLabel").textContent = state === "live" ? "LIVE" : state === "poll" ? "POLL 15s" : "OFF";
+}
+function renderSb() {
+  $("#sbLive").textContent = "window: retained_journal · " + (liveState === "live" ? "SSE live" : liveState === "poll" ? "SSE down — poll fallback" : "offline") + " · age " + fmtAge(Date.now() - lastSummarySync);
+}
+function startLive() {
+  if (/^https?:$/.test(location.protocol)) {
+    try {
+      const es = new EventSource("/events");
+      es.onopen = () => setLive("live");
+      es.onerror = () => setLive("poll");
+      es.onmessage = ev => { try { stageEntry(JSON.parse(ev.data)); } catch (e) {} };
+      return;
+    } catch (e) { /* fall through to synthetic mode */ }
+  }
+  setLive("live");
+  const SIM_POOL = [
+    {tool:"callers", agent:"zcode", repo_name:"app", exit_code:0, shown:4, result_count:4, latency_us:590, args:{name:"normalize_token"}},
+    {tool:"search", agent:"codex", repo_name:"engram", exit_code:0, shown:9, result_count:23, latency_us:760, args:{terms:"ref freshness"}},
+    {tool:"context", agent:"claude", repo_name:"dashboard", repo_main_name:"engram", exit_code:0, shown:6, result_count:6, latency_us:1100, args:{symbol:"memory_touch_if_rev"}},
+    {tool:"impact", agent:"zcode", repo_name:"app", exit_code:0, shown:7, result_count:7, latency_us:880, args:{name:"check_ref_status"}}
+  ];
+  let i = 0;
+  setInterval(() => { stageEntry(Object.assign({}, SIM_POOL[i++ % SIM_POOL.length])); }, 8000);
+}
+setInterval(() => { lastSummarySync = Date.now(); }, 15000); /* mirrors the app.js 15s summary poll fallback */
+setInterval(renderSb, 1000);
+
+/* Panels */
+const PANEL_IDS = ["duplicates", "memory", "journal"];
+let lastPanel = "journal";
+function togglePanel(id, forceOpen) {
+  const p = $("#panel-" + id);
+  const show = forceOpen ? true : p.hidden;
+  p.hidden = !show;
+  if (show) lastPanel = id;
+  syncBench();
+}
+function syncBench() {
+  const open = PANEL_IDS.filter(id => !$("#panel-" + id).hidden).length;
+  $("#emptyState").hidden = open > 0;
+  $("#sbPanels").textContent = open + " panel" + (open === 1 ? "" : "s") + " open";
+}
+
+/* Command palette: index built from the payloads (agents, repos, candidates[], notes[], FEED head) */
+let PALETTE = [];
+let paletteOpen = false, activeIdx = 0, filtered = [], prePaletteFocus = null;
+function buildPalette() {
+  const items = [
+    {group:"Actions", type:"CMD", label:"Open Duplicate Review", meta:REUSE.candidates.length + " sampled candidates · /api/reuse", hint:"alt 1", run:() => togglePanel("duplicates", true)},
+    {group:"Actions", type:"CMD", label:"Open Memory Ref Health", meta:NOTES.filter(n => n.ref_status !== "valid").length + " refs need attention · /api/memories", hint:"alt 2", run:() => togglePanel("memory", true)},
+    {group:"Actions", type:"CMD", label:"Open Live Journal", meta:"retained_journal window · /events", hint:"alt 3", run:() => togglePanel("journal", true)},
+    {group:"Actions", type:"CMD", label:"Verify all modified refs", meta:"POST /api/memory/touch · 1 pending", run:() => { const i = NOTES.findIndex(n => n.ref_status === "modified"); if (i >= 0) selectNote(i); togglePanel("memory", true); verifyRef(); }},
+    {group:"Actions", type:"CMD", label:"Toggle light / dark theme", meta:"data-theme + localStorage", run:() => toggleTheme()}
+  ];
+  Object.keys(AGENT_AGGS).forEach(k => {
+    const a = AGENT_AGGS[k];
+    items.push({group:"Agents", type:"AGNT", label:a.display, meta:fmtInt(a.calls) + " calls · " + a.errors + " errors · " + a.reliability_pct.toFixed(1) + "% ok", run:() => { togglePanel("journal", true); setFilter("agent", k); }});
+  });
+  Object.keys(REPO_AGGS).forEach(p => {
+    const r = REPO_AGGS[p];
+    items.push({group:"Repos", type:"REPO", label:r.display, meta:fmtInt(r.calls) + " calls · hit " + r.search_hit_rate_pct + "% · " + Object.keys(r.worktrees || {}).length + " wt · pool " + (REUSE.summary.repo_candidate_pools[p] || 0), run:() => { togglePanel("journal", true); setFilter("repo", r.display); }});
+  });
+  REUSE.candidates.forEach((c, i) => {
+    items.push({group:"Reuse candidates", type:"REUSE", label:c.symbol + " → " + c.canonical, meta:c.detector + " · " + (c.overlap_pct == null ? "structural" : "overlap " + c.overlap_pct + "%") + " · " + c.loc_saving + " loc · " + c.confidence, run:() => { selectCandidate(i); togglePanel("duplicates", true); }});
+  });
+  NOTES.forEach((n, i) => {
+    items.push({group:"Memory notes", type:"NOTE", label:n.key, meta:n.kind + " · rev " + n.rev + " · ref " + n.ref_status, run:() => { selectNote(i); togglePanel("memory", true); }});
+  });
+  FEED.slice(0, 3).forEach(e => {
+    items.push({group:"Recent invocations", type:"CALL", label:e.tool + " " + argsPreview(e), meta:e.repo_name + " · " + e.agent + " · " + fmtMs(e.latency_us) + " · exit " + e.exit_code, run:() => togglePanel("journal", true)});
+  });
+  PALETTE = items;
+}
+function briefingHtml() {
+  const S = SUMMARY, R = REUSE.summary, T = S.tool_aggs.callers;
+  const row = (k, v, t) => '<div class="b-row" title="' + escapeHtml(t) + '"><span class="b-k">' + k + '</span><span class="b-v">' + v + '</span></div>';
+  const agents = Object.keys(AGENT_AGGS).map(k => AGENT_AGGS[k].display + " " + fmtInt(AGENT_AGGS[k].calls)).join(" · ");
+  return '<div class="p-briefing"><div class="b-title">Bench briefing · GET /api/summary</div>' +
+    row("calls", fmtInt(S.total_calls) + " · " + S.error_count + " err", "summary.total_calls · error_count") +
+    row("ok", S.reliability_pct.toFixed(1) + "%", "summary.reliability_pct") +
+    row("graph calls", fmtInt(S.graph_calls), "summary.graph_calls") +
+    row("p50", S.p50_ms.toFixed(1) + " ms · graph " + S.graph_p50_ms.toFixed(1) + " ms", "summary.p50_ms · summary.graph_p50_ms") +
+    row("tokens avoided", fmtCompact(S.saved_tokens) + " · graph " + fmtCompact(S.graph_saved_tokens), "summary.saved_tokens · summary.graph_saved_tokens") +
+    row("est. value", "$" + S.saved_dollars.toFixed(2), "summary.saved_dollars · *_estimated flag true · $15/MTok blended rate") +
+    row("callers tool", fmtInt(T.calls) + " calls · p50 " + T.p50.toFixed(1) + " ms", "summary.tool_aggs.callers") +
+    row("agents", agents + " — " + S.error_count + " err", "agent_aggs — calls per agent") +
+    row("sessions", S.session_count + " · recall " + S.session_recall_pct.toFixed(1) + "%", "summary.session_count · session_recall_pct") +
+    row("reuse pool", R.total_candidates + " · " + R.preventable_loc + " loc (est.)", "reuse.summary.total_candidates · preventable_loc") +
+    row("pre-write scans", fmtInt(R.prewrite_count), "reuse.summary.prewrite_count") +
+    row("repos", Object.keys(REPO_AGGS).map(p => REPO_AGGS[p].display).join(" · "), "repo_aggs — display names") +
+    '</div>';
+}
+function renderPalette(q) {
+  q = q.trim().toLowerCase();
+  filtered = PALETTE.filter(it => !q || (it.type + " " + it.group + " " + it.label + " " + it.meta).toLowerCase().includes(q));
+  activeIdx = 0;
+  let html = q ? "" : briefingHtml(), lastGroup = null;
+  filtered.forEach((it, i) => {
+    if (it.group !== lastGroup) { html += '<div class="p-group">' + it.group + '</div>'; lastGroup = it.group; }
+    html += '<div class="p-item' + (i === activeIdx ? " active" : "") + '" role="option" aria-selected="' + (i === activeIdx) + '" data-idx="' + i + '">' +
+      '<span class="p-type t-' + it.type.toLowerCase() + '">' + it.type + '</span>' +
+      '<span class="p-label">' + escapeHtml(it.label) + '</span>' +
+      '<span class="p-meta">' + escapeHtml(it.meta) + '</span>' +
+      (it.hint ? '<span class="kbd">' + it.hint + '</span>' : "") + '</div>';
+  });
+  $("#paletteResults").innerHTML = html || '<div class="p-empty">No matches. Palette indexes actions, agents, repos, reuse candidates, memory notes and recent invocations.</div>';
+}
+function syncActive() {
+  $$("#paletteResults .p-item").forEach((el, i) => {
+    el.classList.toggle("active", i === activeIdx);
+    el.setAttribute("aria-selected", String(i === activeIdx));
+    if (i === activeIdx) el.scrollIntoView({block:"nearest"});
+  });
+}
+function openPalette() {
+  paletteOpen = true;
+  prePaletteFocus = document.activeElement;
+  $("#paletteOverlay").hidden = false;
+  const inp = $("#paletteInput");
+  inp.value = "";
+  renderPalette("");
+  inp.focus();
+}
+function closePalette() {
+  paletteOpen = false;
+  $("#paletteOverlay").hidden = true;
+  if (prePaletteFocus && prePaletteFocus.focus) prePaletteFocus.focus();
+}
+function runItem(i) { const it = filtered[i]; if (!it) return; closePalette(); it.run(); }
+
+/* Theme: effective theme = saved || prefers-color-scheme, so the label always matches what is rendered */
+function toggleTheme() {
+  const root = document.documentElement;
+  const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  root.setAttribute("data-theme", next);
+  try { localStorage.setItem("eg-theme", next); } catch (e) {}
+  $("#themeBtn").textContent = next === "dark" ? "Light" : "Dark";
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("eg-theme"); } catch (e) {}
+  const effective = saved || (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", effective);
+  $("#themeBtn").textContent = effective === "dark" ? "Light" : "Dark";
+})();
+
+/* Wiring */
+function selectCandidate(i) { selCand = i; renderCandList(); renderDuplicates(); }
+function selectNote(i) { selNote = i; renderNoteList(); renderNote(); }
+$("#paletteBtn").addEventListener("click", openPalette);
+$("#paletteOverlay").addEventListener("click", e => {
+  const item = e.target.closest(".p-item");
+  if (item) runItem(Number(item.dataset.idx));
+  else if (e.target === $("#paletteOverlay")) closePalette();
+});
+$("#paletteInput").addEventListener("input", e => renderPalette(e.target.value));
+$("#themeBtn").addEventListener("click", toggleTheme);
+$("#liveChip").addEventListener("click", () => {
+  setLive(liveState === "live" ? "poll" : "live");
+  announce("Simulated connection state: " + liveState + (liveState === "poll" ? " — poll fallback active" : " — SSE stream restored") + ".");
+});
+$("#copySiteBtn").addEventListener("click", () => {
+  const c = REUSE.candidates[selCand];
+  copyText(c.canonical + " — " + c.canonical_file + ":" + c.canonical_line + " (" + c.canonical_callers + " callers)", "Copied canonical site: " + c.canonical + " · " + c.canonical_file + ":" + c.canonical_line);
+});
+$("#copyCliBtn").addEventListener("click", () => {
+  const c = REUSE.candidates[selCand];
+  copyText("eg callers " + c.canonical, "Copied: eg callers " + c.canonical + " — verify callers before merging.");
+});
+$("#applyBtn").addEventListener("click", applyStaged);
+$("#noteDossier").addEventListener("click", e => {
+  if (e.target.id === "verifyBtn" || e.target.closest("#verifyBtn")) verifyRef();
+  else if (e.target.id === "errBtn" || e.target.closest("#errBtn")) simulateTouchError();
+  else if (e.target.id === "refetchBtn" || e.target.closest("#refetchBtn")) refetchMemories();
+});
+$("#candList").addEventListener("click", e => {
+  const row = e.target.closest(".pick-row");
+  if (row) selectCandidate(Number(row.dataset.i));
+});
+$("#noteList").addEventListener("click", e => {
+  const row = e.target.closest(".pick-row");
+  if (row) selectNote(Number(row.dataset.i));
+});
+$("#agentRollup").addEventListener("click", e => {
+  const pill = e.target.closest("[data-agent]");
+  if (pill) setFilter("agent", pill.dataset.agent);
+});
+$$(".pill-set").forEach(set => set.addEventListener("click", e => {
+  const pill = e.target.closest(".pill");
+  if (!pill) return;
+  feedFilters[set.dataset.filter] = pill.dataset.v;
+  $$(".pill", set).forEach(p => p.classList.toggle("is-on", p === pill));
+  renderFeed();
+}));
+$("#feedSearch").addEventListener("input", e => { feedFilters.q = e.target.value; renderFeed(); });
+$$(".panel-close").forEach(b => b.addEventListener("click", () => togglePanel(b.dataset.close)));
+$("#bench").addEventListener("click", e => {
+  const panel = e.target.closest(".panel");
+  if (panel) PANEL_IDS.forEach(id => { if ($("#panel-" + id) === panel) lastPanel = id; });
+});
+document.addEventListener("keydown", e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); paletteOpen ? closePalette() : openPalette(); return; }
+  if (paletteOpen) {
+    if (e.key === "Escape") closePalette();
+    else if (e.key === "Tab") e.preventDefault(); /* focus trap: input is the sole focusable */
+    else if (e.key === "ArrowDown") { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, filtered.length - 1); syncActive(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); syncActive(); }
+    else if (e.key === "Enter") { e.preventDefault(); runItem(activeIdx); }
+    return;
+  }
+  const tag = (document.activeElement || {}).tagName || "";
+  const typing = /^(INPUT|TEXTAREA)$/.test(tag);
+  if (e.key === "/" && !typing) { e.preventDefault(); openPalette(); }
+  else if (e.key === "Escape" && !typing) { if (!$("#panel-" + lastPanel).hidden) togglePanel(lastPanel, false); }
+  else if (e.altKey && /^Digit[1-3]$/.test(e.code)) { e.preventDefault(); togglePanel(PANEL_IDS[Number(e.code.slice(5)) - 1]); }
+  else if ((e.key === "n" || e.key === "N") && !typing) { applyStaged(); }
+});
+
+/* Init */
+renderDigest();
+renderCandList();
+renderDuplicates();
+renderMemCounts();
+renderNoteList();
+renderNote();
+renderRollup();
+renderFilterPills();
+renderFeed();
+syncBench();
+buildPalette();
+startLive();
+renderSb();
+openPalette(); /* palette-first boot: the primary surface opens with the briefing + grouped results */
+</script>
+</body>
+</html>

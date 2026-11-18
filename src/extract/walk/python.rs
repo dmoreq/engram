@@ -141,32 +141,30 @@ fn push_from_binding(
     name: &str,
     bound: Option<String>,
 ) {
-    // `from .. import X` at a first-level package has an empty parent: bind
-    // the root child directly.
-    let alias = if ctx.module.is_empty() {
-        ImportTarget::ModuleRoot {
-            path: name.to_string(),
-        }
+    let bound_name = bound.unwrap_or_else(|| name.to_string());
+    if ctx.module.is_empty() {
+        fx.bindings.aliases.push((
+            ctx.scope.to_string(),
+            bound_name,
+            ImportTarget::ModuleRoot {
+                path: name.to_string(),
+            },
+        ));
+        fx.import_edges
+            .push(ImportEdgeCandidate::module(ctx.line, name.to_string()));
     } else {
-        ImportTarget::Symbol {
-            module: ctx.module.to_string(),
-            name: name.to_string(),
-        }
-    };
-    fx.bindings.aliases.push((
-        ctx.scope.to_string(),
-        bound.unwrap_or_else(|| name.to_string()),
-        alias,
-    ));
-    fx.import_edges.push(ImportEdgeCandidate::module(
-        ctx.line,
-        if ctx.module.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}.{}", ctx.module, name)
-        },
-    ));
-    if !ctx.module.is_empty() {
+        fx.bindings.aliases.push((
+            ctx.scope.to_string(),
+            bound_name,
+            ImportTarget::Symbol {
+                module: ctx.module.to_string(),
+                name: name.to_string(),
+            },
+        ));
+        fx.import_edges.push(ImportEdgeCandidate::module(
+            ctx.line,
+            format!("{}.{}", ctx.module, name),
+        ));
         fx.import_edges.push(ImportEdgeCandidate::symbol(
             ctx.line,
             ctx.module.to_string(),
@@ -227,27 +225,14 @@ pub(super) fn visit_python_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
 }
 
 fn visit_decorated_definition<'a>(w: &mut Walker<'a, '_, '_>) {
-    let mut cursor = w.node.walk();
-    let mut decorators = Vec::new();
-    for child in w.node.children(&mut cursor) {
-        if child.kind() == "decorator" {
-            decorators.push(child);
-        }
-    }
-    for d in decorators {
-        let mut stack = vec![d];
-        while let Some(n) = stack.pop() {
-            if n.kind() == "call" {
-                record_call(n, w.src, w.fx, w.ctx);
-            }
-            let mut c = n.walk();
-            for child in n.children(&mut c) {
-                stack.push(child);
-            }
-        }
-    }
     if let Some(def) = w.node.child_by_field_name("definition") {
         w.work.push(Step::Visit(def));
+    }
+    let mut cursor = w.node.walk();
+    for child in w.node.children(&mut cursor) {
+        if child.kind() == "decorator" {
+            w.work.push(Step::Visit(child));
+        }
     }
 }
 
@@ -257,14 +242,13 @@ fn visit_python_function<'a>(w: &mut Walker<'a, '_, '_>) {
     };
     let name = text(name_node, w.src);
     let parent_qn = innermost_scope(w.ctx, &w.fx.module);
-    let kind = if w.ctx.class_stack.last() == Some(&parent_qn) {
+    let kind = if w.ctx.class_stack.last().map(|s| s.as_str()) == Some(parent_qn) {
         SymbolKind::Method
     } else {
         SymbolKind::Function
     };
     let qualname = format!("{parent_qn}.{name}");
-    let mut spec = w.callable_spec(kind, &name, &qualname);
-    spec.always_push_scope = true;
+    let spec = w.callable_spec(kind, &name, &qualname);
     define_callable(w, &spec);
 }
 
@@ -293,11 +277,9 @@ fn visit_python_class<'a>(w: &mut Walker<'a, '_, '_>) {
             }
         }
     }
-    w.ctx.class_stack.push(qualname);
     if let Some(body) = w.node.child_by_field_name("body") {
+        w.ctx.class_stack.push(qualname);
         w.work.push(Step::PopClass);
         push_children_rev(w.work, body);
-    } else {
-        w.ctx.class_stack.pop();
     }
 }

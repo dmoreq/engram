@@ -53,10 +53,9 @@ pub(crate) fn parse_edge_kinds(spec: &str) -> Result<Vec<EdgeKind>> {
 /// vocabulary. Lives here because impact is its only consumer.
 pub(crate) const EDGE_SRC_JOIN: &str = "JOIN symbols s ON s.id = e.src_id";
 
-/// Destination-side joins shared by every impact SQL statement that filters
-/// on the destination file: edge -> destination symbol -> its file.
-const IMPACT_DST_JOINS: &str = "JOIN symbols ds ON ds.id = e.dst_id
-         JOIN files df ON df.id = ds.file_id";
+/// Destination-side join shared by impact SQL statements that filter on the
+/// destination file: edge -> destination symbol. Uses denormalized `file_path`.
+const IMPACT_DST_JOIN: &str = "JOIN symbols ds ON ds.id = e.dst_id";
 
 fn impact_empty_detail(kinds: &[EdgeKind]) -> String {
     let has_imports = kinds.contains(&EdgeKind::Imports);

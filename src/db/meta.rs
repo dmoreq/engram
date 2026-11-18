@@ -51,38 +51,19 @@ pub(crate) mod meta_keys {
 /// line (build), so a new counter is registered once and both readers stay
 /// in sync. The fallback COUNT keeps pre-counter indexes working. Kind
 /// filters render through the enum so the vocabularies stay single-sourced.
-fn meta_counters() -> Vec<(&'static str, String)> {
-    let edge_count = |kind: EdgeKind| -> String {
-        format!(
-            "SELECT COUNT(*) FROM edges WHERE kind = '{}'",
-            kind.as_str()
-        )
-    };
-    vec![
-        (
-            meta_keys::FILE_COUNT,
-            "SELECT COUNT(*) FROM files".to_string(),
-        ),
-        (
-            meta_keys::SYMBOL_COUNT,
-            "SELECT COUNT(*) FROM symbols".to_string(),
-        ),
-        (
-            meta_keys::EDGE_COUNT,
-            "SELECT COUNT(*) FROM edges".to_string(),
-        ),
-        (meta_keys::EDGE_CALLS, edge_count(EdgeKind::Calls)),
-        (meta_keys::EDGE_IMPORTS, edge_count(EdgeKind::Imports)),
-        (meta_keys::EDGE_INHERITS, edge_count(EdgeKind::Inherits)),
-        (
-            meta_keys::PARSE_ERROR_COUNT,
-            "SELECT COALESCE(SUM(parse_status != 'ok'), 0) FROM files".to_string(),
-        ),
-        (
-            meta_keys::UNRESOLVED_CALLEE_COUNT,
-            "SELECT COALESCE(SUM(unresolved), 0) FROM files".to_string(),
-        ),
-    ]
+/// Fallback SQL queries for build-time meta counters (pre-counter index).
+fn fallback_counter_sql(key: &str) -> &'static str {
+    match key {
+        meta_keys::FILE_COUNT => "SELECT COUNT(*) FROM files",
+        meta_keys::SYMBOL_COUNT => "SELECT COUNT(*) FROM symbols",
+        meta_keys::EDGE_COUNT => "SELECT COUNT(*) FROM edges",
+        meta_keys::EDGE_CALLS => "SELECT COUNT(*) FROM edges WHERE kind = 'calls'",
+        meta_keys::EDGE_IMPORTS => "SELECT COUNT(*) FROM edges WHERE kind = 'imports'",
+        meta_keys::EDGE_INHERITS => "SELECT COUNT(*) FROM edges WHERE kind = 'inherits'",
+        meta_keys::PARSE_ERROR_COUNT => "SELECT COALESCE(SUM(parse_status != 'ok'), 0) FROM files",
+        meta_keys::UNRESOLVED_CALLEE_COUNT => "SELECT COALESCE(SUM(unresolved), 0) FROM files",
+        _ => "SELECT 0",
+    }
 }
 
 /// Counter value for `key`: the build-time meta entry when present, else the
@@ -91,48 +72,34 @@ pub(crate) fn meta_count(conn: &Connection, key: &str) -> Result<i64> {
     if let Some(v) = meta_get(conn, key).and_then(|v| v.parse::<i64>().ok()) {
         return Ok(v);
     }
-    let counters = meta_counters();
-    let sql = counters
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, sql)| sql.as_str())
-        .unwrap_or("SELECT 0");
+    let sql = fallback_counter_sql(key);
     Ok(conn.query_row(sql, [], |r| r.get(0))?)
+}
+
+fn git_cmd(root: &Path, args: &[&str]) -> Option<std::process::Output> {
+    let mut command = std::process::Command::new("git");
+    for (key, _) in std::env::vars() {
+        if key.starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
 }
 
 /// Probe the source repo's git revision with a `-dirty` suffix on a dirty tree.
 pub fn source_rev(root: &Path) -> String {
-    let mut command = std::process::Command::new("git");
-    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
-        if key.starts_with("GIT_") {
-            command.env_remove(key);
-        }
-    }
-    let head = command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
+    let head = git_cmd(root, &["rev-parse", "HEAD"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let Some(mut rev) = head else {
         return "unknown".to_string();
     };
-    let mut command = std::process::Command::new("git");
-    for key in std::env::vars().map(|(k, _)| k).collect::<Vec<_>>() {
-        if key.starts_with("GIT_") {
-            command.env_remove(key);
-        }
-    }
-    let dirty = command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(["status", "--porcelain"])
-        .current_dir(root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| !o.stdout.is_empty());
+    let dirty = git_cmd(root, &["status", "--porcelain"]).is_some_and(|o| !o.stdout.is_empty());
     if dirty {
         rev.push_str("-dirty");
     }

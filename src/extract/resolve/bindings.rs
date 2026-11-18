@@ -86,28 +86,18 @@ pub(super) fn latest_binding<'a>(
     site_line: usize,
     include_params: bool,
 ) -> Option<&'a Vec<String>> {
-    let mut best: Option<(usize, &'a Vec<String>)> = None;
+    let key = (scope.to_string(), var.to_string());
+    if let Some(events) = fctx.bindings.assignments.get(&key) {
+        if let Some((_, target)) = events.iter().rev().find(|(line, _)| *line <= site_line) {
+            return Some(target);
+        }
+    }
     if include_params {
-        if let Some(ann) = fctx
-            .bindings
-            .params
-            .get(&(scope.to_string(), var.to_string()))
-        {
-            best = Some((0, ann));
+        if let Some(ann) = fctx.bindings.params.get(&key) {
+            return Some(ann);
         }
     }
-    if let Some(events) = fctx
-        .bindings
-        .assignments
-        .get(&(scope.to_string(), var.to_string()))
-    {
-        for (line, target) in events {
-            if *line <= site_line && best.is_none_or(|(best_line, _)| *line >= best_line) {
-                best = Some((*line, target));
-            }
-        }
-    }
-    best.map(|(_, target)| target)
+    None
 }
 
 /// Receiver typing at a call site: the latest annotation or assignment at or
@@ -121,16 +111,13 @@ pub(super) fn resolve_var_class(
     site_line: usize,
 ) -> Option<String> {
     let fctx = &t.file_ctx[fi];
-    if let Some(target) = latest_binding(fctx, scope, var, site_line, true) {
-        // An unknown local assignment blocks the outer module binding; it
-        // must not fall back to a stale class.
-        if target.is_empty() {
-            return None;
-        }
-        return resolve_class_of_chain(t, fi, target, scope);
-    }
-    if !scope.is_empty() {
-        if let Some(target) = latest_binding(fctx, "", var, site_line, false) {
+    let scopes: &[(&str, bool)] = if scope.is_empty() {
+        &[(scope, true)]
+    } else {
+        &[(scope, true), ("", false)]
+    };
+    for &(s, inc_params) in scopes {
+        if let Some(target) = latest_binding(fctx, s, var, site_line, inc_params) {
             if target.is_empty() {
                 return None;
             }
@@ -148,21 +135,22 @@ pub(super) fn resolve_base_chain(
     chain: &[String],
     inheriting_qn: &str,
 ) -> Option<String> {
+    let chain_str = chain.join(".");
     let mut parent = inheriting_qn
         .rsplit_once('.')
-        .map(|(p, _)| p.to_string())
+        .map(|(p, _)| p)
         .unwrap_or_default();
     loop {
         let candidate = if parent.is_empty() {
-            chain.join(".")
+            chain_str.clone()
         } else {
-            format!("{parent}.{}", chain.join("."))
+            format!("{parent}.{chain_str}")
         };
         if unique_class_exists(t, &candidate) {
             return Some(candidate);
         }
         match parent.rsplit_once('.') {
-            Some((p, _)) => parent = p.to_string(),
+            Some((p, _)) => parent = p,
             None => break,
         }
     }

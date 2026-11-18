@@ -2,8 +2,12 @@
 
 use super::*;
 
-pub(super) fn text(node: Node<'_>, src: &[u8]) -> String {
+pub(crate) fn text(node: Node<'_>, src: &[u8]) -> String {
     node.utf8_text(src).unwrap_or("").to_string()
+}
+
+pub(crate) fn node_str<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
+    node.utf8_text(src).unwrap_or("")
 }
 
 /// One-line signature (Amendments 12a and 18): capture the declaration
@@ -159,20 +163,14 @@ fn call_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
 
 /// Rust scoped path (`a::b::c`): append `name` to the chain of `path`.
 fn scoped_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
-    let mut chain = Vec::new();
-    if let Some(path) = node.child_by_field_name("path") {
-        if let Some(mut sub) = dotted_chain(path, src) {
-            chain.append(&mut sub);
-        }
-    }
+    let mut chain = node
+        .child_by_field_name("path")
+        .and_then(|p| dotted_chain(p, src))
+        .unwrap_or_default();
     if let Some(name) = node.child_by_field_name("name") {
         chain.push(text(name, src));
     }
-    if chain.is_empty() {
-        None
-    } else {
-        Some(chain)
-    }
+    (!chain.is_empty()).then_some(chain)
 }
 
 /// `Trait<T>`: use the first type identifier as the base name.

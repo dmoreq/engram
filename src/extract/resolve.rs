@@ -69,6 +69,18 @@ struct Tables {
     file_by_module: HashMap<String, usize>,
 }
 
+impl Tables {
+    pub(super) fn qualname_child(&self, qualname: &str) -> Option<&[usize]> {
+        self.by_qualname.get(qualname).map(|v| v.as_slice())
+    }
+
+    pub(super) fn mod_child(&self, module: &str, name: &str) -> Option<&[usize]> {
+        self.by_mod_name
+            .get(&(module.to_string(), name.to_string()))
+            .map(|v| v.as_slice())
+    }
+}
+
 enum Outcome {
     Extracted(usize),
     Ambiguous(String),

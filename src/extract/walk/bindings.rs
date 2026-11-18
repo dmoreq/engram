@@ -30,9 +30,11 @@ pub(super) fn collect_param_types(
     let mut cursor = params.walk();
     for p in params.children(&mut cursor) {
         push_param_local(w, p, scope, is_method_receiver);
-        push_rust_param(w, p, scope);
-        push_ts_param(w, p, scope);
-        push_typed_param(w, p, scope);
+        match w.fx.lang {
+            Lang::Rust => push_rust_param(w, p, scope),
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => push_ts_param(w, p, scope),
+            Lang::Python => push_typed_param(w, p, scope),
+        }
     }
 }
 
@@ -269,7 +271,7 @@ fn direct_call_target(right: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
 
 /// The field name when the assignment target is `self.<field>`.
 fn self_field_target(obj: Node<'_>, attr: Node<'_>, src: &[u8]) -> Option<String> {
-    (obj.kind() == "identifier" && text(obj, src) == "self").then(|| text(attr, src))
+    (obj.kind() == "identifier" && node_str(obj, src) == "self").then(|| text(attr, src))
 }
 
 /// TS/Rust `value = ...` reassignment. A direct constructor updates the
@@ -286,6 +288,15 @@ fn record_pattern_shadow(
 ) {
     if node.kind() == "identifier" {
         push_assignment(fx, text(node, src), Vec::new(), ctx, site_line);
+        return;
+    }
+    // Attribute assignment targets (`self.x = v`, `obj.x = v`) are not
+    // patterns: descending would record `x` as a shadowing local and erase
+    // the receiver's known type for later calls.
+    if matches!(
+        node.kind(),
+        "attribute" | "member_expression" | "field_expression"
+    ) {
         return;
     }
     let mut cursor = node.walk();
@@ -310,11 +321,7 @@ pub(super) fn record_reassignment(
         return;
     };
     let target = match fx.lang {
-        Lang::TypeScript | Lang::Tsx | Lang::JavaScript if right.kind() == "new_expression" => {
-            right
-                .child_by_field_name("constructor")
-                .and_then(|c| dotted_chain(c, src))
-        }
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => direct_call_target(right, src),
         Lang::Rust => rust::rust_constructor_target(right, src, ctx),
         _ => None,
     };

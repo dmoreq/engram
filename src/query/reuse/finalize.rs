@@ -9,6 +9,23 @@ pub(super) fn finalize(
     mut report: ReuseReport,
     opts: &ReuseOpts,
 ) -> Result<crate::query::LineQuery> {
+    let freshness_headers = report.freshness.headers();
+    crate::journal::set_freshness(crate::journal::ReuseFreshness {
+        state: report.freshness.state.as_str(),
+        changed_files: report.freshness.changed_files,
+        checked_files: report.freshness.checked_files,
+        unknown_count: report.freshness.unknown_count,
+        unknown_reason: report.freshness.unknown_reason.map(|r| r.as_str()),
+    });
+    // Filter before sorting: only retained candidates need to be ordered.
+    let extra_below = report
+        .pool
+        .iter()
+        .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
+        .count();
+    report
+        .pool
+        .retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     report.pool.sort_by(|a, b| {
         b.confidence
             .rank()
@@ -22,26 +39,6 @@ pub(super) fn finalize(
             .then_with(|| a.canonical_file.cmp(&b.canonical_file))
             .then_with(|| a.canonical_line.cmp(&b.canonical_line))
     });
-    let freshness_headers = report.freshness.headers();
-    crate::journal::set_freshness(crate::journal::ReuseFreshness {
-        state: report.freshness.state.as_str(),
-        changed_files: report.freshness.changed_files,
-        checked_files: report.freshness.checked_files,
-        unknown_count: report.freshness.unknown_count,
-        unknown_reason: report.freshness.unknown_reason.map(|r| r.as_str()),
-    });
-    // Candidates the collect-time confidence gate removed were never in this
-    // pool (they are already in `counts.below_threshold`); `extra_below`
-    // counts only judge rejections' survivors and freshness demotions that
-    // slipped past the pre-filter, so summing the two cannot double count.
-    let extra_below = report
-        .pool
-        .iter()
-        .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
-        .count();
-    report
-        .pool
-        .retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     let below_threshold = report.counts.below_threshold + extra_below;
     let eligible = report.pool.len();
     let limit_omitted = eligible.saturating_sub(opts.limit);
@@ -230,7 +227,6 @@ mod tests {
             raw_client: None,
             confidence: ReuseConfidence::Medium,
             reasons: Vec::new(),
-            freshness: Freshness::Fresh,
         }
     }
 

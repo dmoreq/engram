@@ -16,6 +16,9 @@ pub(super) struct HttpRequest {
 
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 const MAX_HEADERS: usize = 64;
+/// Tool-facing POST bodies (JSON commands) never approach this; anything
+/// larger is either abuse or a client bug, and both are refused.
+const MAX_BODY_BYTES: usize = 4096;
 
 pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Option<HttpRequest>> {
     let mut reader = BufReader::new(stream);
@@ -47,32 +50,43 @@ pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Optio
     let mut header_count = 0usize;
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
+        // Bound each header line read like the request line above: take()
+        // stops at the remaining budget so a no-newline header cannot grow
+        // the buffer without limit before the byte cap is checked.
+        let remaining = (MAX_HEADER_BYTES + 1).saturating_sub(header_bytes) as u64;
+        let read = (&mut reader).take(remaining).read_line(&mut line)?;
+        if read == 0 || line.trim().is_empty() {
             break;
         }
-        header_bytes += line.len();
+        if !line.ends_with('\n') {
+            // The take() budget ran out mid-line: over the cap, refuse.
+            return Ok(None);
+        }
+        header_bytes += read;
         header_count += 1;
         if header_bytes > MAX_HEADER_BYTES || header_count > MAX_HEADERS {
             return Ok(None);
         }
-        let lower = line.to_lowercase();
-        let value = line.split_once(':').map(|(_, v)| v.trim().to_string());
-        if let Some(val) = value {
-            if lower.starts_with("content-length:") {
+        if let Some((header_name, header_val)) = line.split_once(':') {
+            let name = header_name.trim();
+            let val = header_val.trim();
+            if name.eq_ignore_ascii_case("content-length") {
                 content_length = val.parse().unwrap_or(0);
-            } else if lower.starts_with("content-type:") {
-                content_type = val.to_lowercase();
-            } else if lower.starts_with("origin:") {
-                origin = Some(val);
-            } else if lower.starts_with("host:") {
-                host = Some(val);
+            } else if name.eq_ignore_ascii_case("content-type") {
+                content_type = val.to_ascii_lowercase();
+            } else if name.eq_ignore_ascii_case("origin") {
+                origin = Some(val.to_string());
+            } else if name.eq_ignore_ascii_case("host") {
+                host = Some(val.to_string());
             }
         }
     }
 
     let mut body = Vec::new();
-    if content_length > 0 && content_length < 1_000_000 {
-        use std::io::Read;
+    if content_length > MAX_BODY_BYTES {
+        return Ok(None);
+    }
+    if content_length > 0 {
         body.resize(content_length, 0);
         reader.read_exact(&mut body)?;
     }
@@ -93,8 +107,11 @@ pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Optio
 /// `[::1]:port` is accepted; bare IPv6 forms (`::1`, `::1:8080`) have no
 /// unambiguous hostname and stay rejected.
 pub(super) fn host_allowed(host: Option<&str>) -> bool {
+    // A missing Host is not a loopback attestation: HTTP/1.1 requires it,
+    // and accepting it would let a client skip the DNS-rebinding guard
+    // entirely.
     let Some(host) = host else {
-        return true;
+        return false;
     };
     let Some(name) = host_name(host) else {
         return false;

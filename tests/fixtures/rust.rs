@@ -176,3 +176,25 @@ fn rust_inline_mod_self_and_super_paths_resolve() {
         "super::outer() must resolve in the parent module: {edges:?}"
     );
 }
+
+#[test]
+fn rust_scoped_self_import_binds_module_alias() {
+    // `use inner::{self}` must bind the `inner` alias so qualified calls
+    // through it resolve; bare module_paths does not carry inline mods.
+    let src = "mod inner {\n    pub fn helper() -> i32 {\n        1\n    }\n}\n\nuse inner::{self};\n\npub fn run() -> i32 {\n    inner::helper()\n}\n";
+    let edges = rust_call_edges(&[("src/lib.rs", src)]);
+    let parsed = parse_source(src.as_bytes(), Lang::Rust).unwrap();
+    let fx = extract_file(0, "src/lib.rs", src.as_bytes(), &parsed);
+    eprintln!("MODULE={:?}", fx.module);
+    eprintln!(
+        "SYMS={:?}",
+        fx.symbols.iter().map(|s| &s.qualname).collect::<Vec<_>>()
+    );
+    eprintln!("EDGES={edges:?}");
+    assert!(
+        edges
+            .iter()
+            .any(|(c, n)| c == "EXTRACTED" && n.ends_with(".inner.helper")),
+        "inner::helper() must resolve through the scoped self alias: {edges:?}"
+    );
+}

@@ -80,7 +80,7 @@ pub(super) fn impact_deep(qctx: &QueryCtx<'_>, ctx: &ImpactCtx<'_>) -> Result<Qu
     if truncated {
         let header = out.header.get_or_insert_with(String::new);
         header.push_str(&format!(
-            "\naw: depth cap {} reached; deeper dependents may exist",
+            "\neg: depth cap {} reached; deeper dependents may exist",
             ctx.depth
         ));
     }
@@ -136,9 +136,9 @@ fn direct_impact_records(
     let sql = format!(
         "SELECT MIN(e.site_line), MIN(e.kind), s.file_path, MIN(s.qualname), MIN(s.kind)
          FROM edges e
-         {IMPACT_DST_JOINS}
+         {IMPACT_DST_JOIN}
          {EDGE_SRC_JOIN}
-         WHERE df.path = ?1 AND e.kind IN ({kind_sql})
+         WHERE ds.file_path = ?1 AND e.kind IN ({kind_sql})
          GROUP BY s.file_path"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -166,8 +166,8 @@ fn direct_impact_frontier(
     let mut visited: HashSet<i64> = file_symbol_ids(conn, ctx.rel)?.into_iter().collect();
     let sql = format!(
         "SELECT DISTINCT e.src_id FROM edges e
-         {IMPACT_DST_JOINS}
-         WHERE df.path = ?1 AND e.kind IN ({kind_sql})"
+         {IMPACT_DST_JOIN}
+         WHERE ds.file_path = ?1 AND e.kind IN ({kind_sql})"
     );
     let mut stmt = conn.prepare(&sql)?;
     let mut frontier = Vec::new();
@@ -259,8 +259,7 @@ struct ImpactRecord {
 
 /// Symbol ids defined by one indexed file (the impact BFS seed set).
 fn file_symbol_ids(conn: &Connection, rel: &str) -> Result<Vec<i64>> {
-    let mut stmt = conn
-        .prepare("SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1")?;
+    let mut stmt = conn.prepare("SELECT s.id FROM symbols s WHERE s.file_path = ?1")?;
     let rows = stmt.query_map([rel], |r| r.get(0))?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }

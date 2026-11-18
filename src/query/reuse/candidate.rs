@@ -43,6 +43,5 @@ pub(super) fn make_candidate(
         raw_client,
         confidence,
         reasons,
-        freshness: Freshness::Fresh,
     }
 }

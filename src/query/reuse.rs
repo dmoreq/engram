@@ -4,7 +4,6 @@
 
 mod allowlist;
 mod candidate;
-mod confidence;
 mod corpus;
 mod coverage;
 mod detectors;
@@ -66,7 +65,6 @@ pub struct ReuseCandidate {
     pub raw_client: Option<String>,
     pub confidence: ReuseConfidence,
     pub reasons: Vec<ReasonCode>,
-    pub freshness: Freshness,
 }
 
 impl ReuseCandidate {

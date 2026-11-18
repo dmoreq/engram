@@ -2,7 +2,7 @@
 //! closures over the resolved call-edge set.
 
 use super::frame::{
-    callee_empty_reason, direct_callees, direct_callers, transitive_page, TransitiveQuery,
+    callee_empty_reason, direct_callees, direct_callers, transitive_page, TransitivePlan,
 };
 use super::*;
 use crate::db::EDGE_SRC_FILE_JOIN;
@@ -40,15 +40,7 @@ pub fn callers(ctx: &QueryCtx<'_>, name: &str, opts: GraphQueryOpts) -> Result<Q
             "0 callers found (dynamic dispatch possible — grep fallback recommended)".to_string(),
         ));
     }
-    let rows = callers.into_iter().map(|row| {
-        Ok(Pointer {
-            file: row.path,
-            line: row.site_line,
-            tag: confidence_tag(&row.confidence),
-            detail: row.qualname,
-        })
-    });
-    collect_output(ctx, rows, limit, total)
+    collect_output(ctx, callers.into_iter().map(Ok), limit, total)
 }
 
 /// Transitive callers (depth > 1), symmetric with `callees_transitive`.
@@ -70,9 +62,8 @@ fn callers_transitive(
         ids,
         depth,
         limit,
-        TransitiveQuery {
-            cte,
-            select,
+        TransitivePlan {
+            sql: (cte, select),
             order_by: "lvl, path, line, qn",
             caveat: Some(caveat),
         },
@@ -133,28 +124,14 @@ fn callers_transitive_sql(ids_len: usize) -> (String, String) {
 pub fn callees(ctx: &QueryCtx<'_>, name: &str, opts: GraphQueryOpts) -> Result<QueryOutput> {
     let QueryCtx { conn, .. } = *ctx;
     let (limit, depth, ids) = prepare_graph_query(conn, name, opts)?;
-    if depth == 1 {
-        callees_direct(ctx, &ids, limit)
-    } else {
-        callees_transitive(ctx, &ids, limit, depth)
+    if depth > 1 {
+        return callees_transitive(ctx, &ids, limit, depth);
     }
-}
-
-fn callees_direct(ctx: &QueryCtx<'_>, ids: &[i64], limit: usize) -> Result<QueryOutput> {
-    let QueryCtx { conn, .. } = *ctx;
-    let (callees, total) = direct_callees(conn, ids, limit)?;
+    let (callees, total) = direct_callees(conn, &ids, limit)?;
     if total == 0 {
-        return Err(EgError::NoResults(callee_empty_reason(conn, ids)?));
+        return Err(EgError::NoResults(callee_empty_reason(conn, &ids)?));
     }
-    let rows = callees.into_iter().map(|row| {
-        Ok(Pointer {
-            file: row.path,
-            line: row.site_line,
-            tag: confidence_tag(&row.confidence),
-            detail: row.qualname,
-        })
-    });
-    collect_output(ctx, rows, limit, total)
+    collect_output(ctx, callees.into_iter().map(Ok), limit, total)
 }
 
 fn callees_transitive(
@@ -171,10 +148,9 @@ fn callees_transitive(
         ids,
         depth,
         limit,
-        TransitiveQuery {
-            cte,
-            select,
-            order_by: "path, line",
+        TransitivePlan {
+            sql: (cte, select),
+            order_by: "path, line, qn",
             caveat: None,
         },
         || callee_empty_reason(conn, ids),

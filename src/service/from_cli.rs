@@ -4,48 +4,7 @@
 use super::*;
 use crate::journal::JournalArgs;
 
-mod audit;
 mod memory;
-
-/// Coarse routing family shared by the CLI, journaling, and execution
-/// dispatch. `family()` is exhaustive, so a new variant cannot be added
-/// without choosing a family; the dispatchers then only match this enum.
-///
-/// Debt (S2): one command still edits 11 sites even with this enum; the
-/// review's `<= 7` needs a macro/registry or a single clap-derived enum.
-/// Accepted and tracked in `docs/archive/reports/2026-11-06_s2-dispatch-edit-sites.md`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Family {
-    Diag,
-    Graph,
-    Analysis,
-    Memory,
-}
-
-/// CLI command family (the CLI has the extra `Mcp` hand-off variant).
-fn cli_family(cmd: &crate::cli::Cmd) -> Family {
-    match cmd {
-        crate::cli::Cmd::Build { .. }
-        | crate::cli::Cmd::Doctor { .. }
-        | crate::cli::Cmd::Usage { .. }
-        | crate::cli::Cmd::Audit { .. }
-        | crate::cli::Cmd::Mcp { .. }
-        | crate::cli::Cmd::Dashboard { .. }
-        | crate::cli::Cmd::Monitor { .. } => Family::Diag,
-        crate::cli::Cmd::Callers { .. }
-        | crate::cli::Cmd::Callees { .. }
-        | crate::cli::Cmd::Context { .. }
-        | crate::cli::Cmd::Imports { .. }
-        | crate::cli::Cmd::Path { .. }
-        | crate::cli::Cmd::Impact { .. } => Family::Graph,
-        crate::cli::Cmd::Unresolved { .. }
-        | crate::cli::Cmd::Symbols { .. }
-        | crate::cli::Cmd::Reuse { .. }
-        | crate::cli::Cmd::Search { .. }
-        | crate::cli::Cmd::Stats { .. } => Family::Analysis,
-        crate::cli::Cmd::Mem { .. } => Family::Memory,
-    }
-}
 
 /// Comma-joined `--edges` kinds for the `impact` journal line.
 fn edge_kinds_csv(kinds: &[crate::extract::EdgeKind]) -> String {
@@ -81,19 +40,8 @@ fn path_limit_args(head: &JournalArgs, path: Option<&str>, limit: usize) -> Jour
 }
 
 impl CommandRequest {
-    /// CLI conversion. `resolve --stdin` reads its names here so the service
-    /// stays free of surface-specific input shapes (MCP passes a JSON array).
+    /// CLI conversion.
     pub fn from_cli(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
-        match cli_family(&cmd) {
-            Family::Diag => Self::from_cli_diag(cmd),
-            Family::Graph => Self::from_cli_graph(cmd),
-            Family::Analysis => Self::from_cli_analysis(cmd),
-            Family::Memory => Self::from_cli_memory(cmd),
-        }
-    }
-
-    /// Build, doctor, usage, and the MCP hand-off.
-    fn from_cli_diag(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
         Ok(match cmd {
             crate::cli::Cmd::Build {
                 force,
@@ -104,16 +52,23 @@ impl CommandRequest {
             },
             crate::cli::Cmd::Doctor { invalidate } => CommandRequest::Doctor { invalidate },
             crate::cli::Cmd::Usage { quality, global } => CommandRequest::Usage { quality, global },
-            cmd @ crate::cli::Cmd::Audit { .. } => audit::from_cmd(cmd),
-            crate::cli::Cmd::Mcp { .. } => {
-                unreachable!("mcp is a protocol loop, handled before dispatch")
-            }
-            _ => unreachable!("from_cli_diag called with a non-matching command"),
-        })
-    }
-    /// Graph traversal and call-site commands.
-    fn from_cli_graph(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
-        Ok(match cmd {
+            crate::cli::Cmd::Audit {
+                json,
+                global,
+                days,
+                baseline_days,
+                all_checks,
+                reveal_paths,
+                fail_on,
+            } => CommandRequest::Audit {
+                json,
+                global,
+                days,
+                baseline_days,
+                all_checks,
+                reveal_paths,
+                fail_on,
+            },
             crate::cli::Cmd::Callers { name, limit, depth } => {
                 CommandRequest::Callers { name, limit, depth }
             }
@@ -123,36 +78,19 @@ impl CommandRequest {
             crate::cli::Cmd::Context { name, limit } => CommandRequest::Context { name, limit },
             crate::cli::Cmd::Imports { file, limit } => CommandRequest::Imports { file, limit },
             crate::cli::Cmd::Path { from, to, depth } => CommandRequest::Path { from, to, depth },
-            crate::cli::Cmd::Impact { .. } => Self::impact_request(cmd)?,
-            _ => unreachable!("from_cli_graph called with a non-matching command"),
-        })
-    }
-
-    /// The `impact` request shape, destructured from the CLI variant: `--edges`
-    /// is parsed at this service boundary so the request carries validated
-    /// kinds (a bad spec is a usage error before dispatch, on both surfaces).
-    fn impact_request(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
-        let crate::cli::Cmd::Impact {
-            file,
-            sites,
-            depth,
-            edges,
-            limit,
-        } = cmd
-        else {
-            unreachable!("impact_request called with a non-impact command")
-        };
-        Ok(CommandRequest::Impact {
-            file,
-            sites,
-            depth,
-            edges: crate::query::parse_edge_kinds(&edges)?,
-            limit,
-        })
-    }
-    /// Analysis, inventory, and anti-reinvention.
-    fn from_cli_analysis(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
-        Ok(match cmd {
+            crate::cli::Cmd::Impact {
+                file,
+                sites,
+                depth,
+                edges,
+                limit,
+            } => CommandRequest::Impact {
+                file,
+                sites,
+                depth,
+                edges: crate::query::parse_edge_kinds(&edges)?,
+                limit,
+            },
             crate::cli::Cmd::Unresolved { names, path, limit } => {
                 CommandRequest::Unresolved { names, path, limit }
             }
@@ -190,38 +128,13 @@ impl CommandRequest {
             },
             crate::cli::Cmd::Search { terms, limit } => CommandRequest::Search { terms, limit },
             crate::cli::Cmd::Stats { path } => CommandRequest::Stats { path },
-            _ => unreachable!("from_cli_analysis called with a non-matching command"),
+            cmd @ crate::cli::Cmd::Mem { .. } => Self::from_cli_memory(cmd)?,
+            crate::cli::Cmd::Mcp { .. }
+            | crate::cli::Cmd::Dashboard { .. }
+            | crate::cli::Cmd::Monitor { .. } => {
+                unreachable!("standalone mode, handled before dispatch")
+            }
         })
-    }
-    /// Routing family for dispatch. Exhaustive: a new variant must be
-    /// classified here before the family dispatchers can route it.
-    pub(super) fn family(&self) -> Family {
-        match self {
-            CommandRequest::Build { .. }
-            | CommandRequest::Doctor { .. }
-            | CommandRequest::Usage { .. }
-            | CommandRequest::Audit { .. } => Family::Diag,
-            CommandRequest::Callers { .. }
-            | CommandRequest::Callees { .. }
-            | CommandRequest::Context { .. }
-            | CommandRequest::Imports { .. }
-            | CommandRequest::Path { .. }
-            | CommandRequest::Impact { .. } => Family::Graph,
-            CommandRequest::Unresolved { .. }
-            | CommandRequest::Symbols { .. }
-            | CommandRequest::Reuse { .. }
-            | CommandRequest::Search { .. }
-            | CommandRequest::Stats { .. } => Family::Analysis,
-            CommandRequest::MemWrite { .. }
-            | CommandRequest::MemTouch { .. }
-            | CommandRequest::MemQuery { .. }
-            | CommandRequest::MemGet { .. }
-            | CommandRequest::MemDelete { .. }
-            | CommandRequest::MemGc { .. }
-            | CommandRequest::MemExport { .. }
-            | CommandRequest::MemImport { .. }
-            | CommandRequest::MemReindex { .. } => Family::Memory,
-        }
     }
 
     /// Tool name as journaled and keyed by the MCP tool registry.
@@ -257,16 +170,6 @@ impl CommandRequest {
     /// Journal argument object, identical on both surfaces (one source of
     /// truth replaces the former per-surface argument tables).
     pub fn journal_args(&self) -> JournalArgs {
-        match self.family() {
-            Family::Diag => self.journal_args_diag(),
-            Family::Graph => self.journal_args_graph(),
-            Family::Analysis => self.journal_args_analysis(),
-            Family::Memory => self.journal_args_memory(),
-        }
-    }
-
-    /// Journal fields for build, doctor, and usage.
-    fn journal_args_diag(&self) -> JournalArgs {
         match self {
             CommandRequest::Build {
                 force,
@@ -287,13 +190,11 @@ impl CommandRequest {
                 baseline_days,
                 global,
                 ..
-            } => audit::journal_args(*days, *baseline_days, *global),
-            _ => unreachable!("journal_args_diag called with a non-matching request"),
-        }
-    }
-    /// Journal fields for the graph queries.
-    fn journal_args_graph(&self) -> JournalArgs {
-        match self {
+            } => vec![
+                ("days", days.to_string()),
+                ("baseline_days", baseline_days.to_string()),
+                ("global", global.to_string()),
+            ],
             CommandRequest::Callers { name, limit, depth }
             | CommandRequest::Callees { name, limit, depth } => {
                 graph_args(name, Some(*depth), *limit)
@@ -320,12 +221,6 @@ impl CommandRequest {
                 ("edges", edge_kinds_csv(edges)),
                 ("limit", limit.to_string()),
             ],
-            _ => unreachable!("journal_args_graph called with a non-matching request"),
-        }
-    }
-    /// Journal fields for analysis and inventory.
-    fn journal_args_analysis(&self) -> JournalArgs {
-        match self {
             CommandRequest::Unresolved { names, path, limit } => {
                 path_limit_args(&vec![("names", names.to_string())], path.as_deref(), *limit)
             }
@@ -367,14 +262,6 @@ impl CommandRequest {
             CommandRequest::Stats { path } => {
                 vec![("path", path.clone().unwrap_or_default())]
             }
-            _ => unreachable!("journal_args_analysis called with a non-matching request"),
-        }
-    }
-    /// Journal fields for memory commands: key/kind/scope/terms/limit/body_len
-    /// — never the body text (journal privacy contract). The two wide variants
-    /// destructure through their own helpers so each function stays small.
-    fn journal_args_memory(&self) -> JournalArgs {
-        match self {
             CommandRequest::MemWrite { .. } => mem_write_args(self),
             CommandRequest::MemTouch { key, global } => {
                 vec![("key", key.clone()), ("global", global.to_string())]
@@ -413,7 +300,6 @@ impl CommandRequest {
                 ("force", force.to_string()),
                 ("global", global.to_string()),
             ],
-            _ => unreachable!("journal_args_memory called with a non-matching request"),
         }
     }
 }

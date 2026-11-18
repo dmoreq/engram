@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eg workbench — Command Workbench concept</title>
+<style>
+/* Design tokens — single canonical block: light/dark pairs via light-dark(), resolved by
+   color-scheme (Baseline 2024). Ramp source: src/dashboard/assets/style.css:1-60 (Shibumi). */
+:root {
+  color-scheme: light dark;
+  --bg-canvas: light-dark(#F7F4EE, #121110);
+  --bg-surface: light-dark(#FBF9F5, #1A1816);
+  --bg-subtle: light-dark(#EFECE4, #24211E);
+  --bg-elevated: light-dark(#FFFFFF, #2A2724);
+  --text-primary: light-dark(#1E1C1A, #F3EFEA);
+  --text-secondary: light-dark(#4A4640, #C4BDB3);
+  --text-muted: light-dark(#666059, #968E84);
+  --border-subtle: light-dark(rgba(30,28,26,.09), rgba(243,239,234,.09));
+  --border-strong: light-dark(rgba(30,28,26,.18), rgba(243,239,234,.18));
+  --intent-primary: light-dark(#8A4A2E, #D9825B);
+  --intent-primary-soft: light-dark(rgba(138,74,46,.10), rgba(217,130,91,.15));
+  --intent-success: light-dark(#246A49, #52B788);
+  --intent-success-soft: light-dark(rgba(36,106,73,.10), rgba(82,183,136,.15));
+  --intent-warning: light-dark(#945807, #E9A84A);
+  --intent-warning-soft: light-dark(rgba(148,88,7,.10), rgba(233,168,74,.15));
+  --intent-danger: light-dark(#B8322C, #F06A63);
+  --intent-danger-soft: light-dark(rgba(184,50,44,.10), rgba(240,106,99,.15));
+  --intent-info: light-dark(#2E5A70, #6BA3BE);
+  --intent-info-soft: light-dark(rgba(46,90,112,.10), rgba(107,163,190,.15));
+  --font-display: Georgia, serif;
+  --font-sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
+}
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme]) { color-scheme: dark; } }
+/* S1: static token fallback for engines without light-dark() (theme still switches via data-theme) */
+@supports not (color: light-dark(#000, #fff)) {
+  :root {
+    --bg-canvas: #F7F4EE; --bg-surface: #FBF9F5; --bg-subtle: #EFECE4; --bg-elevated: #FFFFFF;
+    --text-primary: #1E1C1A; --text-secondary: #4A4640; --text-muted: #666059;
+    --border-subtle: rgba(30,28,26,.09); --border-strong: rgba(30,28,26,.18);
+    --intent-primary: #8A4A2E; --intent-primary-soft: rgba(138,74,46,.10);
+    --intent-success: #246A49; --intent-success-soft: rgba(36,106,73,.10);
+    --intent-warning: #945807; --intent-warning-soft: rgba(148,88,7,.10);
+    --intent-danger: #B8322C; --intent-danger-soft: rgba(184,50,44,.10);
+    --intent-info: #2E5A70; --intent-info-soft: rgba(46,90,112,.10);
+  }
+  [data-theme="dark"] {
+    --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724;
+    --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84;
+    --border-subtle: rgba(243,239,234,.09); --border-strong: rgba(243,239,234,.18);
+    --intent-primary: #D9825B; --intent-primary-soft: rgba(217,130,91,.15);
+    --intent-success: #52B788; --intent-success-soft: rgba(82,183,136,.15);
+    --intent-warning: #E9A84A; --intent-warning-soft: rgba(233,168,74,.15);
+    --intent-danger: #F06A63; --intent-danger-soft: rgba(240,106,99,.15);
+    --intent-info: #6BA3BE; --intent-info-soft: rgba(107,163,190,.15);
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg-canvas); color: var(--text-primary); font: 13px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; }
+code, pre, .mono { font-family: var(--font-mono); }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+input { font: inherit; }
+:focus-visible { outline: 2px solid var(--intent-primary); outline-offset: 1px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.grow { flex: 1; } .muted { color: var(--text-muted); font-size: 11px; }
+
+/* Chrome: quiet structural bar (Mode C) — 4-signal digest, palette trigger, live state */
+.chrome { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand .name { font-family: var(--font-display); font-size: 17px; font-weight: 700; }
+.brand .sub { color: var(--text-muted); font-size: 11px; }
+.palette-trigger { display: flex; align-items: center; gap: 8px; flex: 0 1 340px; height: 32px; padding: 0 10px; border: 1px solid var(--text-muted); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-muted); }
+.palette-trigger:hover { background: var(--bg-subtle); border-color: var(--text-secondary); color: var(--text-secondary); }
+.palette-trigger svg { flex: none; }
+.palette-trigger .pt-label { flex: 1; text-align: left; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.digest { display: flex; margin-left: auto; }
+.digest-seg { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; padding: 0 12px; border-left: 1px solid var(--border-subtle); }
+.digest-seg:first-child { border-left: 0; }
+.seg-label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-muted); }
+.seg-vals { font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; }
+/* Chips: one vocabulary — .chip + intent variants only (no per-component chip families) */
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.chip--ok { color: var(--intent-success); background: var(--intent-success-soft); } .chip--warn { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.chip--err { color: var(--intent-danger); background: var(--intent-danger-soft); } .chip--info { color: var(--intent-info); background: var(--intent-info-soft); }
+/* I2: in dark, intent text on its own soft fill fails 4.5:1 — drop the tint, intent text on elevated/surface passes */
+[data-theme="dark"] .chip--ok, [data-theme="dark"] .chip--warn, [data-theme="dark"] .chip--err, [data-theme="dark"] .chip--info { background: transparent; }
+#liveChip { height: 24px; padding: 0 10px; letter-spacing: .05em; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+#liveChip.flash .live-dot { animation: pulse .6s ease-out; }
+@keyframes pulse { 50% { transform: scale(1.6); } }
+@media (prefers-reduced-motion: reduce) { #liveChip.flash .live-dot { animation: none; } }
+.kbd { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: var(--radius-sm); background: var(--bg-elevated); font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+
+/* Bench: docked task panels over a 1px exposed lattice */
+.bench { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 12px 16px; }
+.panel { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; }
+.panel-dup { flex: 1.15 1 0; } .panel-mem { flex: 0.9 1 0; } .panel-journal { flex: 1.3 1 0; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-elevated); }
+.panel-head h2 { font-family: var(--font-display); font-size: 13px; font-weight: 700; white-space: nowrap; }
+.flow-hint { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-close { flex: none; width: 24px; height: 24px; border-radius: var(--radius-sm); color: var(--text-muted); font-size: 15px; line-height: 1; }
+.panel-close:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.panel-foot { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.panel-foot span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; }
+.empty-state .es-title { font-family: var(--font-display); font-size: 15px; color: var(--text-secondary); }
+
+/* Micro-components: tonal surface shifts only — no bordered cards inside panels */
+.meta-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kv { display: grid; grid-template-columns: 96px 1fr auto; gap: 10px; align-items: center; padding: 3px 0; }
+.kv .k { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.kv .v { font-family: var(--font-mono); font-size: 11px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar { height: 6px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--intent-primary); border-radius: 999px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: var(--radius-md); font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); }
+.btn:hover { background: var(--bg-subtle); color: var(--text-primary); }
+.btn-primary { background: var(--intent-primary); color: var(--bg-canvas); }
+.btn-primary:hover { background: var(--intent-primary); color: var(--bg-canvas); filter: brightness(1.08); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pick-list { display: flex; flex-direction: column; gap: 4px; }
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--text-muted); text-align: left; }
+.pick-row:hover:not(.is-on) { background: var(--bg-subtle); border-color: var(--text-secondary); }
+/* I1a: selection cue = rail + border, never a soft fill — muted meta text stays on bg-elevated (>= 4.5 both themes) */
+.pick-row.is-on { border-color: var(--intent-primary); box-shadow: inset 2px 0 0 var(--intent-primary); }
+.pick-row code { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Duplicate review */
+.pair-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pair-line code { font-size: 13px; font-weight: 700; }
+.pair-line .arrow { color: var(--intent-primary); font-weight: 700; }
+.snips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.snip { border-radius: var(--radius-md); background: var(--bg-elevated); border: 1px solid var(--text-muted); overflow: hidden; min-width: 0; }
+.snip-head { padding: 5px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); background: var(--bg-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.snip pre { padding: 8px 10px; font-size: 11px; line-height: 1.55; overflow-x: auto; color: var(--text-secondary); }
+.narrative { font-size: 12px; color: var(--text-secondary); border-left: 2px solid var(--intent-primary); padding: 2px 0 2px 10px; }
+
+/* Memory panel */
+.note-card { border-radius: var(--radius-md); background: var(--bg-elevated); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.note-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.note-head code { font-size: 13px; font-weight: 700; }
+.note-body { font-size: 12px; color: var(--text-secondary); }
+.touch-log { display: flex; flex-direction: column; gap: 3px; }
+.touch-line { font-family: var(--font-mono); font-size: 11px; color: var(--intent-success); word-break: break-all; }
+.touch-line.err { color: var(--intent-danger); } .touch-line.info { color: var(--text-muted); }
+.touch-hint { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+
+/* Live journal: staged-apply buffer (signature widget) + filters + tail */
+.apply-banner { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-left: 2px solid var(--intent-info); border-radius: var(--radius-sm); background: var(--intent-info-soft); flex-wrap: wrap; }
+.apply-banner .muted { color: var(--text-secondary); }
+.btn-apply { background: var(--intent-info); color: var(--bg-canvas); height: 24px; padding: 0 10px; font-size: 11px; }
+.btn-apply:hover { background: var(--intent-info); color: var(--bg-canvas); filter: brightness(1.08); }
+.filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pill-set { display: flex; gap: 4px; flex-wrap: wrap; }
+.pill { min-height: 24px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 999px; border: 1px solid var(--text-muted); font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.pill:hover { background: var(--bg-subtle); border-color: var(--text-secondary); color: var(--text-primary); }
+.pill.is-on { background: var(--intent-primary-soft); border-color: var(--intent-primary); color: var(--intent-primary); font-weight: 600; }
+.feed-search { flex: 1; min-width: 120px; height: 26px; padding: 0 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text-primary); font-size: 12px; }
+.feed-search::placeholder { color: var(--text-muted); }
+.journal-scroll { overflow-x: auto; }
+.jrow { display: grid; grid-template-columns: 56px 50px 88px minmax(120px, 1fr) 60px 52px 48px; gap: 6px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 11px; min-width: 520px; font-variant-numeric: tabular-nums; }
+/* S10: journal rows are not actionable — no fake hover; pressed feedback lives on real controls */
+.btn:active, .pill:active, .p-item:active, .pick-row:active, .panel-close:active { filter: brightness(.92); }
+/* I2: error tint is light-only; the inset rail carries the error cue in dark (text passes on surface) */
+.jrow-err { background: var(--intent-danger-soft); box-shadow: inset 2px 0 0 var(--intent-danger); }
+[data-theme="dark"] .jrow-err { background: transparent; }
+.j-time, .j-lat, .j-shown { color: var(--text-muted); } .j-lat, .j-shown { text-align: right; }
+.j-tool { color: var(--intent-info); font-weight: 600; }
+.j-who, .j-args { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .j-who { color: var(--text-secondary); }
+.j-exit { color: var(--intent-success); } .j-exit.err { color: var(--intent-danger); }
+.feed-empty { padding: 14px; font-size: 12px; color: var(--text-muted); }
+
+/* Command palette overlay — open at boot, real focus trap (input + option buttons) */
+.palette-overlay { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--bg-canvas) 62%, transparent); display: flex; align-items: flex-start; justify-content: center; padding: 9vh 16px 0; }
+.palette { width: 640px; max-width: 100%; background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); overflow: hidden; display: flex; flex-direction: column; }
+.p-input-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); }
+.p-input-row input { flex: 1; border: 0; background: transparent; color: var(--text-primary); font-size: 15px; }
+/* C1: the palette input is the boot-focus target — keep its focus ring, offset inward to fit the row */
+.p-input-row input:focus-visible { outline: 2px solid var(--intent-primary); outline-offset: -2px; }
+.p-input-row input::placeholder { color: var(--text-muted); }
+.p-results { max-height: 54vh; overflow-y: auto; padding: 6px 0 10px; }
+.p-group { padding: 8px 14px 3px; }
+.p-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 14px; text-align: left; }
+.p-item:hover { background: var(--bg-subtle); }
+.p-item.active { background: var(--bg-subtle); box-shadow: inset 2px 0 0 var(--intent-primary); }
+.p-type { flex: none; min-width: 42px; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.p-label { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-meta { flex: 1; text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* I6: truncated values expand on keyboard focus — title is never the only channel */
+.jrow:focus-visible .j-who, .jrow:focus-visible .j-args, .pick-row:focus-visible code, .p-item:focus-visible .p-label, .p-item:focus-visible .p-meta { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.p-empty { padding: 16px; font-size: 12px; color: var(--text-muted); }
+.p-briefing { margin: 4px 14px 8px; border-radius: var(--radius-md); background: var(--bg-subtle); padding: 8px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
+.p-briefing .seg-label { grid-column: 1 / -1; padding-bottom: 4px; }
+.b-row { display: flex; justify-content: space-between; gap: 10px; }
+.b-k { font-size: 11px; color: var(--text-secondary); }
+.b-v { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+.p-foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-muted); }
+
+/* Status bar: 3 hint segments max — the n hint lives only in the apply banner */
+.statusbar { display: flex; align-items: center; gap: 14px; padding: 6px 16px; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.sb-hint { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sb-mid { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-right { display: flex; gap: 14px; white-space: nowrap; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+/* I9 reflow (WCAG 1.4.10): below 900px panels stack, rows wrap — readable at 320px / 200% zoom */
+@media (max-width: 900px) {
+  .chrome { flex-wrap: wrap; }
+  .bench { flex-direction: column; overflow-y: auto; }
+  .panel { flex: none; }
+  .snips, .p-briefing { grid-template-columns: 1fr; }
+  .statusbar { flex-wrap: wrap; }
+  .jrow { display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0; }
+  .j-who, .j-args { white-space: normal; }
+}
+</style>
+</head>
+<body>
+
+<h1 class="sr-only">eg workbench — duplicate review, memory ref health, live journal</h1>
+
+<header class="chrome">
+  <div class="brand">
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="1" y="1" width="18" height="18" rx="5" fill="var(--intent-primary)"/><path d="M6 10h8M10 6v8" stroke="var(--bg-elevated)" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="name">eg</span><span class="sub">workbench</span>
+  </div>
+  <button id="paletteBtn" class="palette-trigger" aria-label="Open command palette">
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <span class="pt-label">Run a task — candidates, notes, journal…</span>
+    <span class="kbd">cmd</span><span class="kbd">k</span>
+  </button>
+  <div class="digest" id="digest" role="group" aria-label="Global digest: calls, p50 latency, tokens saved, reliability"></div>
+  <button id="liveChip" class="chip chip--ok" aria-label="Connection state — click to preview poll fallback" title="SSE /events state — click to preview poll fallback (simulated data over file://)"><span class="live-dot" aria-hidden="true"></span><span id="liveLabel">LIVE</span></button>
+  <button id="themeBtn" class="btn">Dark</button>
+</header>
+
+<main class="bench" id="bench">
+
+  <!-- Task panel 1: reuse flow (selection-driven over candidates[]) -->
+  <section class="panel panel-dup" id="panel-duplicates" aria-label="Duplicate Review">
+    <header class="panel-head">
+      <h2>Duplicate Review</h2> <span class="chip chip--info mono" id="dupScope">scope: repo app</span> <span class="flow-hint">pool -> twin review -> resolve</span>
+      <button class="panel-close" data-close="duplicates" aria-label="Close Duplicate Review panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="pick-list" id="candList" role="group" aria-label="Sampled reuse candidates — select to review"></div>
+      <div class="meta-line muted" id="dupMeta"></div>
+      <div class="pair-line" id="dupPair"></div>
+      <div id="dupKvs"></div>
+      <div class="snips" id="dupSnips"></div>
+      <p class="narrative" id="dupNarrative"></p>
+      <div class="actions">
+        <button id="copySiteBtn" class="btn btn-primary" aria-live="polite">Copy canonical site</button>
+        <button id="copyCliBtn" class="btn" aria-live="polite">Copy CLI</button>
+      </div>
+      <p class="muted">Twin resolution happens via a code merge in your editor or CLI — resolved_twins is a read-only summary.</p>
+    </div>
+    <footer class="panel-foot">
+      <span>GET /api/reuse · candidates[] · summary</span>
+      <span id="dupFootR">—</span>
+    </footer>
+  </section>
+
+  <!-- Task panel 2: memory flow (action-center counts computed from notes[]) -->
+  <section class="panel panel-mem" id="panel-memory" aria-label="Memory Ref Health">
+    <header class="panel-head">
+      <h2>Memory Ref Health</h2> <span class="chip chip--info mono">scope: store engram</span> <span class="flow-hint">action center -> verify -> refetch</span>
+      <button class="panel-close" data-close="memory" aria-label="Close Memory Ref Health panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="meta-line" id="memCounts"></div>
+      <div class="pick-list" id="noteList" role="group" aria-label="Memory notes — select to inspect"></div>
+      <div class="note-card" id="noteDossier"></div>
+    </div>
+    <footer class="panel-foot">
+      <span>GET /api/memories · notes[]</span>
+      <span>touch {key, store_id, rev} · rev mismatch -> 409</span>
+    </footer>
+  </section>
+
+  <!-- Task panel 3: live journal (staged /events buffer + agent/repo/status filters) -->
+  <section class="panel panel-journal" id="panel-journal" aria-label="Live Journal">
+    <header class="panel-head">
+      <h2>Live Journal</h2> <span class="chip chip--info mono">window: retained_journal</span> <span class="flow-hint">tail -> filter -> inspect</span>
+      <button class="panel-close" data-close="journal" aria-label="Close Live Journal panel">×</button>
+    </header>
+    <div class="panel-body">
+      <div class="apply-banner sr-only" id="applyBanner" role="status" aria-live="polite">
+        <button id="applyBtn" class="btn btn-apply" disabled>Apply 0 new (n)</button>
+        <span class="muted">staged from /events — press n or click</span>
+      </div>
+      <div class="filter-row">
+        <div class="pill-set" id="agentPills" data-filter="agent" role="group" aria-label="Filter agents"></div>
+        <div class="pill-set" id="repoPills" data-filter="repo" role="group" aria-label="Filter repos"></div>
+        <div class="pill-set" data-filter="status" role="group" aria-label="Filter status">
+          <button class="pill is-on" aria-pressed="true" data-v="all">all</button>
+          <button class="pill" aria-pressed="false" data-v="ok">ok</button>
+          <button class="pill" aria-pressed="false" data-v="err">errors</button>
+        </div>
+        <input id="feedSearch" class="feed-search" type="search" placeholder="filter tool / args…" aria-label="Filter journal by tool or args">
+      </div>
+      <div class="journal-scroll"><div id="journalList" role="list" aria-label="Journal entries"></div></div>
+    </div>
+    <footer class="panel-foot">
+      <span>SSE /events · keepalive 15s · poll 500ms</span>
+      <span id="feedCount">—</span>
+    </footer>
+  </section>
+
+  <div class="empty-state" id="emptyState" hidden>
+    <p class="es-title">Bench is clear.</p>
+    <p><span class="kbd">cmd</span> <span class="kbd">k</span> to run a task — review a duplicate, re-anchor a note, or tail the journal.</p>
+    <p class="muted"><span class="kbd">alt</span> <span class="kbd">1–3</span> re-opens task panels · <span class="kbd">esc</span> closes the focused panel</p>
+  </div>
+</main>
+
+<footer class="statusbar">
+  <span class="sb-hint"><span class="kbd">cmd</span><span class="kbd">k</span> palette</span>
+  <span class="sb-hint"><span class="kbd">alt</span><span class="kbd">1–3</span> panels</span>
+  <span class="sb-hint"><span class="kbd">esc</span> panel</span>
+  <span class="sb-mid" id="sbLive">—</span>
+  <span class="sb-right"><span id="sbPanels">3 panels open</span><span>127.0.0.1 · offline</span></span>
+</footer>
+
+<!-- Command palette overlay -->
+<div class="palette-overlay" id="paletteOverlay" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="p-input-row">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteResults" aria-autocomplete="list" aria-label="Search actions, agents, repos, candidates, notes, invocations" placeholder="Search actions, agents, repos, candidates, notes…" autocomplete="off">
+      <span class="kbd">esc</span>
+    </div>
+    <div class="p-results" id="paletteScroll">
+      <div id="paletteBriefing"></div>
+      <div id="paletteResults" role="listbox" aria-label="Palette results"></div>
+    </div>
+    <div class="p-foot">
+      <span><span class="kbd">Up</span><span class="kbd">Down</span> navigate</span>
+      <span><span class="kbd">enter</span> run</span>
+      <span><span class="kbd">esc</span> close</span>
+      <span class="grow"></span>
+      <span>index: /api/summary · /api/reuse · /api/memories · /events</span>
+    </div>
+  </div>
+</div>
+
+<div class="sr-only" aria-live="polite" id="srLive"></div>
+
+<script>
+"use strict";
+const $ = (s, el) => (el || document).querySelector(s);
+const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* Payload-bound data. First candidate / first note / repo app numbers are the exact brief samples;
+   remaining rows keep the real field shapes. Cardinality trimmed to what the 8 states need. */
+const SUMMARY = {schema_version:2, generated_at:1794645800.2, total_calls:1284, error_count:9, reliability_pct:99.3,
+  p50_ms:0.8, saved_tokens:412000, saved_dollars:6.18, saved_dollars_estimated:true,
+  graph_calls:906, graph_p50_ms:0.7, graph_saved_tokens:305000,
+  session_count:18, session_recall_pct:66.7, tool_aggs:{callers:{calls:210, p50:0.6}}};
+const AGENT_AGGS = {
+  zcode:  {display:"zcode",  calls:742, errors:2, graph_calls:531, graph_errors:1, reliability_pct:99.7, saved_tokens:246000, search_hit_rate_pct:94},
+  codex:  {display:"codex",  calls:318, errors:5, graph_calls:214, graph_errors:3, reliability_pct:98.4, saved_tokens:96000,  search_hit_rate_pct:88},
+  claude: {display:"claude", calls:224, errors:2, graph_calls:161, graph_errors:1, reliability_pct:99.1, saved_tokens:70000,  search_hit_rate_pct:90}
+};
+const REPO_AGGS = {
+  "/ws/app":    {display:"app",    calls:640, graph_calls:512, saved_tokens:204000, reuse_calls:96, search_hit_rate_pct:92, last_reuse_scan:{ts:1794600000, result_count:21, limit_capped:false}, worktrees:{main:{calls:512, errors:0, last_ts:1794645800}}},
+  "/ws/engram": {display:"engram", calls:644, graph_calls:394, saved_tokens:208000, reuse_calls:16, search_hit_rate_pct:81, last_reuse_scan:{ts:1794640000, result_count:9,  limit_capped:false}, worktrees:{main:{calls:430, errors:2, last_ts:1794645600}, dashboard:{calls:214, errors:1, last_ts:1794644000}}}
+};
+const REUSE = {summary:{schema_version:4, total_candidates:38, preventable_loc:1240, preventable_loc_estimated:true,
+  prewrite_count:112, avg_callers:6.4, detector_counts:{D1:14, D1L:5},
+  repo_candidate_pools:{"/ws/app":21, "/ws/engram":9}, resolved_twins:{resolved:3, surfaced:6}},
+  candidates:[
+    {id:"app:parse_token->normalize_token", repo:"app", repo_path:"/ws/app", detector:"D1",
+     symbol:"parse_token", canonical:"normalize_token", canonical_callers:14,
+     canonical_file:"src/tokens.rs", canonical_line:88, overlap_pct:83, overlap_applicable:true, confidence:"high",
+     candidate_info:{file:"src/legacy.rs", line_start:120, loc:22}, canonical_info:{file:"src/tokens.rs", line_start:88, loc:17},
+     loc_saving:22,
+     candidate_snippet:"fn parse_token(src: &str, i: &mut usize)\n    -> Option<Token> {\n    let start = *i;\n    let bytes = src.as_bytes();\n    while *i < bytes.len()\n        && (bytes[*i].is_ascii_alphanumeric()\n            || bytes[*i] == b'_') { *i += 1; }\n    if start == *i { return None; }\n    Some(Token { kind: Kind::Ident,\n        text: src[start..*i].to_string() })\n}",
+     canonical_snippet:"pub fn normalize_token(text: &str)\n    -> Token {\n    let kind = match text {\n        \"fn\" | \"let\" | \"mut\" => Kind::Keyword,\n        _ => Kind::Ident,\n    };\n    Token { kind, text: text.to_string() }\n}",
+     prevention_narrative:"22 LOC in src/legacy.rs re-implement token scanning next to normalize_token (14 callers). Delete the local branch and call the canonical implementation. Pool-wide avg_callers 6.4 · 1,240 preventable LOC (est.)."},
+    {id:"engram:parse_manifest->load_manifest", repo:"engram", repo_path:"/ws/engram", detector:"D4",
+     symbol:"parse_manifest", canonical:"load_manifest", canonical_callers:6,
+     canonical_file:"src/config.rs", canonical_line:52, overlap_pct:null, overlap_applicable:false, confidence:"medium",
+     candidate_info:{file:"src/boot.rs", line_start:301, loc:31}, canonical_info:{file:"src/config.rs", line_start:52, loc:24},
+     loc_saving:31,
+     candidate_snippet:"fn parse_manifest(raw: &str) -> Manifest {\n    let lines: Vec<_> = raw.lines().collect();\n    Manifest { entries: lines.iter()\n        .filter_map(parse_entry).collect() }\n}",
+     canonical_snippet:"pub fn load_manifest(path: &Path)\n        -> Result<Manifest> {\n    let raw = fs::read_to_string(path)?;\n    Ok(Manifest { entries: raw.lines()\n        .filter_map(parse_entry).collect() })\n}",
+     prevention_narrative:"parse_manifest mirrors load_manifest control flow (D4 structural match — overlap_pct is not computed for D3/D4). 31 LOC collapsible."}
+  ]};
+const NOTES = [
+  {id:42, store:"engram", store_id:"/ws/app/.engram/memory.db", key:"allowlist-refs", rev:3,
+   kind:"gotcha", body:"Ref freshness must branch on index resolution.", ref:"src/query/reuse.rs",
+   ref_status:"modified", created_at:1794630000, anchored_at:1794635000, is_current:true, recall_count:4},
+  {id:43, store:"engram", store_id:"/ws/engram/.engram/memory.db", key:"flock-build-lock", rev:1,
+   kind:"gotcha", body:"Advisory flock on build.lock serializes concurrent builds — never index while a build holds the lock.", ref:"src/build.rs",
+   ref_status:"valid", created_at:1794000000, anchored_at:1794640000, is_current:true, recall_count:11},
+  {id:44, store:"engram", store_id:"/ws/engram/.engram/memory.db", key:"schema-gate-exit-code", rev:2,
+   kind:"gotcha", body:"Schema skew must exit 5 before any query path runs.", ref:"src/db.rs",
+   ref_status:"broken", created_at:1793800000, anchored_at:1794500000, is_current:true, recall_count:7}
+];
+/* Journal: shape of graph_recent_queries[i] / SSE /events message. First row is the exact sample entry. */
+const SAMPLE_ENTRY = {ts:1794645800, tool:"callers", repo_name:"app", agent:"zcode", exit_code:0, shown:7, latency_us:640, args:{name:"read_bounded"}};
+let FEED = [
+  SAMPLE_ENTRY,
+  {ts:1794645792, tool:"search", repo_name:"app", agent:"zcode", exit_code:0, shown:12, result_count:23, latency_us:810, args:{terms:"parse_token"}},
+  {ts:1794645786, tool:"context", repo_name:"app", agent:"codex", exit_code:0, shown:5, result_count:5, latency_us:1204, args:{symbol:"build_index"}},
+  {ts:1794645755, tool:"impact", repo_name:"dashboard", repo_main_name:"engram", agent:"claude", exit_code:0, shown:4, result_count:4, latency_us:1120, args:{name:"apply_staged"}},
+  {ts:1794645748, tool:"callees", repo_name:"engram", agent:"zcode", exit_code:0, shown:11, result_count:11, latency_us:520, args:{name:"parse_token"}},
+  {ts:1794645730, tool:"reuse", repo_name:"app", agent:"zcode", exit_code:0, shown:19, result_count:19, latency_us:1420, args:{terms:"normalize token parse"}},
+  {ts:1794645711, tool:"context", repo_name:"engram", agent:"codex", exit_code:1, shown:0, result_count:0, latency_us:190, args:{symbol:"missing_sym"}},
+  {ts:1794645666, tool:"path", repo_name:"app", agent:"claude", exit_code:1, shown:0, result_count:0, latency_us:210, args:{from:"parse_token", to:"normalize_token"}}
+];
+const fmtInt = n => n.toLocaleString("en-US"), fmtCompact = n => n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + "k" : String(n),
+  fmtTime = ts => new Date(ts * 1000).toTimeString().slice(0, 8), fmtMs = us => (us / 1000).toFixed(1) + " ms",
+  fmtDate = ts => new Date(ts * 1000).toISOString().slice(0, 19).replace("T", " "),
+  fmtAge = ms => { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + "s"; const m = Math.round(s / 60); if (m < 60) return m + "m"; const h = Math.round(m / 60); if (h < 48) return h + "h"; return Math.round(h / 24) + "d"; };
+const argsPreview = e => Object.entries(e.args).map(([k, v]) => k + "=" + v).join(" ");
+/* S12: queue announcements so rapid updates are read in order instead of overwriting each other */
+const srQueue = [];
+let srDraining = false;
+function announce(msg) {
+  srQueue.push(msg);
+  if (srDraining) return;
+  srDraining = true;
+  const step = () => {
+    if (!srQueue.length) { srDraining = false; return; }
+    const el = $("#srLive");
+    el.textContent = "";
+    setTimeout(() => { el.textContent = srQueue.shift(); setTimeout(step, 250); }, 30);
+  };
+  step();
+}
+const statusChip = st => st === "valid" ? "chip--ok" : st === "modified" ? "chip--warn" : "chip--err";
+/* I7: visible feedback on the button itself (aria-live relabels it); the file:// fallback is visible + announced */
+let copyTimer = null;
+function copyText(t, btn) {
+  const show = label => {
+    if (!btn) return;
+    if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    btn.textContent = label;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(() => show("Copied"), () => { show("Clipboard unavailable"); announce("Clipboard unavailable — copy manually: " + t); });
+  else { show("Clipboard unavailable"); announce("Clipboard unavailable — copy manually: " + t); }
+}
+
+/* Chrome digest: exactly 4 distinct signals — calls, p50, tokens saved, reliability */
+function renderDigest() {
+  const S = SUMMARY, seg = (l, v, t) => '<div class="digest-seg" title="' + escapeHtml(t) + '"><span class="seg-label">' + l + '</span><span class="seg-vals">' + v + '</span></div>';
+  $("#digest").innerHTML = seg("calls", fmtInt(S.total_calls), "summary.total_calls — GET /api/summary") +
+    seg("p50", S.p50_ms.toFixed(1) + " ms", "summary.p50_ms — all pillars") +
+    seg("tokens", fmtCompact(S.saved_tokens), "summary.saved_tokens — *_estimated · $15/MTok blended") +
+    seg("ok", S.reliability_pct.toFixed(1) + "%", "summary.reliability_pct — " + S.error_count + " errors / " + fmtInt(S.total_calls) + " calls");
+}
+
+/* Duplicate panel: selection-driven dossier over REUSE.candidates[] */
+let selCand = 0;
+function renderCandList() {
+  $("#candList").innerHTML = REUSE.candidates.map((c, i) =>
+    '<button class="pick-row' + (i === selCand ? " is-on" : "") + '" data-i="' + i + '" aria-current="' + (i === selCand) + '" aria-label="' + escapeHtml(c.id + " — detector " + c.detector + " · " + (c.overlap_pct == null ? "structural match" : c.overlap_pct + "% overlap") + " · saves " + c.loc_saving + " loc") + '" title="' + escapeHtml(c.id) + '"><code>' + escapeHtml(c.symbol) + " -> " + escapeHtml(c.canonical) + '</code><span class="grow"></span><span class="muted mono">' + escapeHtml(c.detector) + " · " + (c.overlap_pct == null ? "structural" : c.overlap_pct + "%") + "</span></button>"
+  ).join("");
+}
+function renderDuplicates() {
+  const c = REUSE.candidates[selCand], R = REUSE.summary;
+  $("#dupScope").textContent = "scope: repo " + c.repo;
+  $("#dupMeta").innerHTML = '<span class="mono">' + escapeHtml(c.detector) + " · " + escapeHtml(c.confidence) + " confidence</span><span>pool " + R.total_candidates + " · " + fmtInt(R.preventable_loc) + " loc est. · cap 25/repo</span>";
+  $("#dupPair").innerHTML = '<code title="candidates[' + selCand + '].symbol">' + escapeHtml(c.symbol) + '</code><span class="arrow" aria-hidden="true">-></span><code title="candidates[' + selCand + '].canonical">' + escapeHtml(c.canonical) + '</code><span class="muted" title="candidates[' + selCand + '].canonical_callers">' + c.canonical_callers + " callers rely on canonical</span>";
+  const overlap = c.overlap_pct == null
+    ? '<div class="kv" title="overlap_pct is null and overlap_applicable false for D3/D4"><span class="k">overlap_pct</span><span class="muted">n/a — structural match (' + escapeHtml(c.detector) + ')</span><span class="v">—</span></div>'
+    : '<div class="kv" title="candidates[' + selCand + '].overlap_pct · overlap_applicable true"><span class="k">overlap_pct</span><div class="bar"><i style="width:' + c.overlap_pct + '%"></i></div><span class="v">' + c.overlap_pct + '%</span></div>';
+  $("#dupKvs").innerHTML = overlap + '<div class="kv" title="candidates[' + selCand + '].loc_saving · candidate_info.loc · canonical_info.loc"><span class="k">loc_saving</span><span class="muted mono">candidate ' + c.candidate_info.loc + " loc · canonical " + c.canonical_info.loc + " loc — full sites in the snippets below</span><span class=\"v\">−" + c.loc_saving + " loc</span></div>";
+  $("#dupSnips").innerHTML = '<div class="snip"><div class="snip-head" title="candidate_info.file · line_start · loc">candidate · ' + escapeHtml(c.candidate_info.file) + ":" + c.candidate_info.line_start + " · " + c.candidate_info.loc + ' loc</div><pre>' + escapeHtml(c.candidate_snippet) + '</pre></div><div class="snip"><div class="snip-head" title="canonical_info.file · line_start · loc">canonical · ' + escapeHtml(c.canonical_file) + ":" + c.canonical_line + " · " + c.canonical_info.loc + ' loc</div><pre>' + escapeHtml(c.canonical_snippet) + "</pre></div>";
+  $("#dupNarrative").textContent = c.prevention_narrative;
+  $("#copySiteBtn").textContent = "Copy canonical site · " + c.canonical_file + ":" + c.canonical_line;
+  $("#copyCliBtn").textContent = "Copy CLI: eg callers " + c.canonical;
+  $("#dupFootR").textContent = "D1 ×" + R.detector_counts.D1 + " · D1L ×" + R.detector_counts.D1L + " global sample";
+}
+
+/* Memory panel: action-center counts derived from NOTES[]; dossier shows the selected note */
+let selNote = 0;
+function renderNoteList() {
+  $("#noteList").innerHTML = NOTES.map((n, i) =>
+    '<button class="pick-row' + (i === selNote ? " is-on" : "") + '" data-i="' + i + '" aria-current="' + (i === selNote) + '" aria-label="' + escapeHtml(n.key + " · rev " + n.rev + " · ref " + n.ref_status + " · " + n.store_id) + '" title="' + escapeHtml(n.store_id) + '"><code>' + escapeHtml(n.key) + '</code><span class="grow"></span><span class="muted mono">rev ' + n.rev + '</span><span class="chip ' + statusChip(n.ref_status) + '">' + escapeHtml(n.ref_status) + "</span></button>"
+  ).join("");
+}
+function renderMemCounts() {
+  const c = {modified:0, broken:0, valid:0};
+  NOTES.forEach(n => { c[n.ref_status] = (c[n.ref_status] || 0) + 1; });
+  $("#memCounts").innerHTML = '<span class="chip chip--warn">' + c.modified + " modified</span><span class=\"chip chip--err\">" + c.broken + " broken</span><span class=\"chip chip--ok\">" + c.valid + " valid</span><span class=\"muted\">" + NOTES.filter(n => n.is_current).length + " / " + NOTES.length + " is_current</span>";
+}
+function renderNote() {
+  const n = NOTES[selNote];
+  $("#noteDossier").innerHTML =
+    '<div class="note-head"><code title="notes[' + selNote + '].key">' + escapeHtml(n.key) + '</code><span class="muted" title="notes[' + selNote + '].kind · rev · id · recall_count · is_current">' + escapeHtml(n.kind) + " · rev " + n.rev + " · id " + n.id + " · " + n.recall_count + " recalls" + (n.is_current ? " · is_current" : "") + '</span></div>' +
+    '<p class="note-body" title="notes[' + selNote + '].body">' + escapeHtml(n.body) + "</p>" +
+    '<div><span class="chip ' + statusChip(n.ref_status) + '" id="refChip" title="resolved_refs[0].ref · status">' + escapeHtml(n.ref) + " · " + escapeHtml(n.ref_status) + '</span></div>' +
+    '<p class="muted">A 200 touch re-anchors only — ref_status changes on the next GET /api/memories refetch.</p>' +
+    '<div class="kv" title="notes[' + selNote + '].created_at"><span class="k">created_at</span><span class="muted">journal-local time</span><span class="v">' + fmtDate(n.created_at) + '</span></div>' +
+    '<div class="kv" title="notes[' + selNote + '].anchored_at — moves forward on a 200 touch"><span class="k">anchored_at</span><span class="muted">re-anchor to refresh</span><span class="v" id="anchoredVal">' + fmtDate(n.anchored_at) + '</span></div>' +
+    '<div class="kv" title="notes[' + selNote + '].store_id"><span class="k">store_id</span><span class="muted">per-repo memory store</span><span class="v">' + escapeHtml(n.store_id) + '</span></div>' +
+    '<div class="actions"><button id="verifyBtn" class="btn btn-primary">Verify · POST /api/memory/touch</button><button id="errBtn" class="btn">Simulate 409</button><button id="refetchBtn" class="btn">Refetch /api/memories</button></div>' +
+    '<div class="touch-log" id="touchLog"><div class="touch-hint">contract: {key, store_id, rev} -> 200 {ok, …} · 400 / 404 / 409 / 503 {ok:false, error}</div></div>';
+}
+function logTouch(html, cls) {
+  const log = $("#touchLog");
+  log.insertAdjacentHTML("beforeend", '<div class="touch-line ' + (cls || "") + '">' + html + "</div>");
+  const lines = $$(".touch-line", log);
+  if (lines.length > 4) lines[0].remove(); /* cap the log at 4 lines */
+}
+/* Touch semantics: a 200 touch re-anchors anchored_at only; ref_status moves on refetch. */
+let verifying = false;
+function verifyRef() {
+  if (verifying) return;
+  verifying = true;
+  const idx = selNote, n = NOTES[idx], btn = $("#verifyBtn");
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  btn.textContent = "POST /api/memory/touch …";
+  setTimeout(() => {
+    if (selNote !== idx) { verifying = false; return; } /* S5: drop the stale completion if the user switched notes mid-flight */
+    n.anchored_at = Math.floor(Date.now() / 1000);
+    $("#anchoredVal").textContent = fmtDate(n.anchored_at);
+    logTouch("200 ok · key " + escapeHtml(n.key) + " · rev " + n.rev + " · anchored_at " + fmtDate(n.anchored_at) + " — ref_status " + escapeHtml(n.ref_status) + " (unchanged)");
+    announce("POST /api/memory/touch returned 200 ok — anchored_at re-anchored; ref_status still " + n.ref_status + ".");
+    btn.disabled = false; btn.removeAttribute("aria-busy"); btn.textContent = "Verify · POST /api/memory/touch"; verifying = false;
+  }, 450);
+}
+function simulateTouchError() {
+  const n = NOTES[selNote];
+  logTouch("409 conflict · {ok:false, error:\"rev mismatch — is_current rev is " + n.rev + "\"}", "err");
+  announce("touch rejected — 409 conflict, {ok:false, error:rev mismatch}.");
+}
+function refetchMemories() {
+  /* Simulated refetch: the store re-resolves refs server-side; here the status is unchanged. */
+  const n = NOTES[selNote], chip = $("#refChip");
+  chip.className = "chip " + statusChip(n.ref_status);
+  chip.textContent = n.ref + " · " + n.ref_status;
+  logTouch("GET /api/memories · refetched — " + escapeHtml(n.key) + ' ref_status "' + escapeHtml(n.ref_status) + '" (server re-resolves refs)', "info");
+  announce("GET /api/memories refetched — " + n.key + " ref_status " + n.ref_status + ".");
+}
+
+/* Live journal: pills generated from agent_aggs + repo_aggs; staged /events buffer */
+const feedFilters = {agent:"all", repo:"all", status:"all", q:""};
+let staged = [], stagedCapNote = false;
+function whoRaw(e) { const wt = e.repo_main_name && e.repo_main_name !== e.repo_name ? " (wt of " + e.repo_main_name + ")" : ""; return e.repo_name + wt + " · " + e.agent; }
+function renderFeed() {
+  const q = feedFilters.q.trim().toLowerCase();
+  const rows = FEED.filter(e =>
+    (feedFilters.agent === "all" || e.agent === feedFilters.agent) &&
+    (feedFilters.repo === "all" || e.repo_name === feedFilters.repo || e.repo_main_name === feedFilters.repo) &&
+    (feedFilters.status === "all" || (feedFilters.status === "ok" ? e.exit_code === 0 : e.exit_code !== 0)) &&
+    (!q || e.tool.includes(q) || argsPreview(e).toLowerCase().includes(q)));
+  /* I6: each row carries its full values in an aria-label; truncated cells expand on keyboard focus */
+  $("#journalList").innerHTML = rows.length ? rows.map(e => {
+    const who = whoRaw(e), shownTxt = e.result_count != null && e.result_count !== e.shown ? e.shown + " of " + e.result_count + " results" : e.shown + " shown",
+      exitTxt = e.exit_code === 0 ? "exit ok" : "exit " + e.exit_code;
+    return '<div class="jrow' + (e.exit_code !== 0 ? " jrow-err" : "") + '" role="listitem" tabindex="0" aria-label="' + escapeHtml(fmtTime(e.ts) + ", " + e.tool + ", " + who + ", " + argsPreview(e) + ", " + shownTxt + ", " + fmtMs(e.latency_us) + ", " + exitTxt) + '"><span class="j-time">' + fmtTime(e.ts) + '</span><span class="j-tool">' + escapeHtml(e.tool) + '</span><span class="j-who" title="' + escapeHtml(who) + '">' + escapeHtml(who) + '</span><span class="j-args" title="' + escapeHtml(argsPreview(e)) + '">' + escapeHtml(argsPreview(e)) + '</span>' +
+    '<span class="j-shown">' + (e.result_count != null && e.result_count !== e.shown ? e.shown + " / " + e.result_count : "shown " + e.shown) + '</span><span class="j-lat">' + fmtMs(e.latency_us) + '</span><span class="j-exit ' + (e.exit_code === 0 ? "" : "err") + '">' + (e.exit_code === 0 ? "ok" : "exit " + e.exit_code) + "</span></div>";
+  }).join("") : '<div class="feed-empty" role="presentation">No entries match the current filters within the retained window.</div>';
+  $("#feedCount").textContent = rows.length + " / " + FEED.length + " shown · window cap 50";
+  return rows.length;
+}
+function renderFilterPills() {
+  $("#agentPills").innerHTML = '<button class="pill is-on" aria-pressed="true" data-v="all">all agents</button>' + Object.keys(AGENT_AGGS).map(k => '<button class="pill" aria-pressed="false" data-v="' + escapeHtml(k) + '" title="agent_aggs.' + escapeHtml(k) + " — " + fmtInt(AGENT_AGGS[k].calls) + " calls · " + AGENT_AGGS[k].errors + " err · " + AGENT_AGGS[k].reliability_pct.toFixed(1) + '% ok">' + escapeHtml(k) + "</button>").join("");
+  $("#repoPills").innerHTML = '<button class="pill is-on" aria-pressed="true" data-v="all">all repos</button>' + Object.keys(REPO_AGGS).map(p => {
+    const r = REPO_AGGS[p];
+    return '<button class="pill" aria-pressed="false" data-v="' + escapeHtml(r.display) + '" title="' + escapeHtml(p) + " · hit " + r.search_hit_rate_pct + "% · " + Object.keys(r.worktrees || {}).length + ' wt">' + escapeHtml(r.display) + "</button>";
+  }).join("");
+}
+function setFilter(name, v) {
+  feedFilters[name] = v;
+  const set = $('.pill-set[data-filter="' + name + '"]');
+  $$(".pill", set).forEach(p => { const on = p.dataset.v === v; p.classList.toggle("is-on", on); p.setAttribute("aria-pressed", String(on)); });
+  announce(renderFeed() + " / " + FEED.length + " shown");
+}
+function updateApplyBanner() {
+  /* I5: the live region never leaves the a11y tree — it is sr-only (and inert) while empty */
+  $("#applyBanner").classList.toggle("sr-only", staged.length === 0);
+  $("#applyBtn").disabled = staged.length === 0;
+  $("#applyBtn").textContent = "Apply " + staged.length + " new (n)";
+}
+const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
+function stageEntry(e) {
+  if (!e.ts) e.ts = Math.floor(Date.now() / 1000);
+  /* S4: cap the staged buffer; the banner text change (role=status) announces each stage */
+  if (staged.length >= 100) { if (!stagedCapNote) { stagedCapNote = true; announce("Staged buffer capped at 100 entries — press n to apply."); } return; }
+  staged.push(e);
+  updateApplyBanner();
+  /* Flash is skipped entirely under prefers-reduced-motion (JS-side guard matching the CSS one) */
+  if (!REDUCED.matches) { const chip = $("#liveChip"); chip.classList.add("flash"); setTimeout(() => chip.classList.remove("flash"), 650); }
+}
+function applyStaged() {
+  if (!staged.length) return;
+  FEED = staged.slice().reverse().concat(FEED).slice(0, 50);
+  const n = staged.length;
+  staged = [];
+  stagedCapNote = false;
+  updateApplyBanner(); renderFeed();
+  announce("Applied " + n + " staged journal entries to the retained window.");
+}
+
+/* Live states: real EventSource over http(s), synthetic stand-in for file://; poll fallback at 15s.
+   The chip carries live / poll / off states instead of an unconditional green. */
+let liveState = "live", simMode = false, lastSummarySync = SUMMARY.generated_at * 1000;
+function setLive(state) {
+  liveState = state;
+  const chip = $("#liveChip"), label = state === "live" ? "LIVE" : state === "poll" ? "POLL 15s" : "OFF";
+  chip.classList.remove("chip--ok", "chip--warn", "chip--err");
+  chip.classList.add(state === "live" ? "chip--ok" : state === "poll" ? "chip--warn" : "chip--err");
+  /* S3: the synthetic stand-in is labeled, keeping the indicator honest about its source */
+  $("#liveLabel").textContent = simMode ? "SIM · " + label : label;
+  chip.setAttribute("aria-label", (simMode ? "Simulated connection state " : "Connection state ") + label + " — click to preview poll fallback");
+  renderSb();
+}
+function renderSb() { $("#sbLive").textContent = (liveState === "live" ? "SSE live" : liveState === "poll" ? "SSE down — poll 500ms" : "offline") + " · age " + fmtAge(Date.now() - lastSummarySync); }
+function startLive() {
+  if (/^https?:$/.test(location.protocol)) {
+    try {
+      const es = new EventSource("/events");
+      es.onopen = () => setLive("live");
+      es.onerror = () => setLive("poll");
+      es.onmessage = ev => { try { stageEntry(JSON.parse(ev.data)); } catch (e) {} };
+      return;
+    } catch (e) { /* fall through to synthetic mode */ }
+  }
+  simMode = true;
+  setLive("live");
+  const SIM_POOL = [
+    {tool:"callers", agent:"zcode", repo_name:"app", exit_code:0, shown:4, result_count:4, latency_us:590, args:{name:"normalize_token"}},
+    {tool:"search", agent:"codex", repo_name:"engram", exit_code:0, shown:9, result_count:23, latency_us:760, args:{terms:"ref freshness"}},
+    {tool:"context", agent:"claude", repo_name:"dashboard", repo_main_name:"engram", exit_code:0, shown:6, result_count:6, latency_us:1100, args:{symbol:"memory_touch_if_rev"}}
+  ];
+  let i = 0;
+  setInterval(() => { stageEntry(Object.assign({}, SIM_POOL[i++ % SIM_POOL.length])); }, 8000);
+}
+setInterval(() => { lastSummarySync = Date.now(); }, 15000); /* mirrors the app.js 15s summary poll fallback */
+setInterval(renderSb, 1000);
+
+/* Panels */
+const PANEL_IDS = ["duplicates", "memory", "journal"], PANEL_NAMES = { duplicates: "Duplicate Review", memory: "Memory Ref Health", journal: "Live Journal" };
+let lastPanel = "journal";
+function togglePanel(id, forceOpen) {
+  const p = $("#panel-" + id), show = forceOpen ? true : p.hidden;
+  p.hidden = !show;
+  if (show) lastPanel = id;
+  syncBench();
+  announce(PANEL_NAMES[id] + " panel " + (show ? "opened" : "closed"));
+}
+function syncBench() {
+  const open = PANEL_IDS.filter(id => !$("#panel-" + id).hidden).length;
+  $("#emptyState").hidden = open > 0;
+  $("#sbPanels").textContent = open + " panel" + (open === 1 ? "" : "s") + " open";
+}
+
+/* Command palette: index built from the payloads; boots open, traps focus for real */
+let PALETTE = [], paletteOpen = false, activeIdx = 0, filtered = [], prePaletteFocus = null;
+function buildPalette() {
+  const items = [
+    {group:"Actions", type:"CMD", label:"Open Duplicate Review", meta:REUSE.candidates.length + " sampled candidates · /api/reuse", run:() => togglePanel("duplicates", true)},
+    {group:"Actions", type:"CMD", label:"Open Memory Ref Health", meta:NOTES.filter(n => n.ref_status !== "valid").length + " refs need attention · /api/memories", run:() => togglePanel("memory", true)},
+    {group:"Actions", type:"CMD", label:"Open Live Journal", meta:"retained_journal window · /events", run:() => togglePanel("journal", true)},
+    {group:"Actions", type:"CMD", label:"Verify all modified refs", meta:"POST /api/memory/touch · " + NOTES.filter(n => n.ref_status === "modified").length + " pending", run:() => { const i = NOTES.findIndex(n => n.ref_status === "modified"); if (i >= 0) selectNote(i); togglePanel("memory", true); verifyRef(); }},
+    {group:"Actions", type:"CMD", label:"Toggle light / dark theme", meta:"data-theme · localStorage eg-theme", run:() => toggleTheme()},
+    {group:"Agents", type:"AGNT", label:AGENT_AGGS.zcode.display, meta:fmtInt(AGENT_AGGS.zcode.calls) + " calls · " + AGENT_AGGS.zcode.errors + " err · " + AGENT_AGGS.zcode.reliability_pct.toFixed(1) + "% ok", run:() => { togglePanel("journal", true); setFilter("agent", "zcode"); }},
+    {group:"Recent invocations", type:"CALL", label:SAMPLE_ENTRY.tool + " " + argsPreview(SAMPLE_ENTRY), meta:SAMPLE_ENTRY.repo_name + " · " + SAMPLE_ENTRY.agent + " · " + fmtMs(SAMPLE_ENTRY.latency_us) + " · exit " + SAMPLE_ENTRY.exit_code, run:() => togglePanel("journal", true)}
+  ];
+  Object.keys(REPO_AGGS).forEach(p => {
+    const r = REPO_AGGS[p];
+    items.push({group:"Repos", type:"REPO", label:r.display, meta:fmtInt(r.calls) + " calls · hit " + r.search_hit_rate_pct + "% · " + Object.keys(r.worktrees || {}).length + " wt", run:() => { togglePanel("journal", true); setFilter("repo", r.display); }});
+  });
+  REUSE.candidates.forEach((c, i) => {
+    items.push({group:"Reuse candidates", type:"REUSE", label:c.symbol + " -> " + c.canonical, meta:c.detector + " · " + (c.overlap_pct == null ? "structural" : "overlap " + c.overlap_pct + "%") + " · " + c.loc_saving + " loc", run:() => { selectCandidate(i); togglePanel("duplicates", true); }});
+  });
+  NOTES.forEach((n, i) => {
+    items.push({group:"Memory notes", type:"NOTE", label:n.key, meta:n.kind + " · rev " + n.rev + " · ref " + n.ref_status, run:() => { selectNote(i); togglePanel("memory", true); }});
+  });
+  PALETTE = items;
+}
+/* Briefing: delta only — each datum here appears nowhere else (digest and panel footers own theirs) */
+function briefingHtml() {
+  const R = REUSE.summary;
+  const row = (k, v, t) => '<div class="b-row" title="' + escapeHtml(t) + '"><span class="b-k">' + k + '</span><span class="b-v">' + v + "</span></div>";
+  const scans = Object.keys(REPO_AGGS).map(p => REPO_AGGS[p].display + " " + REPO_AGGS[p].last_reuse_scan.result_count).join(" · ");
+  return '<div class="p-briefing"><div class="seg-label">Briefing · delta since last brief</div>' +
+    row("twins", R.resolved_twins.resolved + " / " + R.resolved_twins.surfaced + " resolved", "reuse.summary.resolved_twins — resolved / surfaced") +
+    row("scans", scans, "repo_aggs.last_reuse_scan.result_count") +
+    row("pre-write", fmtInt(R.prewrite_count) + " scans", "reuse.summary.prewrite_count — pre-write search calls") +
+    "</div>";
+}
+function renderPalette(q) {
+  q = q.trim().toLowerCase();
+  filtered = PALETTE.filter(it => !q || (it.type + " " + it.group + " " + it.label + " " + it.meta).toLowerCase().includes(q));
+  activeIdx = 0;
+  /* I10: the listbox owns only options (+ presentation group labels); briefing and the empty
+     message live outside it so every direct child of the listbox is a valid option */
+  let html = "", lastGroup = null;
+  filtered.forEach((it, i) => {
+    if (it.group !== lastGroup) { html += '<div class="seg-label p-group" role="presentation">' + it.group + "</div>"; lastGroup = it.group; }
+    html += '<button type="button" class="p-item' + (i === activeIdx ? " active" : "") + '" role="option" aria-selected="' + (i === activeIdx) + '" aria-label="' + escapeHtml(it.type + " — " + it.label + ", " + it.meta) + '" data-idx="' + i + '"><span class="p-type">' + it.type + '</span><span class="p-label">' + escapeHtml(it.label) + '</span><span class="p-meta">' + escapeHtml(it.meta) + '</span></button>';
+  });
+  $("#paletteResults").innerHTML = html;
+  $("#paletteBriefing").innerHTML = q
+    ? (filtered.length ? "" : '<div class="p-empty">No matches — the palette indexes actions, agents, repos, reuse candidates, memory notes and recent invocations.</div>')
+    : briefingHtml();
+  syncActive();
+}
+function syncActive() {
+  const items = $$("#paletteResults .p-item");
+  items.forEach((el, i) => {
+    const on = i === activeIdx;
+    el.classList.toggle("active", on);
+    el.setAttribute("aria-selected", String(on));
+    if (!on) { el.removeAttribute("id"); return; }
+    el.id = "p-opt-" + i;
+    $("#paletteInput").setAttribute("aria-activedescendant", el.id);
+    el.scrollIntoView({block:"nearest"});
+  });
+  if (!items.length) $("#paletteInput").removeAttribute("aria-activedescendant");
+}
+function focusActive() { const items = $$("#paletteResults .p-item"); if (items[activeIdx] && document.activeElement !== $("#paletteInput")) items[activeIdx].focus(); }
+/* Real focus trap: cycles DOM focus between the input and the option buttons */
+function trapTab(e) {
+  e.preventDefault();
+  const inp = $("#paletteInput"), items = $$("#paletteResults .p-item");
+  if (!items.length || (!e.shiftKey && document.activeElement === inp)) (items[Math.min(activeIdx, items.length - 1)] || inp).focus();
+  else if (e.shiftKey && document.activeElement === inp) items[items.length - 1].focus();
+  else inp.focus();
+}
+function openPalette() {
+  paletteOpen = true;
+  prePaletteFocus = document.activeElement;
+  $("#paletteOverlay").hidden = false;
+  const inp = $("#paletteInput");
+  inp.value = "";
+  inp.setAttribute("aria-expanded", "true");
+  renderPalette("");
+  inp.focus();
+  announce("Command palette open — type to search actions, agents, repos, candidates and notes.");
+}
+function closePalette() {
+  paletteOpen = false;
+  $("#paletteOverlay").hidden = true;
+  $("#paletteInput").setAttribute("aria-expanded", "false");
+  if (prePaletteFocus && prePaletteFocus.focus) prePaletteFocus.focus();
+  announce("Command palette closed.");
+}
+function runItem(i) { const it = filtered[i]; if (!it) return; closePalette(); it.run(); }
+
+/* Theme: effective theme = saved || prefers-color-scheme, so the label always matches what is rendered */
+function toggleTheme() {
+  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("eg-theme", next); } catch (e) {}
+  $("#themeBtn").textContent = next === "dark" ? "Light" : "Dark";
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("eg-theme"); } catch (e) {}
+  const effective = saved || (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", effective);
+  $("#themeBtn").textContent = effective === "dark" ? "Light" : "Dark";
+})();
+
+/* S13: platform-aware modifier label — Windows/Linux keyboards say ctrl */
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+if (!IS_MAC) $$(".kbd").forEach(k => { if (k.textContent.trim().toLowerCase() === "cmd") k.textContent = "ctrl"; });
+
+/* Wiring */
+function selectCandidate(i) { selCand = i; renderCandList(); renderDuplicates(); }
+function selectNote(i) { selNote = i; renderNoteList(); renderNote(); }
+$("#paletteBtn").addEventListener("click", openPalette);
+$("#paletteInput").addEventListener("input", e => renderPalette(e.target.value));
+$("#themeBtn").addEventListener("click", toggleTheme);
+$("#applyBtn").addEventListener("click", applyStaged);
+$("#feedSearch").addEventListener("input", e => { feedFilters.q = e.target.value; announce(renderFeed() + " / " + FEED.length + " shown"); });
+$("#paletteOverlay").addEventListener("click", e => {
+  const item = e.target.closest(".p-item");
+  if (item) runItem(Number(item.dataset.idx));
+  else if (e.target === $("#paletteOverlay")) closePalette();
+});
+$("#liveChip").addEventListener("click", () => {
+  setLive(liveState === "live" ? "poll" : "live");
+  announce("Simulated connection state: " + liveState + (liveState === "poll" ? " — poll fallback active" : " — SSE stream restored") + ".");
+});
+$("#copySiteBtn").addEventListener("click", function () { const c = REUSE.candidates[selCand]; copyText(c.canonical + " — " + c.canonical_file + ":" + c.canonical_line + " (" + c.canonical_callers + " callers)", this); });
+$("#copyCliBtn").addEventListener("click", function () { const c = REUSE.candidates[selCand]; copyText("eg callers " + c.canonical, this); });
+$("#noteDossier").addEventListener("click", e => {
+  if (e.target.closest("#verifyBtn")) verifyRef();
+  else if (e.target.closest("#errBtn")) simulateTouchError();
+  else if (e.target.closest("#refetchBtn")) refetchMemories();
+});
+$("#candList").addEventListener("click", e => { const row = e.target.closest(".pick-row"); if (row) selectCandidate(Number(row.dataset.i)); });
+$("#noteList").addEventListener("click", e => { const row = e.target.closest(".pick-row"); if (row) selectNote(Number(row.dataset.i)); });
+$$(".pill-set").forEach(set => set.addEventListener("click", e => {
+  const pill = e.target.closest(".pill");
+  if (pill) setFilter(set.dataset.filter, pill.dataset.v);
+}));
+$$(".panel-close").forEach(b => b.addEventListener("click", () => togglePanel(b.dataset.close)));
+$("#bench").addEventListener("click", e => {
+  const panel = e.target.closest(".panel");
+  if (panel) PANEL_IDS.forEach(id => { if ($("#panel-" + id) === panel) lastPanel = id; });
+});
+document.addEventListener("keydown", e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); paletteOpen ? closePalette() : openPalette(); return; }
+  if (paletteOpen) {
+    const onInput = document.activeElement === $("#paletteInput");
+    if (e.key === "Escape") closePalette();
+    else if (e.key === "Tab") trapTab(e);
+    else if (e.key === "ArrowDown") { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, filtered.length - 1); syncActive(); focusActive(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); syncActive(); focusActive(); }
+    else if (e.key === "Enter") { e.preventDefault(); runItem(activeIdx); }
+    else if (e.key === " " && !onInput) e.preventDefault();
+    else if ((e.key === "Backspace" || e.key === "Delete") && !onInput) { e.preventDefault(); const inp = $("#paletteInput"); if (e.key === "Backspace") inp.value = inp.value.slice(0, -1); inp.focus(); renderPalette(inp.value); }
+    else if (e.key.length === 1 && !mod && !e.altKey && !onInput) { e.preventDefault(); const inp = $("#paletteInput"); inp.value += e.key; inp.focus(); renderPalette(inp.value); }
+    return;
+  }
+  const typing = /^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || "");
+  if (e.key === "/" && !typing) { e.preventDefault(); openPalette(); }
+  else if (e.key === "Escape" && !typing) { if (!$("#panel-" + lastPanel).hidden) togglePanel(lastPanel, false); }
+  else if (e.altKey && /^Digit[1-3]$/.test(e.code)) { e.preventDefault(); togglePanel(PANEL_IDS[Number(e.code.slice(5)) - 1]); }
+  else if ((e.key === "n" || e.key === "N") && !typing) applyStaged();
+});
+
+/* Init */
+renderDigest(); renderCandList(); renderDuplicates(); renderMemCounts(); renderNoteList(); renderNote(); renderFilterPills(); renderFeed();
+syncBench(); buildPalette(); startLive(); renderSb();
+openPalette(); /* palette-first boot: the workbench opens on the command surface */
+</script>
+</body>
+</html>

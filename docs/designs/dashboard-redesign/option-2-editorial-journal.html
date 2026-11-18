@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>The Engram Journal — eg dashboard · Option 2: Editorial Journal</title>
+<script>
+  // Theme bootstrap before first paint: localStorage override, else prefers-color-scheme.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem("eg-theme"); } catch (e) {}
+    if (t !== "light" && t !== "dark") {
+      t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
+<style>
+  /* Tokens: Shibumi palette from src/dashboard/assets/style.css:1-60 */
+  :root {
+    --bg-canvas: #F7F4EE; --bg-surface: #FBF9F5; --bg-subtle: #EFECE4; --bg-elevated: #FFFFFF;
+    --text-primary: #1E1C1A; --text-secondary: #4A4640; --text-muted: #666059;
+    --border-subtle: rgba(30, 28, 26, 0.09); --border-strong: rgba(30, 28, 26, 0.18);
+    --intent-primary: #8A4A2E; --intent-primary-soft: rgba(158, 88, 59, 0.10);
+    --intent-success: #246A49; --intent-success-soft: rgba(36, 106, 73, 0.10);
+    --intent-warning: #945807; --intent-warning-soft: rgba(168, 100, 8, 0.10);
+    --intent-danger: #B8322C; --intent-danger-soft: rgba(184, 50, 44, 0.10);
+    --intent-info: #2E5A70; --intent-info-soft: rgba(46, 90, 112, 0.10);
+    --font-display: Georgia, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+    --radius-sm: 4px; --radius-md: 8px;
+    --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  :root[data-theme="dark"] {
+    --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724;
+    --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84;
+    --border-subtle: rgba(243, 239, 234, 0.09); --border-strong: rgba(243, 239, 234, 0.18);
+    --intent-primary: #D9825B; --intent-primary-soft: rgba(217, 130, 91, 0.15);
+    --intent-success: #52B788; --intent-success-soft: rgba(82, 183, 136, 0.15);
+    --intent-warning: #E9A84A; --intent-warning-soft: rgba(233, 168, 74, 0.15);
+    --intent-danger: #F06A63; --intent-danger-soft: rgba(240, 106, 99, 0.15);
+    --intent-info: #6BA3BE; --intent-info-soft: rgba(107, 163, 190, 0.15);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg-canvas); color: var(--text-primary); font-family: var(--font-sans); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  :focus-visible { outline: 2px solid var(--intent-primary); outline-offset: 2px; border-radius: 2px; }
+  .skip { position: absolute; left: -9999px; } .skip:focus { left: 16px; top: 12px; z-index: 10; background: var(--bg-elevated); border: 1px solid var(--border-strong); padding: 8px 12px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sheet { max-width: 1140px; margin: 0 auto; padding: 0 40px 64px; }
+
+  /* Folio running head — magazine device, distinct from other options' fixed chrome */
+  .folio { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--bg-canvas); border-bottom: 1px solid var(--border-subtle); padding: 10px 0; font: 600 10px var(--font-sans); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); }
+  .folio #folioNow { color: var(--intent-primary); }
+
+  /* Masthead */
+  .masthead { text-align: center; padding-top: 28px; }
+  .overline { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.22em; color: var(--text-muted); }
+  .masthead h1 { font: 700 58px/1.05 var(--font-display); letter-spacing: 0.01em; margin: 14px 0 10px; }
+  .edition { font: italic 14px var(--font-display); color: var(--text-muted); }
+  .mast-controls { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin: 20px 0 0; }
+  .index {
+    display: flex; justify-content: center; flex-wrap: wrap; gap: 6px 26px;
+    margin-top: 22px; padding: 13px 0 17px; border-top: 1px solid var(--border-subtle); border-bottom: 1px solid var(--border-strong);
+    font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.14em;
+  }
+  .index span { color: var(--text-muted); }
+  .index a { color: var(--text-secondary); text-decoration: none; } .index a:hover { color: var(--intent-primary); text-decoration: underline; text-underline-offset: 3px; }
+
+  /* Chips, pills, selects, buttons */
+  .chip { display: inline-flex; align-items: center; gap: 8px; font: 500 11px var(--font-sans); letter-spacing: 0.04em; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 5px 13px; }
+  button.chip { cursor: pointer; font-family: var(--font-sans); transition: all var(--transition-fast); } button.chip:hover { border-color: var(--border-strong); color: var(--text-primary); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--intent-success); display: inline-block; flex: none; } .dot.pulse { animation: pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .pills { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 20px 0 4px; }
+  .pillrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .pill { font: 500 12px var(--font-mono); color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 5px 13px; cursor: pointer; transition: all var(--transition-fast); }
+  .pill:hover { border-color: var(--border-strong); color: var(--text-primary); } .pill .n { opacity: 0.6; margin-left: 5px; }
+  .pill[aria-pressed="true"] { background: var(--text-primary); border-color: var(--text-primary); color: var(--bg-canvas); }
+  .sel { font: 500 12px var(--font-mono); color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 6px 10px; }
+  .input { font: 500 12.5px var(--font-mono); color: var(--text-primary); width: 230px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 7px 12px; }
+  .input::placeholder { color: var(--text-muted); }
+  .btn { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.08em; background: var(--text-primary); color: var(--bg-canvas); border: 1px solid var(--text-primary); border-radius: var(--radius-sm); padding: 9px 16px; cursor: pointer; transition: opacity var(--transition-fast); }
+  .btn:hover { opacity: 0.85; } .btn:disabled { opacity: 0.45; cursor: default; }
+
+  /* Desks: margin-note column + copy column */
+  .desk { display: grid; grid-template-columns: 216px minmax(0, 1fr); column-gap: 56px; padding: 72px 0 80px; border-bottom: 1px solid var(--border-subtle); }
+  .desk.lead { border-bottom: 1px solid var(--border-strong); }
+  #ledger { border-bottom: 0; }
+  .gutter { position: sticky; top: 44px; align-self: start; font: italic 13px/1.65 var(--font-display); color: var(--text-muted); border-top: 1px solid var(--border-strong); padding-top: 14px; }
+  .gutter b { display: block; font: 600 10px var(--font-sans); font-style: normal; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-secondary); margin-bottom: 8px; }
+  .gutter p + p { margin-top: 10px; }
+  .kicker { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.2em; color: var(--intent-primary); margin-bottom: 14px; }
+  .headline { font: 400 32px/1.18 var(--font-display); letter-spacing: -0.005em; max-width: 22ch; margin-bottom: 22px; }
+  .prose { font-size: 16px; line-height: 1.75; max-width: 62ch; }
+  .prose p + p { margin-top: 16px; }
+  .field { font-family: var(--font-mono); font-size: 0.82em; background: var(--bg-subtle); border-radius: 3px; padding: 1px 5px; white-space: nowrap; }
+  .dropcap::first-letter { float: left; font: 700 60px/0.82 var(--font-display); color: var(--intent-primary); padding: 5px 12px 0 0; }
+  .xref { font: 600 11px var(--font-sans); color: var(--intent-info); background: var(--intent-info-soft); border: 1px solid transparent; border-radius: 3px; padding: 1px 7px; cursor: pointer; } .xref:hover { border-color: var(--intent-info); }
+
+  /* Pull-quotes and stat strip */
+  .pullquote { border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); padding: 26px 0 22px; margin: 34px 0; }
+  .pq-right { max-width: 560px; margin-left: auto; }
+  .pullquote .num { font: 400 84px/1 var(--font-display); letter-spacing: -0.01em; font-variant-numeric: lining-nums; }
+  .pullquote.qm .num { font-size: 56px; line-height: 1.05; }
+  .num .sub { font-size: 0.44em; color: var(--text-muted); letter-spacing: 0; }
+  .pullquote .lbl { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-secondary); margin-top: 12px; }
+  .pullquote .cap { font: italic 14px/1.6 var(--font-display); color: var(--text-muted); margin-top: 10px; max-width: 48ch; }
+  .statstrip { display: flex; gap: 44px; margin: 40px 0 6px; }
+  .stat { flex: 1; }
+  .stat + .stat { border-left: 1px solid var(--border-subtle); padding-left: 44px; }
+  .stat .num { font: 400 42px/1.1 var(--font-display); font-variant-numeric: lining-nums; }
+  .stat .lbl { font: 600 10.5px var(--font-sans); text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-secondary); margin-top: 8px; } .stat .cap { font: italic 12.5px/1.55 var(--font-display); color: var(--text-muted); margin-top: 6px; }
+  .est { border-bottom: 1px dotted currentColor; } .est::after { content: "est"; font: 600 9px var(--font-sans); vertical-align: super; margin-left: 4px; letter-spacing: 0.06em; color: var(--intent-warning); }
+
+  /* Bars (CSS divs only — no unicode bars) */
+  .bar { height: 6px; max-width: 260px; background: var(--bg-subtle); border-radius: 3px; overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--intent-primary); border-radius: 3px; }
+
+  /* Twin dossier */
+  .twin { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 26px 0 20px; }
+  .codepanel { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; }
+  .codepanel header { display: flex; justify-content: space-between; gap: 12px; padding: 8px 14px; background: var(--bg-subtle); border-bottom: 1px solid var(--border-subtle); font: 500 11px var(--font-mono); color: var(--text-muted); }
+  .codepanel header em { font-style: normal; color: var(--intent-info); }
+  .codepanel pre { padding: 14px 16px; font: 12px/1.65 var(--font-mono); color: var(--text-secondary); overflow-x: auto; }
+  .twinfacts { display: flex; flex-wrap: wrap; gap: 10px 30px; align-items: center; padding: 14px 0 0; }
+  .twinfacts .f { display: flex; align-items: baseline; gap: 9px; }
+  .twinfacts dt { font: 600 10px var(--font-sans); text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted); } .twinfacts dd { font: 500 12.5px var(--font-mono); color: var(--text-secondary); }
+  .det { font: 600 10px var(--font-sans); letter-spacing: 0.08em; color: var(--intent-info); border: 1px solid var(--intent-info); border-radius: 3px; padding: 1px 6px; }
+  .reasons { margin: 14px 0 0; padding-left: 18px; font: italic 13.5px/1.7 var(--font-display); color: var(--text-muted); max-width: 62ch; }
+  .rowhint { font: italic 12.5px/1.6 var(--font-display); color: var(--text-muted); margin: 4px 0 10px; }
+  .minihead { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.18em; color: var(--text-secondary); margin-top: 34px; }
+
+  /* Tables: candidate floor, roster, anchor ledger, workspace ledger */
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font: 600 10.5px var(--font-sans); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); padding: 10px 14px 8px 0; border-bottom: 1px solid var(--border-strong); vertical-align: bottom; }
+  td { padding: 11px 14px 11px 0; border-bottom: 1px solid var(--border-subtle); font: 400 12.5px var(--font-mono); color: var(--text-secondary); vertical-align: top; }
+  td:first-child, th:first-child { padding-left: 2px; }
+  tbody tr:hover { background: var(--bg-subtle); }
+  tr.scopes th { color: var(--text-secondary); border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px; }
+  tr.scopes th em { display: block; font: italic 10px var(--font-sans); letter-spacing: 0.02em; text-transform: none; color: var(--text-muted); }
+  tr.empty-row td { font: italic 13px var(--font-display); color: var(--text-muted); }
+  tr.rowbtn { cursor: pointer; } tr.rowbtn.active { background: var(--intent-primary-soft); }
+  tr.rowbtn.active td:first-child { border-left: 2px solid var(--intent-primary); padding-left: 0; }
+  tr.subrow td { color: var(--text-muted); } tr.subrow td:first-child { padding-left: 18px; font-style: italic; }
+  tr.flash { animation: rowflash 1.8s ease-out 1; }
+  @keyframes rowflash { 0% { background: var(--intent-primary-soft); } 100% { background: transparent; } }
+  .tblcap { font: italic 12.5px/1.6 var(--font-display); color: var(--text-muted); margin-top: 12px; max-width: 66ch; }
+
+  /* Memory desk: status chips, anchor rows, note card */
+  .schips { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 4px; }
+  .schip { display: inline-flex; align-items: center; gap: 7px; font: 500 11px var(--font-sans); letter-spacing: 0.04em; color: var(--text-secondary); border: 1px solid var(--border-strong); border-radius: 999px; padding: 4px 12px; }
+  .schip.valid { color: var(--intent-success); border-color: var(--intent-success); background: var(--intent-success-soft); }
+  .schip.modified { color: var(--intent-warning); border-color: var(--intent-warning); background: var(--intent-warning-soft); }
+  .schip.broken { color: var(--intent-danger); border-color: var(--intent-danger); background: var(--intent-danger-soft); }
+  .schip.unverified { color: var(--text-muted); border-style: dashed; }
+  .notecard { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-left: 3px solid var(--intent-warning); border-radius: var(--radius-md); padding: 22px 26px; margin: 26px 0 18px; }
+  .notecard .overline { letter-spacing: 0.16em; }
+  .notecard blockquote { font: italic 17px/1.6 var(--font-display); color: var(--text-primary); margin: 14px 0 4px; max-width: 54ch; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px 30px; margin-top: 18px; }
+  .facts .f { display: flex; align-items: baseline; gap: 8px; }
+  .facts dt { font: 600 10px var(--font-sans); text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted); } .facts dd { font: 500 12px var(--font-mono); color: var(--text-secondary); }
+  .refchip { display: inline-flex; align-items: center; gap: 8px; font: 500 12px var(--font-mono); border-radius: 999px; padding: 5px 13px; border: 1px solid var(--border-strong); }
+  .refchip.modified { color: var(--intent-warning); border-color: var(--intent-warning); background: var(--intent-warning-soft); } .refchip.valid { color: var(--intent-success); border-color: var(--intent-success); background: var(--intent-success-soft); }
+  .actions { display: flex; align-items: center; gap: 14px; margin-top: 20px; flex-wrap: wrap; }
+  .touchout { font: 400 11.5px/1.6 var(--font-mono); color: var(--intent-success); max-width: 60ch; } .touchout.err { color: var(--intent-danger); }
+  .touchout:empty { display: none; }
+
+  /* Live wire + pre-write dispatch */
+  .wirewrap { overflow-x: auto; margin-top: 14px; }
+  .wire { list-style: none; min-width: 680px; }
+  .entry { display: grid; grid-template-columns: 74px 90px minmax(0, 1fr) auto; gap: 18px; align-items: baseline; padding: 12px 0; border-top: 1px solid var(--border-subtle); font: 400 12.5px var(--font-mono); cursor: pointer; }
+  .wire li:first-child { border-top: 0; }
+  .entry .t { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .entry .tool { color: var(--intent-info); font-weight: 600; }
+  .entry .what { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry .what strong { color: var(--text-primary); font-weight: 600; } .entry .meta { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .entry.err .tool, .entry.err .meta { color: var(--intent-danger); }
+  .entry .more { grid-column: 1 / -1; display: none; font: 400 11.5px/1.6 var(--font-mono); color: var(--text-muted); padding: 2px 0 6px; white-space: normal; }
+  .entry[aria-expanded="true"] .more { display: block; }
+  .entry.live { animation: rowflash 2.4s ease-out 1; }
+  .livetag { font: 600 9px var(--font-sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--intent-primary); border: 1px solid var(--intent-primary); border-radius: 3px; padding: 1px 5px; margin-left: 9px; vertical-align: 1px; }
+  .pre { list-style: none; margin-top: 8px; }
+  .pre li { display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 18px; padding: 10px 0; border-top: 1px solid var(--border-subtle); font: 400 12.5px var(--font-mono); }
+  .pre li:first-child { border-top: 0; }
+  .pre .t { color: var(--text-muted); } .pre .what { color: var(--text-secondary); } .pre .meta { color: var(--text-muted); white-space: nowrap; }
+
+  /* Colophon */
+  .colophon { display: grid; grid-template-columns: 1.2fr 1fr; gap: 56px; border-top: 2px solid var(--text-primary); margin-top: 4px; padding: 30px 0 20px; font-size: 12.5px; color: var(--text-muted); }
+  .colophon h3 { font: 600 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-secondary); margin-bottom: 14px; }
+  .colophon dt { font: 500 12px var(--font-mono); color: var(--text-secondary); margin-top: 12px; } .colophon dd { line-height: 1.6; margin-top: 3px; }
+  .colophon li { line-height: 1.65; margin-top: 8px; list-style: none; padding-left: 14px; text-indent: -14px; }
+  .colophon .dim { opacity: 0.6; }
+
+  @media (max-width: 980px) {
+    .sheet { padding: 0 20px 48px; }
+    .masthead h1 { font-size: 42px; }
+    .desk { grid-template-columns: 1fr; row-gap: 24px; padding: 48px 0 56px; }
+    .gutter { position: static; max-width: 56ch; }
+    .statstrip { flex-direction: column; gap: 20px; }
+    .stat + .stat { border-left: 0; padding-left: 0; border-top: 1px solid var(--border-subtle); padding-top: 20px; }
+    .twin { grid-template-columns: 1fr; }
+    .colophon { grid-template-columns: 1fr; gap: 32px; }
+    .pullquote .num { font-size: 60px; }
+    .pq-right { max-width: none; margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .dot.pulse, .entry.live, tr.flash { animation: none; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#lead">Skip to the lead</a>
+<div class="folio" aria-hidden="true"><span>The Engram Journal · retained journal window</span><span>§ <span id="folioNow">The Lead</span></span></div>
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="overline">eg · engram — deterministic graph · anti-reinvention · zero-token memory</p>
+    <h1>The Engram Journal</h1>
+    <p class="edition">Edition of 2026-11-16 · window: retained journal · generated 12:43 UTC</p>
+    <div class="mast-controls">
+      <span class="chip" id="liveChip"><span class="dot pulse" aria-hidden="true"></span> Live — SSE connected</span>
+      <span class="chip" id="ageChip">Data age 0s · next poll 15s</span>
+      <button type="button" class="chip" id="themeToggle">Dark theme</button>
+    </div>
+    <nav class="index" aria-label="In this edition">
+      <span>In this edition</span>
+      <a href="#lead">The Lead</a><a href="#graph">I. Graph Desk</a><a href="#bureau">II. Duplication Bureau</a>
+      <a href="#memory">III. Memory Desk</a><a href="#wire">IV. Live Wire</a><a href="#ledger">Appendix A</a>
+    </nav>
+  </header>
+
+  <main>
+
+    <!-- THE LEAD -->
+    <section class="desk lead" id="lead" aria-labelledby="lead-h" data-folio="The Lead">
+      <aside class="gutter">
+        <b>How to read</b>
+        <p>Numbers print large; their scope prints small beneath them. A dotted <span class="est" title="Figure behind a *_estimated flag">figure</span> sits behind a *_estimated flag; a solid figure is measured on the sampled floor. Never compare the two.</p>
+        <p>This edition reads the record in full — eg keeps no since-last-visit baseline, so no delta is claimed anywhere on the page.</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">The Lead</p>
+        <h2 class="headline" id="lead-h">What the retained journal recorded</h2>
+        <div class="prose">
+          <p class="dropcap">Every figure in this edition is read from the retained journal window — the scope the summary itself declares (<span class="field">window: "retained_journal"</span>) — not from a delta since your last visit. In that record, agents called eg 1,284 times and 99.3% of the calls succeeded; 906 of them were graph navigation, answered at a 0.7&nbsp;ms median. Graph navigation alone avoided <span class="est" title="Flag: graph_saved_tokens_estimated = true">305,000</span> context tokens; the all-tool figure over the same window is <span class="est" title="Flag: saved_tokens_estimated = true">412,000</span>. Eighteen sessions ran, and agents fell back on a persistent memory note in two thirds of them. The Bureau holds a pool of 38 structural twins awaiting verdicts, and of four memory anchors checked against the current index, two have drifted.</p>
+        </div>
+        <div class="pullquote">
+          <p class="num"><span class="est" title="Flag: saved_tokens_estimated = true">412,000</span></p>
+          <p class="lbl">Context tokens avoided — saved_tokens · all pillars, retained window</p>
+          <p class="cap">Graph navigation's own figure is <span class="est" title="Flag: graph_saved_tokens_estimated = true">305,000</span> (<span class="field">graph_saved_tokens</span>). No field allocates the remainder across pillars — the journal does not infer it.</p>
+        </div>
+        <div class="statstrip">
+          <div class="stat"><p class="num">1,284</p><p class="lbl">total_calls</p><p class="cap">All tools, retained window.</p></div>
+          <div class="stat"><p class="num">99.3%</p><p class="lbl">reliability_pct</p><p class="cap">Calls that exited cleanly.</p></div>
+          <div class="stat"><p class="num">0.8&nbsp;ms</p><p class="lbl">p50_ms</p><p class="cap">Graph p50 is faster still: 0.7&nbsp;ms (<span class="field">graph_p50_ms</span>).</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- I. GRAPH DESK -->
+    <section class="desk" id="graph" aria-labelledby="graph-h" data-folio="I — Graph Desk">
+      <aside class="gutter">
+        <b>Annotation</b>
+        <p>Primary scope: <span class="field">graph_*</span> fields only — graph_calls, graph_p50_ms, graph_saved_tokens. Anti-reinvention figures live solely in the Bureau below; all-tool totals live in Appendix A. The previous dashboard's graph tab silently fell back to all-tool numbers — that path is gone.</p>
+        <p>Attribution: the roster reads <span class="field">agent_aggs</span>; per-agent dispatches also stream in the Live Wire.</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">Section I — The Graph Desk</p>
+        <h2 class="headline" id="graph-h">Structure before source</h2>
+        <div class="prose">
+          <p>Navigation dominated the journal. The <strong>callers</strong> tool alone served 210 queries at a 0.6&nbsp;ms median (<span class="field">tool_aggs.callers</span>). Workspace <strong>app</strong> accounted for 512 of the 906 graph calls and 154,000 avoided graph tokens (<span class="field">graph_saved_tokens</span>, per repo — demo-shaped, flagged in the ledger) <button type="button" class="xref" data-xref="ledger-app">see ledger</button>.</p>
+          <p>The most recent dispatch resolved <code>read_bounded</code> to 7 callers in 640&nbsp;µs — one journal line, streamed live over <span class="field">/events</span>.</p>
+        </div>
+        <div class="pullquote qm">
+          <p class="num">906 <span class="sub">graph queries ·</span> 0.7&nbsp;ms <span class="sub">p50</span></p>
+          <p class="lbl">graph_calls · graph_p50_ms</p>
+          <dl class="twinfacts">
+            <div class="f"><dt>Latest dispatch</dt><dd>callers name=read_bounded → shown 7</dd></div>
+            <div class="f"><dt>exit_code</dt><dd>0</dd></div><div class="f"><dt>latency_us</dt><dd>640</dd></div><div class="f"><dt>agent</dt><dd>zcode</dd></div>
+            <div class="f"><dt>repo</dt><dd>app <button type="button" class="xref" data-xref="ledger-app">ledger</button></dd></div>
+          </dl>
+        </div>
+        <table aria-label="Agent attribution roster">
+          <thead>
+            <tr><th scope="col">Agent</th><th scope="col">calls</th><th scope="col">errors</th><th scope="col">graph_calls</th><th scope="col">graph_saved_tokens</th><th scope="col">saved_tokens</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>zcode</td><td>812</td><td>1</td><td>640</td><td>220,000</td><td>296,000</td></tr>
+            <tr><td>codex</td><td>472</td><td>8</td><td>266</td><td>85,000</td><td>116,000</td></tr>
+          </tbody>
+        </table>
+        <p class="tblcap">Dispatch roster — reads <span class="field">agent_aggs</span> from /api/summary (job: which agent is calling eg, how often, with how many failures). Demo-shaped values, chosen to sum to the global figures: 1,284 calls · 9 errors · 906 graph_calls · 305,000 graph tokens · 412,000 tokens.</p>
+      </div>
+    </section>
+
+    <!-- II. DUPLICATION BUREAU -->
+    <section class="desk" id="bureau" aria-labelledby="bureau-h" data-folio="II — Duplication Bureau">
+      <aside class="gutter">
+        <b>Annotation</b>
+        <p>Two measures share this desk, and the pills sit on the sampled one. <span class="field">detector_counts</span> is counted on the sampled candidate list (≤ 25 per repo), so the D1/D1L pill counts are floor counts. The All pill carries the pool total 38 (<span class="field">total_candidates</span>). Never compare a dotted est figure to a solid floor figure.</p>
+        <p>Verdicts so far: 3 twins resolved after 6 were surfaced (<span class="field">resolved_twins</span>).</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">Section II — The Duplication Bureau</p>
+        <h2 class="headline" id="bureau-h">Thirty-eight twins await a verdict</h2>
+        <div class="prose">
+          <p>Agents ran 112 pre-write lookups before writing code (<span class="field">prewrite_count</span>). At workspace app <button type="button" class="xref" data-xref="ledger-app">ledger</button>, 96 of those scans ran with a 92% hit rate (<span class="field">reuse_calls</span>, <span class="field">search_hit_rate_pct</span> — anti-reinvention scope), and the latest scan returned 21 results without hitting the cap (<span class="field">last_reuse_scan.limit_capped: false</span>). The median candidate sits behind <span class="est" title="Flag: avg_callers_estimated = true">6.4</span> callers (<span class="field">avg_callers</span>).</p>
+        </div>
+        <div class="pullquote qm pq-right">
+          <p class="num">38 <span class="sub">candidates ·</span> <span class="est" title="Flag: preventable_loc_estimated = true">1,240</span> <span class="sub">LOC preventable</span></p>
+          <p class="lbl">total_candidates (pool) · preventable_loc (estimated)</p>
+          <div class="bar" id="ovWrap" role="img" aria-label="Structural overlap 83 percent"><span id="ovBar"></span></div>
+          <p class="cap" id="ovCap">Overlap of the featured twin: 83% — <span class="field">overlap_pct</span>, detector D1.</p>
+        </div>
+
+        <div class="twin" aria-label="Featured twin, side-by-side snippets">
+          <div class="codepanel">
+            <header><span id="hAFile">src/legacy.rs:120 · candidate</span><em id="hALoc">22 loc</em></header>
+<pre id="featA">fn parse_token(raw: &amp;str) -&gt; Option&lt;Token&gt; {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() { return None; }
+    let (kind, text) = split_kind(trimmed)?;
+    Some(Token { kind, text: text.to_string() })
+}</pre>
+          </div>
+          <div class="codepanel">
+            <header><span id="hBFile">src/tokens.rs:88 · canonical</span><em id="hBLoc">17 loc · 14 callers</em></header>
+<pre id="featB">fn normalize_token(raw: &amp;str) -&gt; Option&lt;Token&gt; {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() { return None; }
+    Some(Token::split(trimmed)?)
+}</pre>
+          </div>
+        </div>
+        <dl class="twinfacts">
+          <div class="f"><dt>Detector</dt><dd><span class="det" id="tfDet">D1</span></dd></div>
+          <div class="f"><dt>Confidence</dt><dd id="tfConf">high</dd></div><div class="f"><dt>loc_saving</dt><dd id="tfLoc">22</dd></div><div class="f"><dt>canonical_callers</dt><dd id="tfCallers">14</dd></div>
+          <div class="f"><dt>shared_evidence</dt><dd id="tfShared">same guard clause · shared callees</dd></div>
+        </dl>
+        <ul class="reasons">
+          <li id="reasonLi">Both bodies normalise, guard on empty input, then construct the same record — collapse <code>parse_token</code> into the canonical <code>normalize_token</code>.</li>
+        </ul>
+
+        <div class="pills" role="group" aria-label="Filter candidates by detector">
+          <button type="button" class="pill" data-pill-group="detector" data-value="all" aria-pressed="true" title="summary.total_candidates — pool total">All<span class="n">38 · pool</span></button>
+          <button type="button" class="pill" data-pill-group="detector" data-value="D1" aria-pressed="false" title="detector_counts — counted on the sampled floor">D1<span class="n">14</span></button>
+          <button type="button" class="pill" data-pill-group="detector" data-value="D1L" aria-pressed="false" title="detector_counts — counted on the sampled floor">D1L<span class="n">5</span></button><button type="button" class="pill" data-pill-group="detector" data-value="D2" aria-pressed="false" title="detector_counts — counted on the sampled floor">D2</button><button type="button" class="pill" data-pill-group="detector" data-value="D3" aria-pressed="false">D3</button><button type="button" class="pill" data-pill-group="detector" data-value="D4" aria-pressed="false">D4</button>
+          <button type="button" class="pill" data-pill-group="detector" data-value="D5" aria-pressed="false">D5</button><button type="button" class="pill" data-pill-group="detector" data-value="DT" aria-pressed="false">DT</button>
+        </div>
+        <p class="rowhint">Click any row to feature its twin — the dossier above swaps in that candidate's <span class="field">candidate_snippet</span> / <span class="field">canonical_snippet</span>. Both fields exist on every candidate in /api/reuse.</p>
+        <table aria-label="Candidate floor preview">
+          <thead>
+            <tr><th scope="col">Detector</th><th scope="col">Candidate</th><th scope="col">Canonical</th><th scope="col">Overlap</th><th scope="col">Callers</th><th scope="col">LOC saving</th></tr>
+          </thead>
+          <tbody id="candidateRows">
+            <tr class="empty-row" hidden><td colspan="6">No sampled candidate for this detector in the floor preview — the pool pills still count it.</td></tr>
+          </tbody>
+        </table>
+        <p class="tblcap">Preview of the sampled floor (≤ 25 per repo, <span class="field">candidates[]</span>). Rows beyond the featured parse_token→normalize_token twin are demo-shaped filler — samplePayloads carries one candidate. D3/D4 rows report no overlap (<span class="field">overlap_applicable</span> false), shown by the D5 row's "n/a".</p>
+
+        <p class="minihead">Pre-write dispatches — prewrite_searches, latest 40</p>
+        <div class="wirewrap">
+          <ul class="pre">
+            <li><span class="t">12:43:11</span><span class="what">"normalize token" · app</span><span class="meta">shown 21 · 412 µs</span></li>
+            <li><span class="t">12:36:47</span><span class="what">"flock journal order" · app</span><span class="meta">shown 9 · 302 µs</span></li>
+            <li><span class="t">12:31:20</span><span class="what">"suffix LIKE trap" · ingest</span><span class="meta">shown 4 · 288 µs</span></li>
+            <li><span class="t">12:24:02</span><span class="what">"scope expiry" · app</span><span class="meta">shown 12 · 350 µs</span></li>
+          </ul>
+        </div>
+        <p class="tblcap">Fields per line: <span class="field">ts · repo_name · tool · terms · shown · latency_us</span>. Rows beyond the first are demo-shaped filler.</p>
+      </div>
+    </section>
+
+    <!-- III. MEMORY DESK -->
+    <section class="desk" id="memory" aria-labelledby="memory-h" data-folio="III — Memory Desk">
+      <aside class="gutter">
+        <b>Annotation</b>
+        <p>Notes are anchors, not archives. Every ref is re-checked against the current index (<span class="field">resolved_refs</span>) and graded: valid, modified, broken, or unverified. A modified ref means the note still exists but its anchor moved.</p>
+        <p>The headline and chips below are computed from <span class="field">ref_status</span>/<span class="field">is_current</span> across notes[] — nothing is hard-coded. With nothing drifted, the headline renders "All anchors held".</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">Section III — The Memory Desk</p>
+        <h2 class="headline" id="memory-h">Two of four anchors have drifted</h2>
+        <div class="prose">
+          <p>Agents recalled a persistent note in 12 of 18 sessions (<span class="field">session_recall_pct</span>). Four anchors were checked against the current index; two have drifted — <code>allowlist-refs</code> reads modified, <code>build-lock-flock-order</code> reads broken — one is unverified and superseded, one held. They live in store <strong>engram</strong> at workspace app <button type="button" class="xref" data-xref="ledger-app">ledger</button>. Re-anchoring refreshes the anchor timestamp only: <span class="field">ref_status</span> re-grades on the next /api/memories refetch, never on the touch itself.</p>
+        </div>
+        <div class="pullquote qm">
+          <p class="num">66.7%</p>
+          <p class="lbl">session_recall_pct · 18 sessions</p>
+          <p class="cap">Share of sessions where a persistent note answered instead of a fresh file read.</p>
+        </div>
+        <div class="schips" id="anchorChips" role="list" aria-label="Anchor status counts"></div>
+        <table aria-label="Anchor ledger">
+          <thead>
+            <tr><th scope="col">Key</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">ref_status</th><th scope="col">recall_count</th><th scope="col">State</th></tr>
+          </thead>
+          <tbody id="anchorRows"></tbody>
+        </table>
+        <p class="tblcap">Rows beyond the sample note (allowlist-refs) are demo-shaped filler — samplePayloads carries one note. Status chips derive from <span class="field">resolved_refs[].status</span>; "superseded" reads <span class="field">is_current</span>: false.</p>
+
+        <div class="notecard">
+          <p class="overline">kind: gotcha · id 42 · store engram · rev 3 · featured drifted note</p>
+          <blockquote>“Ref freshness must branch on index resolution.”</blockquote>
+          <div class="facts">
+            <div class="f"><dt>Key</dt><dd>allowlist-refs</dd></div>
+            <div class="f"><dt>Ref</dt><dd><span class="refchip modified" id="refChip">modified — src/query/reuse.rs</span></dd></div>
+            <div class="f"><dt>recall_count</dt><dd>4</dd></div><div class="f"><dt>is_current</dt><dd>true</dd></div><div class="f"><dt>Created / anchored</dt><dd>2026-11-16 · 2026-11-16</dd></div>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn" id="touchBtn">Re-anchor note</button>
+            <button type="button" class="chip" id="touchErrBtn">demo 409</button>
+            <p class="touchout" id="touchResult" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- IV. LIVE WIRE -->
+    <section class="desk" id="wire" aria-labelledby="wire-h" data-folio="IV — Live Wire">
+      <aside class="gutter">
+        <b>Annotation</b>
+        <p>The honest limit: this wire renders the latest <strong>50</strong> retained entries (<span class="field">graph_recent_queries</span>, take(50)); filters operate inside that window only. No server-side pagination or time-range query exists today.</p>
+        <p>Tool pills derive from <span class="field">tool_aggs</span> keys in production; here they derive from the retained entries. Repo and agent selects bind <span class="field">repo_name</span> / <span class="field">agent</span> on every entry. Worktree filtering is omitted in this mockup; entries carry <span class="field">repo_main</span>, shown in the drill-in. Click any dispatch to expand its full args.</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">Section IV — The Live Wire</p>
+        <h2 class="headline" id="wire-h">Dispatches as they landed</h2>
+        <div class="pills" role="group" aria-label="Filter wire">
+          <div class="pillrow" id="toolPills" role="group" aria-label="Filter wire by tool"></div>
+          <button type="button" class="pill" data-pill-group="wire-status" data-value="all" aria-pressed="true">All statuses</button><button type="button" class="pill" data-pill-group="wire-status" data-value="ok" aria-pressed="false">exit 0</button><button type="button" class="pill" data-pill-group="wire-status" data-value="error" aria-pressed="false">errors</button>
+          <label class="sr" for="repoSel">Filter by repo</label>
+          <select class="sel" id="repoSel"></select>
+          <label class="sr" for="agentSel">Filter by agent</label>
+          <select class="sel" id="agentSel"></select>
+          <label class="sr" for="wireSearch">Search dispatches</label>
+          <input class="input" id="wireSearch" type="search" placeholder="search tool, agent, symbol…" autocomplete="off">
+        </div>
+        <div class="wirewrap">
+          <ul class="wire" id="wireList">
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="callers" data-exit="ok" data-repo="app" data-agent="zcode" data-args="name=read_bounded" data-rc="7" data-search="callers read_bounded app zcode"><span class="t">12:43:20</span><span class="tool">callers</span><span class="what"><strong>callers</strong> name=read_bounded · app · zcode</span><span class="meta">exit 0 · 640 µs · shown 7</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="search" data-exit="ok" data-repo="app" data-agent="zcode" data-args='terms="normalize token"' data-rc="21" data-search="search normalize token app zcode"><span class="t">12:43:11</span><span class="tool">search</span><span class="what"><strong>search</strong> terms="normalize token" · app · zcode</span><span class="meta">exit 0 · 412 µs · shown 21</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="callees" data-exit="ok" data-repo="app" data-agent="zcode" data-args="name=read_bounded" data-rc="4" data-extra="repo_main: app · worktree task-42" data-search="callees read_bounded app task-42 zcode"><span class="t">12:42:56</span><span class="tool">callees</span><span class="what"><strong>callees</strong> name=read_bounded · app · zcode</span><span class="meta">exit 0 · 380 µs · shown 4</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="context" data-exit="ok" data-repo="app" data-agent="codex" data-args="name=read_bounded" data-rc="2" data-search="context read_bounded app codex"><span class="t">12:42:40</span><span class="tool">context</span><span class="what"><strong>context</strong> name=read_bounded · app · codex</span><span class="meta">exit 0 · 295 µs · shown 2</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="impact" data-exit="ok" data-repo="app" data-agent="codex" data-args="name=read_bounded" data-rc="12" data-search="impact read_bounded app codex"><span class="t">12:42:22</span><span class="tool">impact</span><span class="what"><strong>impact</strong> name=read_bounded · app · codex</span><span class="meta">exit 0 · 701 µs · shown 12</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="mem_query" data-exit="ok" data-repo="app" data-agent="zcode" data-args="key=allowlist-refs" data-rc="3" data-search="mem_query allowlist-refs app zcode memory"><span class="t">12:42:05</span><span class="tool">mem_query</span><span class="what"><strong>mem_query</strong> key=allowlist-refs · app · zcode</span><span class="meta">exit 0 · 180 µs · shown 3</span></li>
+            <li class="entry" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="symbols" data-exit="ok" data-repo="app" data-agent="zcode" data-args='query="token"' data-rc="128" data-search="symbols token app zcode"><span class="t">12:41:58</span><span class="tool">symbols</span><span class="what"><strong>symbols</strong> query="token" · app · zcode</span><span class="meta">exit 0 · 510 µs · shown 128</span></li>
+            <li class="entry err" tabindex="0" aria-expanded="false" aria-label="Toggle dispatch detail" data-tool="callers" data-exit="error" data-repo="app" data-agent="codex" data-args="name=ghost_fn" data-rc="0" data-search="callers ghost_fn app codex error"><span class="t">12:41:30</span><span class="tool">callers</span><span class="what"><strong>callers</strong> name=ghost_fn · app · codex</span><span class="meta">exit 2 · 210 µs · shown 0</span></li>
+          </ul>
+        </div>
+        <p class="tblcap" id="wireCount" aria-live="polite">8 of 50 retained entries shown · click a dispatch to expand its args and result_count</p>
+      </div>
+    </section>
+
+    <!-- APPENDIX A: WORKSPACE LEDGER -->
+    <section class="desk" id="ledger" aria-labelledby="ledger-h" data-folio="Appendix A — Ledger">
+      <aside class="gutter">
+        <b>Annotation</b>
+        <p>One rollup replaces the three near-identical repo tables of the previous dashboard; every desk above cites rows here. Column scopes are labelled in the banner row — do not compare a figure under one banner with a figure under another.</p>
+        <p>Per-worktree breakdown lives in <span class="field">repo_aggs.worktrees</span> — the indented task-42 row binds <span class="field">worktrees{name: {calls, errors, last_ts}}</span>, which is why its other cells are dashes.</p>
+      </aside>
+      <div class="body">
+        <p class="kicker">Appendix A — The Workspace Ledger</p>
+        <h2 class="headline" id="ledger-h">One ledger, every scope labelled</h2>
+        <div class="wirewrap">
+          <table aria-label="Workspace ledger">
+            <thead>
+              <tr class="scopes">
+                <th colspan="2" scope="colgroup">Workspace</th>
+                <th colspan="2" scope="colgroup">Graph <em>scope: graph_*</em></th>
+                <th colspan="2" scope="colgroup">All tools</th>
+                <th colspan="3" scope="colgroup">Anti-reinvention <em>scope: reuse_* · search_*</em></th>
+                <th colspan="2" scope="colgroup">Memory <em>scope: memory_*</em></th>
+                <th colspan="2" scope="colgroup">Value &amp; recency</th>
+              </tr>
+              <tr>
+                <th scope="col">Repo</th><th scope="col" title="repo_aggs.worktree">Worktree</th>
+                <th scope="col">graph_calls</th><th scope="col" title="graph_saved_tokens">Graph tokens</th>
+                <th scope="col">calls</th><th scope="col" title="reliability_pct">Rel. %</th>
+                <th scope="col" title="reuse_calls">Reuse scans</th><th scope="col" title="search_hit_rate_pct">Hit rate</th><th scope="col" title="last_reuse_scan.result_count + limit_capped">Last scan</th>
+                <th scope="col" title="memory_reads">Mem reads</th><th scope="col" title="memory_read_hit_rate_pct">Mem hit %</th>
+                <th scope="col" title="saved_tokens">saved_tokens</th><th scope="col">last_ts</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr id="ledger-app">
+                <td>app</td><td>main</td>
+                <td>512</td><td>154,000</td>
+                <td>640</td><td>99.2</td>
+                <td>96</td><td>92%</td><td>21 · not capped</td>
+                <td>34</td><td>71%</td>
+                <td>204,000</td><td>12:43</td>
+              </tr>
+              <tr class="subrow" title="repo_aggs.app.worktrees[task-42]: {calls: 84, errors: 1, last_ts}">
+                <td>app · wt task-42</td><td>—</td>
+                <td>—</td><td>—</td>
+                <td>84 · 1 err</td><td>—</td>
+                <td>—</td><td>—</td><td>—</td>
+                <td>—</td><td>—</td>
+                <td>—</td><td>12:39</td>
+              </tr>
+              <tr>
+                <td>ingest</td><td>main</td>
+                <td>274</td><td>104,000</td>
+                <td>410</td><td>99.8</td>
+                <td>40</td><td>87%</td><td>9 · not capped</td>
+                <td>19</td><td>64%</td>
+                <td>138,000</td><td>12:31</td>
+              </tr>
+              <tr>
+                <td>parser</td><td>main</td>
+                <td>120</td><td>47,000</td>
+                <td>234</td><td>98.6</td>
+                <td>19</td><td>71%</td><td>4 · capped</td>
+                <td>9</td><td>40%</td>
+                <td>70,000</td><td>11:58</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="tblcap">Short column labels carry the full field name on hover (title). Demo-shaped values, disclosed: per-repo <span class="field">graph_saved_tokens</span>, <span class="field">reliability_pct</span>, worktree, <span class="field">last_ts</span>, and the ingest/parser rows — samplePayloads carries one repo (app); app's own calls/graph_calls/saved_tokens/scan figures are sample values. The task-42 sub-row binds <span class="field">worktrees</span> fields only.</p>
+      </div>
+    </section>
+
+    <footer class="colophon">
+      <div>
+        <h3>Sources</h3>
+        <dl>
+          <dt>GET /api/summary <span class="dim">(alias /api/metrics)</span></dt><dd>Global and graph KPIs, <span class="field">tool_aggs</span> (feeds the wire's tool pills), <span class="field">repo_aggs</span>, <span class="field">agent_aggs</span> (feeds the dispatch roster), <span class="field">graph_recent_queries</span> (latest 50).</dd>
+          <dt>GET /api/reuse</dt><dd><span class="field">candidates[]</span> (≤ 25/repo, with per-candidate <span class="field">candidate_snippet</span>/<span class="field">canonical_snippet</span>), <span class="field">summary</span> with pool counts and <span class="field">*_estimated</span> flags, <span class="field">prewrite_searches[]</span> (latest 40 — feeds the pre-write dispatch).</dd>
+          <dt>GET /api/memories</dt><dd><span class="field">notes[]</span> with <span class="field">resolved_refs[]</span> status per ref and <span class="field">recall_count</span> — feeds the anchor ledger and its headline.</dd>
+          <dt>GET /events — SSE</dt><dd>One message per new journal line; <span class="field">reset</span> on rotate/prune; keepalive 15s; cap 8 clients.</dd>
+          <dt>POST /api/memory/touch</dt><dd>Body <span class="field">{key, store_id, rev}</span> → re-anchor. Re-anchors only: <span class="field">ref_status</span> re-grades on the next /api/memories refetch. 400/404/409/503 return <span class="field">{ok:false, error}</span> — demoed by the 409 chip.</dd>
+        </dl>
+      </div>
+      <div>
+        <h3>Reading notes</h3>
+        <ul>
+          <li><span class="est" title="*_estimated">est</span> marks a figure whose field carries a *_estimated flag — saved_tokens, graph_saved_tokens, preventable_loc, avg_callers. Solid figures are measured on the sampled floor (detector_counts is counted on the sampled candidate list, not the corpus).</li>
+          <li>Data-age chip: production binds age = floor(now − generated_at) and resets it on every successful /api/summary refetch; this mockup simulates generated_at at page load.</li>
+          <li>The wire window is the latest 50 retained entries; no pagination or time-range query exists server-side yet.</li>
+          <li>Live arrivals in this mockup are simulated; production appends arrive from /events.</li>
+          <li>Demo-shaped filler, disclosed per section: dispatch-roster values, ledger rows beyond app, floor-preview rows beyond the featured twin, pre-write dispatch rows beyond the first, and anchor rows beyond the sample note.</li>
+          <li>Theme follows <span class="field">prefers-color-scheme</span>; the toggle persists to localStorage. Production embedding moves this style and script into the include_str! assets under a CSP without unsafe-inline.</li>
+        </ul>
+      </div>
+    </footer>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s, c) { return (c || document).querySelector(s); };
+  var $$ = function (s, c) { return Array.prototype.slice.call((c || document).querySelectorAll(s)); };
+  var escapeHtml = function (v) {
+    return String(v).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  };
+
+  /* Theme toggle (bootstrap in <head> already set the initial theme). */
+  var themeBtn = $("#themeToggle");
+  themeBtn.textContent = document.documentElement.getAttribute("data-theme") === "dark" ? "Light theme" : "Dark theme";
+  themeBtn.addEventListener("click", function () {
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    themeBtn.textContent = next === "dark" ? "Light theme" : "Dark theme";
+    try { localStorage.setItem("eg-theme", next); } catch (e) {}
+  });
+
+  /* Data-age chip: production binds age = floor(now - generated_at), reset per refetch.
+     The mockup simulates generated_at at page load. */
+  var ageChip = $("#ageChip");
+  var generatedAt = Date.now();
+  var renderAge = function () {
+    var age = Math.max(0, Math.floor((Date.now() - generatedAt) / 1000));
+    ageChip.textContent = "Data age " + age + "s · next poll 15s";
+  };
+  renderAge();
+  setInterval(renderAge, 1000);
+
+  /* Folio running head: IntersectionObserver tracks the section in view. */
+  var folioNow = $("#folioNow");
+  if ("IntersectionObserver" in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) folioNow.textContent = en.target.dataset.folio;
+      });
+    }, { rootMargin: "-15% 0px -75% 0px" });
+    $$("main section[data-folio]").forEach(function (s) { obs.observe(s); });
+  }
+
+  /* Exclusive single-select pills, dispatched through one delegated listener. */
+  document.addEventListener("click", function (ev) {
+    var pill = ev.target.closest("[data-pill-group]");
+    if (!pill) return;
+    var group = pill.getAttribute("data-pill-group");
+    $$('[data-pill-group="' + group + '"]').forEach(function (p) {
+      p.setAttribute("aria-pressed", p === pill ? "true" : "false");
+    });
+    document.dispatchEvent(new CustomEvent("pillchange", { detail: { group: group, value: pill.dataset.value } }));
+  });
+
+  /* Duplication Bureau: candidates render from data; clicking a floor row
+     features that twin — candidate_snippet / canonical_snippet exist per candidate. */
+  var CANDIDATES = [
+    { det: "D1", sym: "parse_token", can: "normalize_token", ov: "83%", pct: 83, callers: 14, loc: 22,
+      file: "src/legacy.rs:120", cfile: "src/tokens.rs:88", cloc: 17, conf: "high",
+      shared: "same guard clause · shared callees",
+      snipA: "fn parse_token(raw: &str) -> Option<Token> {\n    let trimmed = raw.trim();\n    if trimmed.is_empty() { return None; }\n    let (kind, text) = split_kind(trimmed)?;\n    Some(Token { kind, text: text.to_string() })\n}",
+      snipB: "fn normalize_token(raw: &str) -> Option<Token> {\n    let trimmed = raw.trim();\n    if trimmed.is_empty() { return None; }\n    Some(Token::split(trimmed)?)\n}",
+      reason: "Both bodies normalise, guard on empty input, then construct the same record — collapse parse_token into the canonical normalize_token." },
+    { det: "D1L", sym: "fetch_config", can: "load_config", ov: "—", pct: 0, callers: 2, loc: 9,
+      file: "src/net/legacy.py:41", cfile: "src/net/config.py:12", cloc: 7, conf: "medium",
+      shared: "same name · same file-read contract",
+      snipA: "def fetch_config(path):\n    with open(path) as fh:\n        return json.loads(fh.read())",
+      snipB: "def load_config(path):\n    return read_json(path)",
+      reason: "Raw-client duplicate: same name, same read contract — route callers through the canonical loader instead of opening files ad hoc." },
+    { det: "D2", sym: "resolve_scope", can: "bind_scope", ov: "71%", pct: 71, callers: 5, loc: 31,
+      file: "src/resolve/old.rs:210", cfile: "src/resolve/mod.rs:64", cloc: 26, conf: "medium",
+      shared: "lookup · guard · build sequence",
+      snipA: "fn resolve_scope(id: ScopeId) -> Option<Scope> {\n    let row = lookup_scope(id)?;\n    if row.expired { return None; }\n    Some(Scope::from_row(row))\n}",
+      snipB: "fn bind_scope(id: ScopeId) -> Option<Scope> {\n    Some(Scope::from_row(lookup_scope(id)?))\n}",
+      reason: "Same lookup-then-guard-then-build shape; the canonical path keeps expiry policy in one place." },
+    { det: "D5", sym: "prune_cache", can: "evict_cache", ov: "n/a", pct: 0, callers: 3, loc: 18,
+      file: "src/cache/maint.rs:33", cfile: "src/cache/store.rs:120", cloc: 15, conf: "low",
+      shared: "threshold loop vs store eviction",
+      snipA: "fn prune_cache(max: usize) {\n    while cache.len() > max {\n        cache.pop_oldest();\n    }\n}",
+      snipB: "fn evict_cache(max: usize) {\n    cache.evict_to(max);\n}",
+      reason: "Loop-while-over-threshold duplicates the store's own eviction policy — call evict_cache and delete the loop." }
+  ];
+  function featureTwin(i) {
+    var c = CANDIDATES[i];
+    $$("#candidateRows .rowbtn").forEach(function (tr) {
+      var on = tr.dataset.idx === String(i);
+      tr.classList.toggle("active", on);
+      tr.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    $("#hAFile").textContent = c.file + " · candidate";
+    $("#hALoc").textContent = c.loc + " loc";
+    $("#hBFile").textContent = c.cfile + " · canonical";
+    $("#hBLoc").textContent = c.cloc + " loc · " + c.callers + " callers";
+    $("#featA").textContent = c.snipA;
+    $("#featB").textContent = c.snipB;
+    $("#tfDet").textContent = c.det;
+    $("#tfConf").textContent = c.conf;
+    $("#tfLoc").textContent = c.loc;
+    $("#tfCallers").textContent = c.callers;
+    $("#tfShared").textContent = c.shared;
+    $("#reasonLi").textContent = c.reason;
+    $("#ovBar").style.width = (c.pct || 0) + "%";
+    $("#ovWrap").setAttribute("aria-label", "Structural overlap " + (c.pct ? c.pct + " percent" : "not applicable"));
+    $("#ovCap").textContent = c.pct
+      ? "Overlap of the featured twin: " + c.pct + "% — overlap_pct, detector " + c.det + "."
+      : "Overlap not applicable for " + c.det + " (overlap_applicable false).";
+  }
+  function renderFloorRows() {
+    var tb = $("#candidateRows");
+    CANDIDATES.forEach(function (c, i) {
+      var tr = document.createElement("tr");
+      tr.className = "rowbtn";
+      tr.tabIndex = 0;
+      tr.dataset.idx = i;
+      tr.dataset.detector = c.det;
+      tr.setAttribute("aria-pressed", "false");
+      tr.setAttribute("aria-label", "Feature twin " + c.sym + " to " + c.can);
+      tr.innerHTML =
+        '<td><span class="det">' + escapeHtml(c.det) + '</span></td>' +
+        '<td>' + escapeHtml(c.sym) + '</td><td>' + escapeHtml(c.can) + '</td>' +
+        '<td>' + escapeHtml(c.ov) + '</td><td>' + c.callers + '</td><td>' + c.loc + '</td>';
+      tb.insertBefore(tr, tb.querySelector(".empty-row"));
+    });
+    featureTwin(0);
+  }
+  renderFloorRows();
+  function rowKeyActivate(ev) {
+    var tr = ev.target.closest("#candidateRows .rowbtn");
+    if (tr) featureTwin(Number(tr.dataset.idx));
+  }
+  document.addEventListener("click", rowKeyActivate);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    if (ev.target.closest && ev.target.closest("#candidateRows .rowbtn")) {
+      ev.preventDefault();
+      rowKeyActivate(ev);
+    }
+  });
+
+  /* Detector filter — the table previews the sampled floor; keep an empty-state row. */
+  document.addEventListener("pillchange", function (ev) {
+    if (ev.detail.group !== "detector") return;
+    var v = ev.detail.value, visible = 0;
+    $$("#candidateRows tr").forEach(function (tr) {
+      if (tr.classList.contains("empty-row")) return;
+      var match = v === "all" || tr.dataset.detector === v;
+      tr.hidden = !match;
+      if (match) visible += 1;
+    });
+    var emptyRow = $("#candidateRows .empty-row");
+    if (emptyRow) emptyRow.hidden = visible > 0;
+  });
+
+  /* Memory desk: headline, chips and anchor rows derive from notes[] —
+     shapes mirror GET /api/memories (resolved_refs status, is_current, recall_count). */
+  var NOTES = [
+    { id: 42, key: "allowlist-refs", rev: 3, kind: "gotcha", ref: "src/query/reuse.rs", status: "modified", current: true, recalls: 4 },
+    { id: 57, key: "build-lock-flock-order", rev: 1, kind: "gotcha", ref: "src/db.rs", status: "broken", current: true, recalls: 11 },
+    { id: 61, key: "resolver-suffix-trap", rev: 2, kind: "gotcha", ref: "src/extract/resolve.rs", status: "valid", current: true, recalls: 2 },
+    { id: 38, key: "cli-exit-codes", rev: 1, kind: "gotcha", ref: "src/error.rs", status: "unverified", current: false, recalls: 6 }
+  ];
+  function renderNotes() {
+    var counts = {};
+    NOTES.forEach(function (n) { counts[n.status] = (counts[n.status] || 0) + 1; });
+    var drifted = (counts.modified || 0) + (counts.broken || 0);
+    $("#memory-h").textContent = drifted
+      ? drifted + " of " + NOTES.length + " anchors have drifted"
+      : "All anchors held";
+    var chips = $("#anchorChips");
+    chips.innerHTML = "";
+    ["valid", "modified", "broken", "unverified"].forEach(function (s) {
+      if (!counts[s]) return;
+      var el = document.createElement("span");
+      el.className = "schip " + s;
+      el.setAttribute("role", "listitem");
+      el.textContent = counts[s] + " " + s;
+      chips.appendChild(el);
+    });
+    var rows = $("#anchorRows");
+    rows.innerHTML = "";
+    NOTES.forEach(function (n) {
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td>' + escapeHtml(n.key) + '</td>' +
+        '<td>' + escapeHtml(n.kind) + ' · rev ' + n.rev + '</td>' +
+        '<td>' + escapeHtml(n.ref) + '</td>' +
+        '<td><span class="refchip ' + escapeHtml(n.status) + '">' + escapeHtml(n.status) + '</span></td>' +
+        '<td>' + n.recalls + '</td>' +
+        '<td>' + (n.current ? "current" : "superseded") + '</td>';
+      rows.appendChild(tr);
+    });
+  }
+  renderNotes();
+
+  /* Live wire filters: tool family, exit status, repo, agent, free-text.
+     Tool pills, repo and agent options derive from the retained entries;
+     production derives pills from tool_aggs keys. */
+  var wireState = { tool: "all", status: "all", repo: "all", agent: "all", q: "" };
+  function uniq(dataset, key) {
+    var set = {};
+    $$(dataset).forEach(function (el) { if (el.dataset[key]) set[el.dataset[key]] = 1; });
+    return Object.keys(set).sort();
+  }
+  function renderWireControls() {
+    var tp = $("#toolPills");
+    tp.innerHTML = "";
+    var mk = function (value, label) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "pill";
+      b.dataset.pillGroup = "wire-tool";
+      b.dataset.value = value;
+      b.setAttribute("aria-pressed", wireState.tool === value ? "true" : "false");
+      b.textContent = label;
+      tp.appendChild(b);
+    };
+    mk("all", "All");
+    uniq("#wireList .entry", "tool").forEach(function (t) { mk(t, t); });
+    var fill = function (sel, key, stateKey) {
+      var s = $(sel);
+      s.innerHTML = "";
+      var opt = document.createElement("option");
+      opt.value = "all";
+      opt.textContent = "All " + key + "s";
+      s.appendChild(opt);
+      uniq("#wireList .entry", key).forEach(function (v) {
+        var o = document.createElement("option");
+        o.value = v;
+        o.textContent = v;
+        s.appendChild(o);
+      });
+      s.value = wireState[stateKey];
+    };
+    fill("#repoSel", "repo", "repo");
+    fill("#agentSel", "agent", "agent");
+  }
+  renderWireControls();
+  var applyWireFilters = function () {
+    var shown = 0;
+    $$("#wireList .entry").forEach(function (el) {
+      var okTool = wireState.tool === "all" || el.dataset.tool === wireState.tool;
+      var okStatus = wireState.status === "all" || el.dataset.exit === wireState.status;
+      var okRepo = wireState.repo === "all" || el.dataset.repo === wireState.repo;
+      var okAgent = wireState.agent === "all" || el.dataset.agent === wireState.agent;
+      var okQ = !wireState.q || (el.dataset.search || "").indexOf(wireState.q) !== -1;
+      var visible = okTool && okStatus && okRepo && okAgent && okQ;
+      el.hidden = !visible;
+      if (visible) shown += 1;
+    });
+    $("#wireCount").textContent = shown + " of 50 retained entries shown · click a dispatch to expand its args and result_count";
+  };
+  document.addEventListener("pillchange", function (ev) {
+    if (ev.detail.group === "wire-tool") { wireState.tool = ev.detail.value; applyWireFilters(); }
+    if (ev.detail.group === "wire-status") { wireState.status = ev.detail.value; applyWireFilters(); }
+  });
+  $("#repoSel").addEventListener("change", function (ev) { wireState.repo = ev.target.value; applyWireFilters(); });
+  $("#agentSel").addEventListener("change", function (ev) { wireState.agent = ev.target.value; applyWireFilters(); });
+  $("#wireSearch").addEventListener("input", function (ev) {
+    wireState.q = ev.target.value.trim().toLowerCase();
+    applyWireFilters();
+  });
+
+  /* Drill-in: click or Enter expands an entry's full args, result_count and worktree note. */
+  function toggleEntry(entry) {
+    var more = entry.querySelector(".more");
+    if (!more) {
+      more = document.createElement("div");
+      more.className = "more";
+      var bits = ["args {" + entry.dataset.args + "}", "result_count " + entry.dataset.rc];
+      if (entry.dataset.extra) bits.push(entry.dataset.extra);
+      more.textContent = bits.join(" · ");
+      entry.appendChild(more);
+    }
+    entry.setAttribute("aria-expanded", entry.getAttribute("aria-expanded") === "true" ? "false" : "true");
+  }
+  document.addEventListener("click", function (ev) {
+    var entry = ev.target.closest("#wireList .entry");
+    if (entry) toggleEntry(entry);
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    var entry = ev.target.closest && ev.target.closest("#wireList .entry");
+    if (entry) { ev.preventDefault(); toggleEntry(entry); }
+  });
+
+  /* Simulated /events stream: bounded replay of journal-shaped messages
+     {ts, tool, repo_name, agent, exit_code, shown, latency_us, args}. */
+  var arrivals = [
+    { time: "12:43:28", tool: "search", args: 'terms="token normalize"', repo: "app", agent: "zcode", exit_code: 0, shown: 21, rc: 21, latency_us: 388, key: "search token normalize app zcode" },
+    { time: "12:43:41", tool: "callers", args: "name=normalize_token", repo: "app", agent: "zcode", exit_code: 0, shown: 6, rc: 6, latency_us: 512, key: "callers normalize_token app zcode" },
+    { time: "12:43:55", tool: "mem_query", args: "key=build-lock-flock-order", repo: "app", agent: "codex", exit_code: 0, shown: 1, rc: 1, latency_us: 165, key: "mem_query build-lock-flock-order app codex memory" },
+    { time: "12:44:09", tool: "context", args: "name=resolve_scope", repo: "ingest", agent: "codex", exit_code: 0, shown: 3, rc: 3, latency_us: 301, key: "context resolve_scope ingest codex" }
+  ];
+  var idx = 0;
+  var timer = setInterval(function () {
+    if (idx >= arrivals.length) { clearInterval(timer); return; }
+    var e = arrivals[idx++];
+    var li = document.createElement("li");
+    li.className = "entry live";
+    li.tabIndex = 0;
+    li.setAttribute("aria-expanded", "false");
+    li.setAttribute("aria-label", "Toggle dispatch detail");
+    li.dataset.tool = e.tool;
+    li.dataset.exit = e.exit_code === 0 ? "ok" : "error";
+    li.dataset.repo = e.repo;
+    li.dataset.agent = e.agent;
+    li.dataset.args = e.args;
+    li.dataset.rc = e.rc;
+    li.dataset.search = e.key;
+    li.innerHTML =
+      '<span class="t">' + escapeHtml(e.time) + '</span>' +
+      '<span class="tool">' + escapeHtml(e.tool) + '</span>' +
+      '<span class="what"><strong>' + escapeHtml(e.tool) + '</strong> ' + escapeHtml(e.args) +
+      ' · ' + escapeHtml(e.repo) + ' · ' + escapeHtml(e.agent) + '<span class="livetag">live</span></span>' +
+      '<span class="meta">exit ' + e.exit_code + ' · ' + e.latency_us + ' µs · shown ' + e.shown + '</span>';
+    $("#wireList").insertBefore(li, $("#wireList").firstChild);
+    renderWireControls();
+    applyWireFilters();
+  }, 4000);
+
+  /* Re-anchor: POST /api/memory/touch re-anchors only — ref_status re-grades on
+     the next /api/memories refetch, so the chip state is left untouched here.
+     The 409 chip demonstrates the {ok:false, error} failure shape. */
+  $("#touchBtn").addEventListener("click", function () {
+    var out = $("#touchResult");
+    out.className = "touchout";
+    out.textContent =
+      'POST /api/memory/touch → 200 {"ok":true,"key":"allowlist-refs","store":"engram",' +
+      '"store_id":"/ws/app/.engram/memory.db","rev":3,"anchored_at":' + Math.floor(Date.now() / 1000) + "}" +
+      " — anchored just now; ref_status stays modified until the next /api/memories refetch re-grades the ref.";
+  });
+  $("#touchErrBtn").addEventListener("click", function () {
+    var out = $("#touchResult");
+    out.className = "touchout err";
+    out.textContent =
+      'POST /api/memory/touch → 409 {"ok":false,"error":"rev conflict: a newer rev exists for allowlist-refs"}';
+  });
+
+  /* Cross-references: desks cite ledger rows; flash the cited row. */
+  document.addEventListener("click", function (ev) {
+    var x = ev.target.closest("[data-xref]");
+    if (!x) return;
+    var row = document.getElementById(x.dataset.xref);
+    if (!row) return;
+    row.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    row.classList.remove("flash");
+    void row.offsetWidth;
+    row.classList.add("flash");
+    window.setTimeout(function () { row.classList.remove("flash"); }, 1900);
+  });
+})();
+</script>
+</body>
+</html>

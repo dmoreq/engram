@@ -207,6 +207,22 @@ fn read_entries(log_path: &Path, global: bool) -> Vec<serde_json::Value> {
     entries
 }
 
+fn send_json(
+    stream: &mut TcpStream,
+    value: &serde_json::Value,
+    is_head: bool,
+) -> std::io::Result<bool> {
+    let encoded = serde_json::to_vec_pretty(value).unwrap_or_default();
+    send_response(
+        stream,
+        200,
+        "application/json; charset=utf-8",
+        &encoded,
+        is_head,
+    )?;
+    Ok(true)
+}
+
 fn serve_api_route(
     stream: &mut TcpStream,
     path: &str,
@@ -219,15 +235,7 @@ fn serve_api_route(
         "/api/summary" | "/api/metrics" => {
             let entries = read_entries(log_path, global);
             let summary = data::compute_summary(&entries);
-            let encoded = serde_json::to_vec_pretty(&summary).unwrap_or_default();
-            send_response(
-                stream,
-                200,
-                "application/json; charset=utf-8",
-                &encoded,
-                is_head,
-            )?;
-            Ok(true)
+            send_json(stream, &summary, is_head)
         }
         "/api/reuse" => {
             let entries = read_entries(log_path, global);
@@ -238,15 +246,7 @@ fn serve_api_route(
                 "summary": summary,
                 "prewrite_searches": prewrite,
             });
-            let encoded = serde_json::to_vec_pretty(&payload).unwrap_or_default();
-            send_response(
-                stream,
-                200,
-                "application/json; charset=utf-8",
-                &encoded,
-                is_head,
-            )?;
-            Ok(true)
+            send_json(stream, &payload, is_head)
         }
         "/api/memories" => {
             let entries = read_entries(log_path, global);
@@ -256,15 +256,7 @@ fn serve_api_route(
                     "errors": [{ "store": "-", "stage": "collect", "message": e.to_string() }]
                 })
             });
-            let encoded = serde_json::to_vec_pretty(&payload).unwrap_or_default();
-            send_response(
-                stream,
-                200,
-                "application/json; charset=utf-8",
-                &encoded,
-                is_head,
-            )?;
-            Ok(true)
+            send_json(stream, &payload, is_head)
         }
         _ => Ok(false),
     }

@@ -210,7 +210,3 @@ impl From<std::io::Error> for EgError {
 }
 
 pub type Result<T> = std::result::Result<T, EgError>;
-
-/// Transitional spelling kept for downstream callers compiled against the
-/// pre-rename crate identity.
-pub type AwError = EgError;

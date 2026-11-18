@@ -105,7 +105,7 @@ fn search_fts_page(conn: &Connection, expr: &str, limit: usize) -> Result<(Vec<P
         [expr],
         |r| r.get::<_, i64>(0),
     )? as usize;
-    let fetch_limit = (limit * 2).clamp(50, 1000);
+    let fetch_limit = (limit * 2).clamp(50, crate::query::MAX_LIMIT);
     let mut stmt = conn.prepare(&format!(
         "SELECT {}, bm25(symbols_fts) AS bm25_score
          FROM symbols_fts ft

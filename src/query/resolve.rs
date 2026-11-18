@@ -28,7 +28,7 @@ pub(super) fn target_ids(conn: &Connection, name: &str) -> Result<(Vec<i64>, Vec
     let mut stmt = conn.prepare(&format!(
         "{CANDIDATE_SELECT}
          WHERE {EXACT_IDENTITY_PREDICATE}
-         ORDER BY s.qualname, f.path",
+         ORDER BY s.qualname, f.path, s.line_start",
     ))?;
     let rows = stmt.query_map(rusqlite::params![name], candidate_row)?;
     let mut all: Vec<_> = rows.collect::<std::result::Result<_, _>>()?;
@@ -47,14 +47,14 @@ fn suffix_candidates(conn: &Connection, name: &str) -> Result<Vec<CandidateRow>>
     let mut stmt = conn.prepare(&format!(
         "{CANDIDATE_SELECT}
          WHERE s.qualname LIKE ?1
-         ORDER BY s.qualname, f.path",
+         ORDER BY s.qualname, f.path, s.line_start",
     ))?;
     let rows = stmt.query_map([&pattern], candidate_row)?;
-    let suffix = format!(".{name}");
+    let suffix = &pattern[1..];
     Ok(rows
         .collect::<std::result::Result<Vec<_>, _>>()?
         .into_iter()
-        .filter(|r| r.1.ends_with(&suffix))
+        .filter(|r| r.1.ends_with(suffix))
         .collect())
 }
 
@@ -63,14 +63,19 @@ fn suffix_candidates(conn: &Connection, name: &str) -> Result<Vec<CandidateRow>>
 /// module symbols must not create a false ambiguity (R7 F1). Unknown kinds
 /// stay non-module, as before the enum.
 fn disambiguate(all: Vec<CandidateRow>) -> (Vec<i64>, Vec<NameCandidate>) {
-    let has_callable = all
-        .iter()
-        .any(|r| SymbolKind::parse(&r.4) != Some(SymbolKind::Module));
+    let parsed: Vec<_> = all
+        .into_iter()
+        .map(|(id, qualname, path, line, kind)| {
+            let is_mod = SymbolKind::parse(&kind) == Some(SymbolKind::Module);
+            (id, qualname, path, line, is_mod)
+        })
+        .collect();
+    let has_callable = parsed.iter().any(|r| !r.4);
     let mut ids = Vec::new();
     let mut cands = Vec::new();
     let mut seen_ids: std::collections::HashSet<i64> = Default::default();
-    for (id, qualname, path, line, kind) in all {
-        if has_callable && SymbolKind::parse(&kind) == Some(SymbolKind::Module) {
+    for (id, qualname, path, line, is_mod) in parsed {
+        if has_callable && is_mod {
             continue;
         }
         // Dedupe by id: a symbol whose bare name equals its qualname matches

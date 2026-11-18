@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>eg dashboard — Chronicle</title>
+<style>
+/* Design tokens: mirror src/dashboard/assets/style.css (Shibumi utilitarian, light/dark) */
+:root { --bg-canvas: #F7F4EE; --bg-surface: #FBF9F5; --bg-subtle: #EFECE4; --bg-elevated: #FFFFFF; --text-primary: #1E1C1A; --text-secondary: #4A4640; --text-muted: #666059; --border-subtle: rgba(30, 28, 26, 0.09); --border-strong: rgba(30, 28, 26, 0.18); --intent-primary: #8A4A2E; --intent-primary-soft: rgba(158, 88, 59, 0.10); --intent-success: #246A49; --intent-success-soft: rgba(36, 106, 73, 0.10); --intent-warning: #945807; --intent-warning-soft: rgba(168, 100, 8, 0.10); --intent-danger: #B8322C; --intent-danger-soft: rgba(184, 50, 44, 0.10); --intent-info: #2E5A70; --intent-info-soft: rgba(46, 90, 112, 0.10); --font-display: Georgia, serif; --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace; --shadow-elevated: 0 8px 24px rgba(30, 28, 26, 0.09), 0 2px 6px rgba(30, 28, 26, 0.04); --radius-sm: 4px; --radius-md: 8px; --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724; --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84; --border-subtle: rgba(243, 239, 234, 0.09); --border-strong: rgba(243, 239, 234, 0.18); --intent-primary: #D9825B; --intent-primary-soft: rgba(217, 130, 91, 0.15); --intent-success: #52B788; --intent-success-soft: rgba(82, 183, 136, 0.15); --intent-warning: #E9A84A; --intent-warning-soft: rgba(233, 168, 74, 0.15); --intent-danger: #F06A63; --intent-danger-soft: rgba(240, 106, 99, 0.15); --intent-info: #6BA3BE; --intent-info-soft: rgba(107, 163, 190, 0.15); --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.55); }
+}
+:root[data-theme="dark"] { --bg-canvas: #121110; --bg-surface: #1A1816; --bg-subtle: #24211E; --bg-elevated: #2A2724; --text-primary: #F3EFEA; --text-secondary: #C4BDB3; --text-muted: #968E84; --border-subtle: rgba(243, 239, 234, 0.09); --border-strong: rgba(243, 239, 234, 0.18); --intent-primary: #D9825B; --intent-primary-soft: rgba(217, 130, 91, 0.15); --intent-success: #52B788; --intent-success-soft: rgba(82, 183, 136, 0.15); --intent-warning: #E9A84A; --intent-warning-soft: rgba(233, 168, 74, 0.15); --intent-danger: #F06A63; --intent-danger-soft: rgba(240, 106, 99, 0.15); --intent-info: #6BA3BE; --intent-info-soft: rgba(107, 163, 190, 0.15); --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.55); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { color-scheme: light dark; }
+body { background: var(--bg-canvas); color: var(--text-primary); font-family: var(--font-sans); font-size: 13px; line-height: 1.45; height: 100vh; display: flex; flex-direction: column; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--intent-info); outline-offset: 2px; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; border: 3px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+/* ---------- header ---------- */
+.hdr { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.brand { display: flex; align-items: center; gap: 11px; }
+.mark { width: 26px; height: 26px; flex: 0 0 auto; }
+.mark-box { fill: var(--intent-primary); }
+.mark-glyph { stroke: var(--bg-canvas); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.brand h1 { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: 0.01em; }
+.brand p { font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.02em; }
+.hdr-status { display: flex; align-items: center; gap: 8px; }
+.chip { font-size: 11px; padding: 3px 10px; border: 1px solid var(--border-subtle); border-radius: 999px; color: var(--text-secondary); background: var(--bg-elevated); white-space: nowrap; }
+#sseChip { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+#sseChip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: 0 0 auto; }
+#sseChip.is-live { color: var(--intent-success); border-color: var(--intent-success); }
+#sseChip.is-live::before { background: var(--intent-success); animation: pulse 2s ease-in-out infinite; }
+#sseChip.is-reconnect { color: var(--intent-warning); border-color: var(--intent-warning); }
+#sseChip.is-reconnect::before { background: var(--intent-warning); }
+#sseChip.is-paused { color: var(--text-muted); }
+.chip.stale { color: var(--intent-warning); border-color: var(--intent-warning); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+/* ---------- shell grid ---------- */
+.shell { position: relative; flex: 1 1 auto; display: grid; grid-template-columns: 236px minmax(0, 1fr) 400px; min-height: 0; }
+.rail { border-right: 1px solid var(--border-subtle); background: var(--bg-surface); overflow-y: auto; padding: 16px 14px 28px; }
+.stream { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.detail { border-left: 1px solid var(--border-subtle); background: var(--bg-surface); overflow-y: auto; padding: 16px 18px 36px; }
+@media (max-width: 1280px) { .shell { grid-template-columns: 210px minmax(0, 1fr); } .detail { position: absolute; top: 0; right: 0; bottom: 0; width: min(420px, 92vw); transform: translateX(103%); transition: transform 0.18s var(--transition-fast); box-shadow: var(--shadow-elevated); z-index: 30; } .shell.dt-open .detail { transform: none; } }
+/* ---------- rail ---------- */
+.rsec { margin-bottom: 22px; }
+.rsec h2 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-muted); margin-bottom: 8px; }
+.lg-row { display: grid; grid-template-columns: 1fr auto; align-items: baseline; padding: 6px 0; border-bottom: 1px dashed var(--border-subtle); }
+.lg-l { font-size: 12px; color: var(--text-secondary); }
+.lg-v { font-size: 13px; font-weight: 600; }
+.lg-s { grid-column: 1 / -1; font-size: 10.5px; color: var(--text-muted); margin-top: 1px; }
+.est { font-style: normal; font-size: 9px; letter-spacing: 0.04em; border: 1px solid var(--intent-warning); color: var(--intent-warning); border-radius: 3px; padding: 0 3px; margin-left: 6px; vertical-align: 1px; }
+.ws-row { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-elevated); margin-bottom: 8px; cursor: pointer; transition: border-color var(--transition-fast), background var(--transition-fast); }
+.ws-row:hover { border-color: var(--intent-info); }
+.ws-row.on { border-color: var(--intent-info); background: var(--intent-info-soft); }
+.ws-top { display: flex; justify-content: space-between; align-items: baseline; }
+.ws-name { font-weight: 600; font-size: 12.5px; }
+.ws-calls { font-size: 12px; color: var(--text-secondary); }
+.ws-sub { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+.ag-row { display: flex; justify-content: space-between; padding: 5px 2px; font-size: 12px; border-bottom: 1px dashed var(--border-subtle); }
+.ag-row span:first-child { font-weight: 500; }
+.ag-row .mono { font-size: 11px; color: var(--text-secondary); }
+.eng-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 11.5px; color: var(--text-secondary); }
+.eng-row .mono { font-size: 11px; }
+.eng-det { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 5px 0 2px; }
+.eng-l { font-size: 11.5px; color: var(--text-secondary); }
+.det-btn { font: inherit; font-family: var(--font-mono); font-size: 11px; padding: 2px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: all var(--transition-fast); }
+.det-btn:hover { border-color: var(--intent-info); color: var(--intent-info); }
+.det-btn[aria-pressed="true"] { background: var(--intent-info-soft); border-color: var(--intent-info); color: var(--intent-info); font-weight: 600; }
+.rail-note { font-size: 10px; color: var(--text-muted); margin-top: 8px; line-height: 1.4; }
+.rail-foot { font-size: 10.5px; color: var(--text-muted); border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+/* ---------- stream controls ---------- */
+.ctrl { border-bottom: 1px solid var(--border-subtle); background: var(--bg-canvas); padding: 10px 18px 12px; display: grid; gap: 9px; }
+.ctrl-a, .ctrl-b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ctrl-note { font-size: 10.5px; color: var(--text-muted); }
+.seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.seg-btn { font: inherit; font-size: 12px; padding: 4px 12px; background: transparent; border: 0; cursor: pointer; color: var(--text-secondary); }
+.seg-btn[aria-pressed="true"] { background: var(--intent-info-soft); color: var(--intent-info); font-weight: 600; }
+.pill { font: inherit; font-size: 11.5px; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: all var(--transition-fast); }
+.pill:hover { border-color: var(--intent-info); color: var(--intent-info); }
+.pill[aria-pressed="true"] { background: var(--intent-info-soft); border-color: var(--intent-info); color: var(--intent-info); font-weight: 600; }
+.pill[aria-pressed="true"] .cnt { color: var(--intent-info); }
+.pill .cnt { font-size: 10px; color: var(--text-muted); }
+.p-dot { width: 7px; height: 7px; border-radius: 50%; }
+.d-graph { background: var(--intent-info); }
+.d-build { background: var(--text-muted); }
+.d-pre { background: var(--intent-warning); }
+.d-reuse { background: var(--intent-primary); }
+.d-mem { background: var(--intent-success); }
+.f-label { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+select, input[type="search"] { font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary); }
+input[type="search"] { flex: 1 1 180px; max-width: 300px; }
+input[type="search"]::placeholder { color: var(--text-muted); }
+.btn { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; transition: all var(--transition-fast); }
+.btn:hover { border-color: var(--intent-info); color: var(--intent-info); }
+.btn.primary { background: var(--intent-info); border-color: var(--intent-info); color: var(--bg-canvas); font-weight: 600; }
+.btn.primary:hover { color: var(--bg-canvas); opacity: 0.92; }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }
+.btn:disabled { opacity: 0.55; cursor: default; }
+.btn:disabled:hover { border-color: var(--border-strong); color: var(--text-primary); }
+/* ---------- timeline stream ---------- */
+.tscroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+.ts-list { position: relative; list-style: none; padding: 4px 20px 48px; }
+.ts-list::before { content: ""; position: absolute; left: 96px; top: 0; bottom: 0; width: 2px; background: var(--border-subtle); }
+.day-h { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 10px; padding: 12px 20px 7px; background: var(--bg-canvas); border-bottom: 1px solid var(--border-subtle); }
+.day-h .dh-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.day-h.sm .dh-title { font-size: 13px; }
+.day-h .dh-sub { margin-left: auto; text-align: right; font-size: 11px; color: var(--text-muted); }
+.ev { position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px 9px 116px; border-radius: var(--radius-md); cursor: pointer; transition: background var(--transition-fast); }
+.ev:hover { background: var(--bg-surface); }
+.ev.sel { background: var(--intent-info-soft); box-shadow: inset 2px 0 0 var(--intent-info); }
+.ev .t { position: absolute; left: 20px; top: 11px; width: 58px; text-align: right; font-size: 11px; color: var(--text-muted); }
+.ev .node { position: absolute; left: 90px; top: 14px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg-canvas); background: var(--intent-info); }
+.l-build .node { background: var(--text-muted); }
+.l-pre .node { background: var(--intent-warning); }
+.l-reuse .node { background: var(--intent-primary); }
+.l-mem .node { background: var(--intent-success); }
+.ev.err .node { background: var(--intent-danger); }
+.ev .body { min-width: 0; flex: 1 1 auto; }
+.ev .s1 { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ev .tool { font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
+.ev .subj { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.ev .s2 { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.ev .sep { margin: 0 5px; opacity: 0.7; }
+.lane-chip { flex: 0 0 auto; margin-left: auto; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.l-graph .lane-chip { color: var(--intent-info); background: var(--intent-info-soft); }
+.l-build .lane-chip { color: var(--text-secondary); background: var(--bg-subtle); }
+.l-pre .lane-chip { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.l-reuse .lane-chip { color: var(--intent-primary); background: var(--intent-primary-soft); }
+.l-mem .lane-chip { color: var(--intent-success); background: var(--intent-success-soft); }
+.badge { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; white-space: nowrap; }
+.badge.err { color: var(--intent-danger); background: var(--intent-danger-soft); }
+.badge.warn { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.badge.neutral { color: var(--text-muted); }
+.st { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; white-space: nowrap; }
+.st-valid { color: var(--intent-success); background: var(--intent-success-soft); }
+.st-modified { color: var(--intent-warning); background: var(--intent-warning-soft); }
+.st-broken { color: var(--intent-danger); background: var(--intent-danger-soft); }
+.st-unverified { color: var(--text-secondary); background: var(--bg-subtle); }
+@keyframes evflash { 0% { background: var(--intent-info-soft); } 100% { background: transparent; } }
+.ev.flash { animation: evflash 2.2s ease-out 1; }
+.empty { padding: 56px 24px; text-align: center; color: var(--text-muted); font-size: 12.5px; }
+/* ---------- detail pane ---------- */
+.dt-head { display: flex; align-items: center; gap: 8px; }
+.dt-head time { font-size: 11px; color: var(--text-muted); }
+.dt-head .dt-close { margin-left: auto; }
+.dt-title { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin: 8px 0 14px; overflow-wrap: anywhere; }
+.dt-title .tool { font-family: var(--font-mono); font-size: 15px; }
+.dt-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 16px; margin-bottom: 6px; }
+.dt-meta.gap { margin-top: 12px; }
+.dt-meta dt { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); }
+.dt-meta dd { font-family: var(--font-mono); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
+.dt-sec { margin-top: 16px; }
+.dt-sec h4 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-muted); margin-bottom: 7px; }
+.dt-note { font-size: 12px; color: var(--text-secondary); }
+.dt-note.danger { color: var(--intent-danger); }
+.dt-note li { margin-left: 16px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip-row.gap { margin-bottom: 12px; }
+.tag { display: inline-block; font-family: var(--font-mono); font-size: 10.5px; padding: 1px 7px; border-radius: 4px; background: var(--bg-subtle); color: var(--text-secondary); }
+.track { height: 6px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; margin-top: 5px; }
+.track .fill { height: 100%; border-radius: 999px; background: var(--intent-primary); }
+.snip-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); margin: 10px 0 4px; }
+pre.code { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; background: var(--bg-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 9px 11px; overflow-x: auto; white-space: pre; }
+.ref-row { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: 1px solid var(--border-subtle); border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+.ref-row .mono { flex: 1 1 auto; font-size: 11.5px; overflow-wrap: anywhere; }
+.ref-type { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: 3px; padding: 0 4px; }
+.ctx-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.ctx-row:hover { background: var(--bg-subtle); }
+.ctx-row .ct { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); flex: 0 0 auto; }
+.ctx-row .cs { font-size: 11.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-row .ctx-lane { margin-left: auto; flex: 0 0 auto; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.dt-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.cliline { font-family: var(--font-mono); font-size: 11px; color: var(--intent-info); background: var(--intent-info-soft); border-radius: 4px; padding: 3px 8px; overflow-wrap: anywhere; }
+.payload { margin-top: 18px; border-top: 1px dashed var(--border-subtle); padding-top: 10px; }
+.payload summary { font-size: 11px; color: var(--text-muted); cursor: pointer; }
+.payload pre { margin-top: 8px; max-height: 240px; overflow: auto; }
+.dt-empty { padding: 48px 10px; color: var(--text-muted); font-size: 12.5px; text-align: center; }
+/* ---------- toast ---------- */
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text-primary); color: var(--bg-canvas); font-size: 12px; padding: 8px 16px; border-radius: 8px; box-shadow: var(--shadow-elevated); z-index: 60; }
+</style>
+</head>
+<body>
+
+<header class="hdr">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+      <rect class="mark-box" x="1" y="1" width="22" height="22" rx="6"></rect>
+      <path class="mark-glyph" d="M6.5 8h11M6.5 12h7M6.5 16h11"></path>
+    </svg>
+    <div>
+      <h1>eg &middot; Chronicle</h1>
+      <p>Deterministic Graph &middot; Anti-Reinvention &middot; Zero-Token Memory</p>
+    </div>
+  </div>
+  <div class="hdr-status">
+    <button type="button" class="chip is-live" id="sseChip" aria-pressed="false" title="Click to pause or resume the live stream">LIVE &middot; SSE /events</button>
+    <span class="chip">Window: retained journal &middot; cap 50</span>
+    <span class="chip" id="ageChip" title="Turns stale when no journal event arrives for more than 30s">Updated &mdash;</span>
+    <button type="button" class="btn ghost" id="themeBtn" aria-pressed="false">Dark</button>
+  </div>
+</header>
+
+<div class="shell">
+
+  <aside class="rail" aria-label="Summary rail">
+    <section class="rsec">
+      <h2>Ledger &middot; /api/summary</h2>
+      <div id="ledger"></div>
+    </section>
+
+    <section class="rsec">
+      <h2>Workspaces &middot; repo_aggs</h2>
+      <div id="wsList"></div>
+    </section>
+
+    <section class="rsec">
+      <h2>Agents &middot; agent_aggs</h2>
+      <div id="agentList"></div>
+    </section>
+
+    <section class="rsec">
+      <h2>Anti-reinvention engine</h2>
+      <div id="engineList"></div>
+      <p class="rail-note">detector_counts is a sample floor over surfaced candidates, not the whole pool (src/dashboard/data/reuse.rs:471). Click a detector to filter the stream.</p>
+    </section>
+
+    <p class="rail-foot">Offline loopback console. Touch re-anchors anchored_at only; ref status re-resolves on GET /api/memories.</p>
+  </aside>
+
+  <main class="stream" aria-label="Chronicle timeline">
+    <div class="ctrl">
+      <div class="ctrl-a">
+        <div class="seg" role="group" aria-label="Timeline grouping of the retained journal window">
+          <button type="button" class="seg-btn" data-zoom="day" aria-pressed="true">Day</button>
+          <button type="button" class="seg-btn" data-zoom="hour" aria-pressed="false">Hour</button>
+        </div>
+        <span class="ctrl-note">groups the retained 50-entry window</span>
+        <div id="lanePills" role="group" aria-label="Event lanes">
+          <button type="button" class="pill" data-lane="all" aria-pressed="true">All <span class="cnt mono">0</span></button>
+          <button type="button" class="pill" data-lane="graph" aria-pressed="false"><span class="p-dot d-graph"></span>Graph <span class="cnt mono">0</span></button>
+          <button type="button" class="pill" data-lane="build" aria-pressed="false"><span class="p-dot d-build"></span>Build <span class="cnt mono">0</span></button>
+          <button type="button" class="pill" data-lane="prewrite" aria-pressed="false"><span class="p-dot d-pre"></span>Pre-write <span class="cnt mono">0</span></button>
+          <button type="button" class="pill" data-lane="reuse" aria-pressed="false"><span class="p-dot d-reuse"></span>Reuse <span class="cnt mono">0</span></button>
+          <button type="button" class="pill" data-lane="memory" aria-pressed="false"><span class="p-dot d-mem"></span>Memory <span class="cnt mono">0</span></button>
+        </div>
+        <button type="button" id="errBtn" class="pill" aria-pressed="false">Errors only <span class="cnt mono">0</span></button>
+      </div>
+      <div class="ctrl-b">
+        <label class="f-label">Workspace
+          <select id="wtSel">
+            <option value="any">All workspaces</option>
+            <option value="app">app</option>
+            <option value="app/perf-lab">app &middot; wt perf-lab</option>
+            <option value="engram">engram</option>
+            <option value="docs-site">docs-site</option>
+          </select>
+        </label>
+        <label class="f-label">Agent
+          <select id="agentSel">
+            <option value="any">All</option>
+            <option value="zcode">zcode</option>
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+          </select>
+        </label>
+        <input id="qInput" type="search" placeholder="Filter tool, symbol, terms, note key &hellip; ( / )">
+        <button type="button" id="clearBtn" class="btn ghost">Reset</button>
+      </div>
+    </div>
+
+    <div class="tscroll" id="tscroll">
+      <ol class="ts-list" id="tsList"></ol>
+      <div class="empty" id="emptyState" hidden>No events match the current filters. The stream renders only the retained journal window (50 entries); Reset restores all lanes.</div>
+    </div>
+  </main>
+
+  <aside class="detail" id="detail" aria-label="Event record"></aside>
+
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="sr-only" aria-live="polite" id="liveRegion"></div>
+
+<script>
+"use strict";
+
+/* ---------- helpers ---------- */
+var $ = function (s, el) { return (el || document).querySelector(s); };
+var $$ = function (s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); };
+var esc = function (s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+};
+var fmtInt = function (n) { return n.toLocaleString("en-US"); };
+var fmtTok = function (n) { return n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n); };
+var fmtUs = function (us) { return us >= 1000 ? (us / 1000).toFixed(1) + " ms" : us + " \u00B5s"; };
+var pad2 = function (v) { return String(v).padStart(2, "0"); };
+var fmtClock = function (ts) { var d = new Date(ts); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); };
+var fmtDay = function (ts) { return new Date(ts).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); };
+var relTime = function (ts) {
+  var dt = Math.max(0, Date.now() - ts);
+  if (dt < 60e3) return Math.max(1, Math.round(dt / 1e3)) + "s ago";
+  if (dt < 3600e3) return Math.round(dt / 60e3) + "m ago";
+  if (dt < 86400e3) return Math.round(dt / 3600e3) + "h ago";
+  return Math.round(dt / 86400e3) + "d ago";
+};
+var NOW = Date.now();
+var min = function (m) { return NOW - m * 60e3; };
+var dAt = function (daysAgo, h, m) { var d = new Date(NOW - daysAgo * 86400e3); d.setHours(h, m, 0, 0); return d.getTime(); };
+var dayDiff = function (ts) {
+  var a = new Date(ts); var b = new Date(NOW);
+  var da = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  var db = new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime();
+  return Math.round((db - da) / 86400e3);
+};
+var dayLabel = function (ts) { var k = dayDiff(ts); return k === 0 ? "Today" : k === 1 ? "Yesterday" : fmtDay(ts); };
+
+/* ---------- mock data: field names mirror the real payload builders ----------
+   Values marked in DesignSpec trade-offs as demo are absent from samplePayloads
+   but live on real fields; sample-provided values are kept verbatim. */
+var SUMMARY = {
+  schema_version: 2, generated_at: min(2), window: "retained_journal",
+  total_calls: 1284, error_count: 9, reliability_pct: 99.3,
+  p50_ms: 0.8, p95_ms: 2.4, avg_ms: 0.9,
+  saved_tokens: 412000, saved_dollars: 1.24, saved_tokens_estimated: true, saved_dollars_estimated: true,
+  graph_calls: 906, graph_errors: 2, graph_reliability_pct: 99.8,
+  graph_p50_ms: 0.7, graph_p95_ms: 2.1, graph_saved_tokens: 305000, graph_saved_dollars: 0.92,
+  session_count: 18, memory_session_count: 11, session_recall_pct: 66.7,
+  tool_aggs: { callers: { calls: 210, errors: 1, p50: 0.6, p95: 1.8, saved_tokens: 64000 } }
+};
+var REPOS = [
+  { path: "/ws/app", display: "app", calls: 640, errors: 2, graph_calls: 512, graph_errors: 1, reliability_pct: 99.7,
+    saved_tokens: 204000, reuse_calls: 96, search_hit_rate_pct: 92, memory_reads: 22, memory_writes: 9,
+    worktree: "main", worktrees: { main: { calls: 606, errors: 2, last_ts: min(2) }, "perf-lab": { calls: 34, errors: 0, last_ts: min(46) } },
+    last_reuse_scan: { ts: min(18), result_count: 21, limit_capped: false, prev_result_count: 24, prev_ts: min(180) } },
+  { path: "/ws/engram", display: "engram", calls: 388, errors: 5, graph_calls: 244, graph_errors: 1, reliability_pct: 98.7,
+    saved_tokens: 128000, reuse_calls: 11, search_hit_rate_pct: 74, memory_reads: 15, memory_writes: 4,
+    last_reuse_scan: { ts: min(120), result_count: 8, limit_capped: true, prev_result_count: 8, prev_ts: dAt(1, 20, 40) } },
+  { path: "/ws/docs-site", display: "docs-site", calls: 256, errors: 2, graph_calls: 150, graph_errors: 0, reliability_pct: 99.2,
+    saved_tokens: 80000, reuse_calls: 5, search_hit_rate_pct: 66, memory_reads: 6, memory_writes: 1,
+    last_reuse_scan: { ts: min(165), result_count: 3, limit_capped: false, prev_result_count: 3, prev_ts: dAt(1, 18, 5) } }
+];
+var AGENTS = [
+  { name: "zcode", calls: 512, errors: 4 },
+  { name: "claude", calls: 448, errors: 3 },
+  { name: "codex", calls: 324, errors: 2 }
+];
+/* detector_counts keeps ONLY the sample-provided values; the pool (38) is a separate figure. */
+var REUSE = {
+  schema_version: 4, total_candidates: 38, preventable_loc: 1240, preventable_loc_estimated: true,
+  prewrite_count: 112, avg_callers: 6.4,
+  judge: { runs: 9, reviewed: 7, rejected: 1, failed: 1 },
+  detector_counts: { D1: 14, D1L: 5 },
+  repo_candidate_pools: { "/ws/app": 21, "/ws/engram": 12, "/ws/docs-site": 5 },
+  resolved_twins: { resolved: 3, surfaced: 6 }
+};
+/* candidates[0] mirrors samplePayloads verbatim; [1..3] are demo content on the real field shape. */
+var CANDIDATES = [
+  { id: "app:parse_token->normalize_token", repo: "app", repo_path: "/ws/app", detector: "D1",
+    symbol: "parse_token", canonical: "normalize_token", canonical_callers: 14,
+    canonical_file: "src/tokens.rs", canonical_line: 88,
+    overlap_pct: 83, overlap_applicable: true, confidence: "high",
+    reasons: ["identical match skeleton", "same tokenizer branches"], shared_evidence: "trim + chars().next() + match",
+    candidate_info: { file: "src/legacy.rs", line_start: 120, line_end: 141, loc: 22 },
+    canonical_info: { file: "src/tokens.rs", line_start: 88, line_end: 104, loc: 17 },
+    loc_saving: 22, reuse_count: 3, last_reused_ts: dAt(1, 16, 2),
+    prevention_narrative: "Route new callers to normalize_token and delete the legacy wrapper once migration lands.",
+    candidate_snippet: "fn parse_token(input: &str) -> Token {\n    let t = input.trim();\n    match t.chars().next() {\n        Some(c) if c.is_ascii_digit() => Token::Num(t),\n        _ => Token::Word(t.to_string()),\n    }\n}",
+    canonical_snippet: "fn normalize_token(input: &str) -> Token {\n    let t = input.trim();\n    match t.chars().next() {\n        Some(c) if c.is_ascii_digit() => Token::Num(t),\n        _ => Token::Word(t.to_string()),\n    }\n}" },
+  { id: "app:send_chunk->flush_buffer", repo: "app", repo_path: "/ws/app", detector: "D1L",
+    symbol: "send_chunk", canonical: "flush_buffer", canonical_callers: 8,
+    canonical_file: "src/journal.rs", canonical_line: 210,
+    overlap_pct: 71, overlap_applicable: true, confidence: "medium",
+    reasons: ["same drain loop", "threshold literal is the only delta"], shared_evidence: "while + write + drain",
+    candidate_info: { file: "src/export.rs", line_start: 54, line_end: 70, loc: 17 },
+    canonical_info: { file: "src/journal.rs", line_start: 210, line_end: 226, loc: 17 },
+    loc_saving: 17, reuse_count: 1, last_reused_ts: dAt(1, 20, 40),
+    prevention_narrative: "Route chunk writers through flush_buffer and drop the literal-threshold branch.",
+    candidate_snippet: "fn send_chunk(buf: &mut Vec<u8>, out: &mut Sink) {\n    while buf.len() > 4096 {\n        let n = out.write(buf);\n        buf.drain(..n);\n    }\n}",
+    canonical_snippet: "fn flush_buffer(buf: &mut Vec<u8>, out: &mut Sink) {\n    while !buf.is_empty() {\n        let n = out.write(buf);\n        buf.drain(..n);\n    }\n}" },
+  { id: "engram:parse_flags->load_config", repo: "engram", repo_path: "/ws/engram", detector: "D2",
+    symbol: "parse_flags", canonical: "load_config", canonical_callers: 5,
+    canonical_file: "src/cli.rs", canonical_line: 96,
+    overlap_pct: 64, overlap_applicable: true, confidence: "medium",
+    reasons: ["shared flag-table walk"], shared_evidence: "match on string keys",
+    candidate_info: { file: "src/doctor.rs", line_start: 31, line_end: 48, loc: 18 },
+    canonical_info: { file: "src/cli.rs", line_start: 96, line_end: 112, loc: 16 },
+    loc_saving: 12, reuse_count: 0, last_reused_ts: null,
+    prevention_narrative: "Parse CLI flags once through a load_config-style loader; keep a single key match.",
+    candidate_snippet: "fn parse_flags(args: &[String]) -> Flags {\n    let mut f = Flags::default();\n    for a in args {\n        match a.as_str() { \"--json\" => f.json = true, _ => {} }\n    }\n    f\n}",
+    canonical_snippet: "fn load_config(path: &Path) -> Config {\n    let mut c = Config::default();\n    for kv in read_pairs(path) {\n        match kv.key.as_str() { \"json\" => c.json = true, _ => {} }\n    }\n    c\n}" },
+  { id: "docs-site:render_row->render_cell", repo: "docs-site", repo_path: "/ws/docs-site", detector: "D3",
+    symbol: "render_row", canonical: "render_cell", canonical_callers: 3,
+    canonical_file: "assets/app.js", canonical_line: 412,
+    overlap_pct: null, overlap_applicable: false, confidence: "low",
+    reasons: ["near-duplicate emit paths differ in column order"], shared_evidence: "td append order",
+    candidate_info: { file: "assets/table.js", line_start: 31, line_end: 44, loc: 14 },
+    canonical_info: { file: "assets/app.js", line_start: 412, line_end: 426, loc: 14 },
+    loc_saving: 9, reuse_count: 2, last_reused_ts: dAt(1, 18, 5),
+    prevention_narrative: "Render rows by composing render_cell instead of re-emitting td nodes.",
+    candidate_snippet: "function renderRow(cells) {\n  const tr = el(\"tr\");\n  for (const c of cells) tr.append(el(\"td\", c));\n  return tr;\n}",
+    canonical_snippet: "function renderCell(c) {\n  const td = el(\"td\", c);\n  td.dataset.col = c.key;\n  return td;\n}" }
+];
+var NOTES = {
+  42: { id: 42, store: "engram", store_id: "/ws/app/.engram/memory.db", key: "allowlist-refs", rev: 3,
+    kind: "gotcha", scope: "project", body: "Ref freshness must branch on index resolution.",
+    tags: ["refs", "freshness"], refs: ["src/query/reuse.rs"],
+    resolved_refs: [{ ref: "src/query/reuse.rs", verified: true, status: "modified", type: "file", location: "src/query/reuse.rs" }],
+    ref_status: "modified", source: "agent", created_at: dAt(3, 11, 12), anchored_at: min(80),
+    is_current: true, recall_count: 4, last_recalled_ts: min(65) },
+  41: { id: 41, store: "engram", store_id: "/ws/engram/.engram/memory.db", key: "sse-reconnect", rev: 1,
+    kind: "decision", scope: "project", body: "Journal rotate triggers SSE reset; clients must refetch all three endpoints.",
+    tags: ["sse", "live"], refs: ["src/dashboard/server.rs", "src/dashboard/assets/app.js"],
+    resolved_refs: [
+      { ref: "src/dashboard/server.rs", verified: true, status: "valid", type: "file", location: "src/dashboard/server.rs" },
+      { ref: "src/dashboard/assets/app.js", verified: false, status: "unverified", type: "file", location: "" }],
+    ref_status: "unverified", source: "agent", created_at: min(20), anchored_at: min(20),
+    is_current: true, recall_count: 0, last_recalled_ts: null },
+  39: { id: 39, store: "global", store_id: "global memory store", key: "parameterized-sql", rev: 5,
+    kind: "convention", scope: "global", body: "Bind user-supplied filters with ?1 parameters; never interpolate WHERE clauses.",
+    tags: ["sql", "safety"], refs: ["src/query.rs"],
+    resolved_refs: [{ ref: "src/query.rs", verified: false, status: "broken", type: "file", location: "" }],
+    ref_status: "broken", source: "agent", created_at: dAt(3, 14, 30), anchored_at: dAt(2, 9, 0),
+    is_current: true, recall_count: 12, last_recalled_ts: dAt(1, 13, 40) }
+};
+var REPO_PATH = { "app": "/ws/app", "engram": "/ws/engram", "docs-site": "/ws/docs-site" };
+var SCAN_AGENT = { "app": "zcode", "engram": "claude", "docs-site": "codex" };
+
+/* graph/prewrite/build entries mirror the journal shape:
+   ts, tool, repo_name, agent, exit_code, shown, result_count, latency_us, args (+terms). */
+var EVENTS = [
+  { id: "e01", lane: "graph", ts: min(2), tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 7, result_count: 7, latency_us: 640, args: { name: "read_bounded" } },
+  { id: "e02", lane: "graph", ts: min(9), tool: "context", repo_name: "engram", agent: "claude", exit_code: 0, shown: 12, result_count: 12, latency_us: 810, args: { name: "dashboard/server.rs" } },
+  { id: "e03", lane: "prewrite", ts: min(14), tool: "search", repo_name: "app", agent: "zcode", exit_code: 0, shown: 9, result_count: 9, latency_us: 420, terms: ["token budget", "streaming"] },
+  { id: "e04", lane: "memory", ts: min(20), agent: "claude", action: "write", note: 41, repo_name: "engram" },
+  { id: "e06", lane: "graph", ts: min(31), tool: "impact", repo_name: "app", agent: "codex", exit_code: 0, shown: 4, result_count: 4, latency_us: 390, args: { name: "render_timeline" } },
+  { id: "e07", lane: "graph", ts: min(46), tool: "callees", repo_name: "perf-lab", repo_main_name: "app", agent: "zcode", exit_code: 2, shown: 0, result_count: 0, latency_us: 120, args: { name: "missing_symbol" } },
+  { id: "e08", lane: "prewrite", ts: min(52), tool: "search", repo_name: "engram", agent: "zcode", exit_code: 0, shown: 4, result_count: 4, latency_us: 210, terms: ["escape html", "sanitize"] },
+  { id: "e10", lane: "memory", ts: min(80), agent: "claude", action: "anchor", note: 42, repo_name: "app" },
+  { id: "e11", lane: "graph", ts: min(97), tool: "symbols", repo_name: "docs-site", agent: "claude", exit_code: 0, shown: 18, result_count: 18, latency_us: 150, args: { name: "guide-*" } },
+  { id: "e12", lane: "graph", ts: min(125), tool: "path", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 520, args: { name: "db.rs" } },
+  { id: "e13", lane: "graph", ts: min(153), tool: "callers", repo_name: "docs-site", agent: "codex", exit_code: 0, shown: 3, result_count: 3, latency_us: 280, args: { name: "build_index" } },
+  { id: "e14", lane: "build", ts: dAt(1, 9, 14), tool: "build", repo_name: "engram", agent: "zcode", exit_code: 0, shown: 0, result_count: 0, latency_us: 418000, args: {} },
+  { id: "e15", lane: "prewrite", ts: dAt(1, 11, 26), tool: "search", repo_name: "app", agent: "claude", exit_code: 0, shown: 6, result_count: 6, latency_us: 340, terms: ["retry", "backoff"] },
+  { id: "e16", lane: "memory", ts: dAt(1, 13, 40), agent: "codex", action: "recall", note: 39, repo_name: "app" },
+  { id: "e18", lane: "graph", ts: dAt(1, 17, 35), tool: "context", repo_name: "app", agent: "codex", exit_code: 0, shown: 9, result_count: 9, latency_us: 760, args: { name: "reuse.rs" } },
+  { id: "e19", lane: "graph", ts: dAt(1, 19, 21), tool: "symbols", repo_name: "engram", agent: "claude", exit_code: 5, shown: 0, result_count: 0, latency_us: 90, args: { name: "ghost_fn" } },
+  { id: "e20", lane: "graph", ts: dAt(3, 10, 5), tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 7, result_count: 7, latency_us: 640, args: { name: "read_bounded" } },
+  { id: "e21", lane: "memory", ts: dAt(3, 14, 30), agent: "codex", action: "write", note: 39, repo_name: "engram" },
+  { id: "e22", lane: "prewrite", ts: dAt(3, 16, 2), tool: "search", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 260, terms: ["render", "timeline"] }
+];
+/* Reuse lane events are generated, never hand-timed:
+   - scans: one per repo, ts = last_reuse_scan.ts (real field);
+   - twin surfaced: anchored to the containing repo's last_reuse_scan.ts (a candidate surfaces when its pool is scanned;
+     candidates[] carries no surfaced-at field, so this is the honest anchor);
+   - twin reused: anchored to last_reused_ts (real field). */
+REPOS.forEach(function (r) {
+  EVENTS.push({ id: "scan-" + r.display, lane: "reuse", agent: SCAN_AGENT[r.display], type: "scan", repo_name: r.display,
+    result_count: r.last_reuse_scan.result_count, limit_capped: r.last_reuse_scan.limit_capped,
+    prev_result_count: r.last_reuse_scan.prev_result_count, prev_ts: r.last_reuse_scan.prev_ts, ts: r.last_reuse_scan.ts });
+});
+CANDIDATES.forEach(function (c, i) {
+  var scanTs = REPOS.filter(function (r) { return r.display === c.repo; })[0].last_reuse_scan.ts;
+  EVENTS.push({ id: "twin-s" + i, lane: "reuse", agent: SCAN_AGENT[c.repo], type: "twin", surfaced: true, candidate: i, repo_name: c.repo, ts: scanTs });
+  if (c.last_reused_ts) EVENTS.push({ id: "twin-r" + i, lane: "reuse", agent: SCAN_AGENT[c.repo], type: "twin", surfaced: false, candidate: i, repo_name: c.repo, ts: c.last_reused_ts });
+});
+
+/* ---------- state ---------- */
+var state = { zoom: "day", lane: "all", errorsOnly: false, detector: null, wt: "any", agent: "any", q: "", sel: "e10" };
+var LANES = { graph: "Graph", build: "Build", prewrite: "Pre-write", reuse: "Reuse", memory: "Memory" };
+var LCLASS = { graph: "l-graph", build: "l-build", prewrite: "l-pre", reuse: "l-reuse", memory: "l-mem" };
+var LANE_ORDER = ["graph", "build", "prewrite", "reuse", "memory"];
+var ST_CLASS = { valid: "st st-valid", modified: "st st-modified", broken: "st st-broken", unverified: "st st-unverified" };
+
+/* ---------- derived accessors ---------- */
+var evRepo = function (e) { return e.repo_main_name || e.repo_name; };
+var evWt = function (e) { return e.repo_main_name && e.repo_main_name !== e.repo_name ? e.repo_name : "main"; };
+var isErr = function (e) { return typeof e.exit_code === "number" && e.exit_code !== 0; };
+var evHay = function (e) {
+  if (e.lane === "graph" || e.lane === "build") return [e.tool, e.args && e.args.name, e.repo_name, evRepo(e), e.agent].join(" ");
+  if (e.lane === "prewrite") return ["search", (e.terms || []).join(" "), e.repo_name, evRepo(e), e.agent].join(" ");
+  if (e.lane === "reuse") {
+    if (e.type === "scan") return ["reuse scan", e.repo_name, evRepo(e), e.agent].join(" ");
+    var c = CANDIDATES[e.candidate];
+    return ["twin", c.detector, c.symbol, c.canonical, c.canonical_file, c.repo].join(" ");
+  }
+  var n = NOTES[e.note];
+  return ["memory", n.key, n.kind, n.store, e.repo_name, e.agent].join(" ");
+};
+function pass(e) {
+  if (state.lane !== "all" && e.lane !== state.lane) return false;
+  if (state.errorsOnly && !isErr(e)) return false;
+  if (state.detector && !(e.lane === "reuse" && e.type === "twin" && CANDIDATES[e.candidate].detector === state.detector)) return false;
+  if (state.wt !== "any") {
+    var parts = state.wt.split("/");
+    if (evRepo(e) !== parts[0]) return false;
+    if (parts[1] && evWt(e) !== parts[1]) return false;
+  }
+  if (state.agent !== "any" && e.agent !== state.agent) return false;
+  if (state.q && evHay(e).toLowerCase().indexOf(state.q.toLowerCase()) === -1) return false;
+  return true;
+}
+function rawOf(e) {
+  if (e.lane === "graph" || e.lane === "build" || e.lane === "prewrite") {
+    var o = { ts: Math.round(e.ts / 1000), tool: e.tool, repo: REPO_PATH[evRepo(e)] || evRepo(e), repo_name: e.repo_name,
+      agent: e.agent, exit_code: e.exit_code, shown: e.shown, result_count: e.result_count, latency_us: e.latency_us };
+    if (e.args) o.args = e.args;
+    if (e.terms) o.terms = e.terms;
+    if (e.repo_main_name) { o.repo_main = REPO_PATH[e.repo_main_name] || e.repo_main_name; o.repo_main_name = e.repo_main_name; }
+    return o;
+  }
+  if (e.lane === "reuse") {
+    return e.type === "scan"
+      ? { ts: Math.round(e.ts / 1000), tool: "reuse", repo_name: e.repo_name, result_count: e.result_count,
+          limit_capped: e.limit_capped, prev_result_count: e.prev_result_count, prev_ts: Math.round(e.prev_ts / 1000) }
+      : CANDIDATES[e.candidate];
+  }
+  return NOTES[e.note];
+}
+
+/* ---------- rail (all four sections rendered from the same data objects) ---------- */
+function renderLedger() {
+  var row = function (l, v, s, est) {
+    return '<div class="lg-row"><span class="lg-l">' + l + '</span><span class="lg-v mono">' + v + (est ? '<i class="est">est</i>' : '') +
+      '</span><span class="lg-s">' + s + "</span></div>";
+  };
+  $("#ledger").innerHTML =
+    row("Total calls", fmtInt(SUMMARY.total_calls), SUMMARY.error_count + " errors · reliability " + SUMMARY.reliability_pct + "%") +
+    row("Latency", SUMMARY.p50_ms + " ms p50", "p95 " + SUMMARY.p95_ms + " ms · avg " + SUMMARY.avg_ms + " ms") +
+    row("Tokens avoided", fmtTok(SUMMARY.saved_tokens), "$" + SUMMARY.saved_dollars.toFixed(2) + " context dollars avoided", true) +
+    row("Graph pillar", fmtInt(SUMMARY.graph_calls), SUMMARY.graph_reliability_pct + "% ok · " + fmtTok(SUMMARY.graph_saved_tokens) + " tok avoided") +
+    row("Sessions", String(SUMMARY.session_count), SUMMARY.memory_session_count + " memory sessions · recall " + SUMMARY.session_recall_pct + "%");
+}
+function engRow(l, v) { return '<div class="eng-row"><span>' + l + '</span><span class="mono">' + v + "</span></div>"; }
+function renderRail() {
+  renderLedger();
+  $("#wsList").innerHTML = REPOS.map(function (r) {
+    var wts = r.worktrees ? "wt " + Object.keys(r.worktrees).map(function (k) { return k + " " + r.worktrees[k].calls; }).join(" · ") + " · " : "";
+    return '<div class="ws-row" data-ws="' + r.display + '" role="button" tabindex="0" aria-label="Filter stream by workspace ' + r.display + '">' +
+      '<div class="ws-top"><span class="ws-name">' + r.display + '</span><span class="ws-calls mono">' + r.calls + " calls</span></div>" +
+      '<div class="ws-sub">graph ' + r.graph_calls + " · err " + r.errors + " · " + fmtTok(r.saved_tokens) + " tok · mem R/W " + r.memory_reads + "/" + r.memory_writes + "</div>" +
+      '<div class="ws-sub">' + wts + "reuse hit " + r.search_hit_rate_pct + "%</div></div>";
+  }).join("");
+  $("#agentList").innerHTML = AGENTS.map(function (a) {
+    return '<div class="ag-row"><span>' + a.name + '</span><span class="mono">' + a.calls + " · err " + a.errors + "</span></div>";
+  }).join("");
+  var dets = Object.keys(REUSE.detector_counts).map(function (d) {
+    return '<button type="button" class="det-btn mono" data-det="' + d + '" aria-pressed="false" aria-label="Filter stream by detector ' + d + '">' + d + " " + REUSE.detector_counts[d] + "</button>";
+  }).join("");
+  $("#engineList").innerHTML =
+    engRow("Candidates in pool", String(REUSE.total_candidates)) +
+    engRow("Preventable LOC", fmtInt(REUSE.preventable_loc) + ' <i class="est">est</i>') +
+    engRow("Pre-write lookups", String(REUSE.prewrite_count)) +
+    engRow("Avg canonical callers", String(REUSE.avg_callers)) +
+    engRow("Twins resolved / surfaced (pool)", REUSE.resolved_twins.resolved + " / " + REUSE.resolved_twins.surfaced) +
+    '<div class="eng-det"><span class="eng-l">Detector (sample floor)</span>' + dets + "</div>";
+}
+
+/* ---------- timeline stream ---------- */
+function groupOf(ts) {
+  if (state.zoom === "hour") {
+    var d = new Date(ts);
+    return { k: dayLabel(ts) + " " + pad2(d.getHours()) + ":00", label: dayLabel(ts) + " &middot; " + pad2(d.getHours()) + ":00" };
+  }
+  return { k: dayLabel(ts), label: dayLabel(ts) + " &middot; " + fmtDay(ts) };
+}
+function dayRollup(items) {
+  var mix = {};
+  items.forEach(function (e) { mix[e.lane] = (mix[e.lane] || 0) + 1; });
+  var s = LANE_ORDER.filter(function (l) { return mix[l]; }).map(function (l) { return l + " " + mix[l]; }).join(" · ");
+  var tools = {};
+  items.forEach(function (e) { if (e.tool) tools[e.tool] = (tools[e.tool] || 0) + 1; });
+  var top = Object.keys(tools).sort(function (a, b) { return tools[b] - tools[a]; })[0];
+  if (top) s += (s ? " · " : "") + "top " + top;
+  return s;
+}
+function rowTpl(e) {
+  var sep = '<span class="sep">&middot;</span>';
+  var s1 = "", s2 = "", badges = "";
+  if (e.lane === "graph" || e.lane === "build") {
+    s1 = '<span class="tool">' + esc(e.tool) + '</span><span class="subj">' + esc((e.args && e.args.name) || "") + "</span>";
+    s2 = [esc(evRepo(e)), evWt(e) !== "main" || e.repo_main_name ? "wt " + esc(evWt(e)) : "", esc(e.agent), e.shown + " shown", fmtUs(e.latency_us)]
+      .filter(Boolean).join(sep);
+  } else if (e.lane === "prewrite") {
+    s1 = '<span class="tool">search</span><span class="subj">' + esc((e.terms || []).join(", ")) + "</span>";
+    s2 = [esc(evRepo(e)), esc(e.agent), e.shown + " shown", fmtUs(e.latency_us)].join(sep);
+  } else if (e.lane === "reuse") {
+    if (e.type === "scan") {
+      s1 = '<span class="tool">reuse scan</span><span class="subj">' + esc(evRepo(e)) + "</span>";
+      if (e.limit_capped) badges = '<span class="badge warn">limit capped</span>';
+      s2 = [esc(e.repo_name), "pool " + e.result_count, "prev " + e.prev_result_count, esc(e.agent)].join(sep);
+    } else {
+      var c = CANDIDATES[e.candidate];
+      s1 = '<span class="tool">' + esc(c.detector) + '</span><span class="subj">' + esc(c.symbol) + " &rarr; " + esc(c.canonical) + "</span>";
+      badges = e.surfaced ? '<span class="badge neutral">surfaced</span>' : '<span class="badge neutral">reused</span>';
+      s2 = [esc(c.repo), c.overlap_pct == null ? "overlap n/a" : "overlap " + c.overlap_pct + "%", c.loc_saving + " LOC saved", "callers " + c.canonical_callers].join(sep);
+    }
+  } else {
+    var n = NOTES[e.note];
+    s1 = '<span class="tool">memory ' + esc(e.action) + '</span><span class="subj">' + esc(n.key) + "</span>" +
+      '<span class="' + ST_CLASS[n.ref_status] + '">' + esc(n.ref_status) + "</span>";
+    s2 = [esc(n.store) + " store", esc(n.kind), "rev " + n.rev, esc(e.agent)].join(sep);
+  }
+  if (isErr(e)) badges += '<span class="badge err">exit ' + e.exit_code + "</span>";
+  return '<li class="ev ' + LCLASS[e.lane] + (isErr(e) ? " err" : "") + '" data-id="' + e.id + '" tabindex="0" role="button" aria-label="' +
+    esc(e.lane + " event: " + evHay(e)) + '">' +
+    '<time class="t mono">' + fmtClock(e.ts) + "</time>" +
+    '<span class="node" aria-hidden="true"></span>' +
+    '<div class="body"><div class="s1">' + s1 + badges + '</div><div class="s2">' + s2 + "</div></div>" +
+    '<span class="lane-chip">' + LANES[e.lane] + "</span></li>";
+}
+function updatePills() {
+  var counts = { all: EVENTS.length, graph: 0, build: 0, prewrite: 0, reuse: 0, memory: 0 };
+  EVENTS.forEach(function (e) { counts[e.lane] += 1; });
+  $$("#lanePills [data-lane]").forEach(function (b) { b.querySelector(".cnt").textContent = String(counts[b.dataset.lane]); });
+  $("#errBtn .cnt").textContent = String(EVENTS.filter(isErr).length);
+}
+function renderStream() {
+  updatePills();
+  var list = EVENTS.filter(pass).sort(function (a, b) { return b.ts - a.ts; });
+  var groups = [];
+  list.forEach(function (e) {
+    var g = groupOf(e.ts);
+    var last = groups[groups.length - 1];
+    if (last && last.k === g.k) last.items.push(e);
+    else groups.push({ k: g.k, label: g.label, items: [e] });
+  });
+  var singleDay = state.zoom === "day" && groups.length === 1;
+  $("#tsList").innerHTML = groups.map(function (g) {
+    var errs = g.items.filter(isErr).length;
+    var sub = g.items.length + " events" + (errs ? " · " + errs + " failed" : "");
+    if (state.zoom === "day") {
+      var roll = dayRollup(g.items);
+      if (roll) sub += " · " + roll;
+      if (singleDay) sub += " · single day in retained window";
+    }
+    return '<li class="day-h' + (state.zoom === "hour" ? " sm" : "") + '"><span class="dh-title">' + g.label +
+      '</span><span class="dh-sub">' + sub + "</span></li>" + g.items.map(rowTpl).join("");
+  }).join("");
+  $("#emptyState").hidden = list.length > 0;
+  if (state.sel) {
+    var row = $('#tsList [data-id="' + state.sel + '"]');
+    if (row) row.classList.add("sel");
+  }
+}
+
+/* ---------- detail pane ---------- */
+var md = function (k, v) { return '<div class="m"><dt>' + k + "</dt><dd>" + v + "</dd></div>"; };
+var sec = function (t, inner) { return '<section class="dt-sec"><h4>' + t + "</h4>" + inner + "</section>"; };
+function nearby(e) {
+  return EVENTS.filter(function (x) {
+    return x.id !== e.id && evRepo(x) === evRepo(e) && Math.abs(x.ts - e.ts) <= 45 * 60e3;
+  }).sort(function (a, b) { return b.ts - a.ts; }).slice(0, 3);
+}
+function ctxTpl(x) {
+  var label;
+  if (x.lane === "graph" || x.lane === "build") label = esc(x.tool) + " " + esc((x.args && x.args.name) || "");
+  else if (x.lane === "prewrite") label = esc(x.tool) + " " + esc((x.terms || []).join(", "));
+  else if (x.lane === "reuse") {
+    var c = CANDIDATES[x.candidate];
+    label = x.type === "scan" ? esc("reuse scan") : esc(c.symbol) + " &rarr; " + esc(c.canonical);
+  } else label = esc(NOTES[x.note].key);
+  return '<div class="ctx-row" data-jump="' + x.id + '" role="button" tabindex="0"><span class="ct mono">' + fmtClock(x.ts) +
+    '</span><span class="cs">' + label + '</span><span class="ctx-lane">' + LANES[x.lane] + "</span></div>";
+}
+function nearbySection(e) {
+  var rows = nearby(e);
+  if (!rows.length) return "";
+  return sec("Nearby on this repo (&plusmn;45m) — jump", rows.map(ctxTpl).join(""));
+}
+function detailGraph(e) {
+  var name = (e.args && e.args.name) || "";
+  var h = '<h3 class="dt-title"><span class="tool">' + esc(e.tool) + "</span> " + esc(name) + "</h3>";
+  var wt = e.repo_main_name ? ' <span class="badge neutral">wt ' + esc(evWt(e)) + "</span>" : "";
+  h += '<dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e)) + wt) + md("Agent", esc(e.agent)) +
+    md("Exit code", String(e.exit_code)) + md("Result count", String(e.result_count)) +
+    md("Shown", String(e.shown)) + md("Latency", fmtUs(e.latency_us)) + "</dl>";
+  if (isErr(e)) h += '<p class="dt-note danger">Journal entry recorded a non-zero exit; shown and result_count are 0.</p>';
+  if (e.tool === "callers" && SUMMARY.tool_aggs.callers) {
+    h += sec("Tool ledger", '<p class="dt-note">tool_aggs.callers · ' + SUMMARY.tool_aggs.callers.calls + " calls · p50 " +
+      SUMMARY.tool_aggs.callers.p50 + " ms · " + fmtTok(SUMMARY.tool_aggs.callers.saved_tokens) + " tok avoided</p>");
+  }
+  h += sec("CLI equivalent", '<span class="cliline">eg ' + esc(e.tool) + (name ? " " + esc(name) : "") + "</span>");
+  return h;
+}
+function detailPrewrite(e) {
+  var repo = REPOS.filter(function (r) { return r.display === evRepo(e); })[0];
+  var h = '<h3 class="dt-title">Pre-write search</h3>';
+  h += '<dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e))) + md("Agent", esc(e.agent)) +
+    md("Shown", String(e.shown)) + md("Latency", fmtUs(e.latency_us)) +
+    md("Hit rate (repo)", repo ? repo.search_hit_rate_pct + "%" : "&mdash;") +
+    md("Retained lookups", String(REUSE.prewrite_count)) + "</dl>";
+  h += sec("Terms", '<div class="chip-row">' + (e.terms || []).map(function (t) { return '<span class="tag">' + esc(t) + "</span>"; }).join("") + "</div>");
+  return h;
+}
+function detailScan(e) {
+  var pool = REUSE.repo_candidate_pools[REPO_PATH[evRepo(e)] || ""] || 0;
+  var twins = CANDIDATES.filter(function (c) { return c.repo === evRepo(e); }).length;
+  var h = '<h3 class="dt-title">Reuse scan &middot; ' + esc(evRepo(e)) + "</h3>";
+  h += '<dl class="dt-meta">' +
+    md("Repo", esc(evRepo(e))) + md("Agent", esc(e.agent || "")) +
+    md("Result count", String(e.result_count)) +
+    md("Limit capped", e.limit_capped ? '<span class="badge warn">true</span>' : '<span class="badge neutral">false</span>') +
+    md("Prev result count", String(e.prev_result_count)) + md("Prev scan", relTime(e.prev_ts)) +
+    md("Candidate pool", String(pool)) +
+    md("Sampled twins (this repo)", twins + " of " + CANDIDATES.length) + "</dl>";
+  h += sec("Preventable duplication", '<p class="dt-note">' + fmtInt(REUSE.preventable_loc) + " LOC preventable pool-wide (estimated, in-band flag) · avg canonical callers " + REUSE.avg_callers + "</p>");
+  return h;
+}
+function detailTwin(e) {
+  var c = CANDIDATES[e.candidate];
+  var h = '<h3 class="dt-title">' + esc(c.symbol) + " &rarr; " + esc(c.canonical) + "</h3>";
+  h += '<div class="chip-row gap"><span class="tag">' + esc(c.detector) + '</span><span class="tag">' + esc(c.confidence) +
+    ' confidence</span>' + (e.surfaced ? '<span class="badge neutral">surfaced</span>' : '<span class="badge neutral">reused</span>') + "</div>";
+  h += '<dl class="dt-meta">' +
+    md("Repo", esc(c.repo) + " &middot; " + esc(c.repo_path)) +
+    md("Canonical callers", String(c.canonical_callers)) +
+    md("Candidate", esc(c.candidate_info.file) + ":" + c.candidate_info.line_start + " · " + c.candidate_info.loc + " LOC") +
+    md("Canonical", esc(c.canonical_file) + ":" + c.canonical_line + " · " + c.canonical_info.loc + " LOC") +
+    md("LOC saving", String(c.loc_saving)) +
+    md("Reused", c.reuse_count + "&times;" + (c.last_reused_ts ? " · " + relTime(c.last_reused_ts) : " · never")) + "</dl>";
+  h += c.overlap_pct == null
+    ? sec("Structural overlap", '<p class="dt-note">overlap_pct is null and overlap_applicable is false for ' + esc(c.detector) + "; no bar is drawn rather than a guessed value.</p>")
+    : sec("Structural overlap (" + c.overlap_pct + "%)", '<div class="track"><div class="fill" style="width:' + c.overlap_pct + '%"></div></div>');
+  h += sec("Reasons", '<ul class="dt-note">' + c.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>");
+  h += sec("Prevention narrative", '<p class="dt-note">' + esc(c.prevention_narrative) + "</p>");
+  h += sec("Provenance on the timeline", '<p class="dt-note">' + (e.surfaced
+    ? "Surfaced by the " + esc(evRepo(e)) + " reuse scan; event ts is anchored to last_reuse_scan.ts (" + relTime(e.ts) + ") because candidates[] carries no surfaced-at field."
+    : "Reuse of this pair; event ts is anchored to last_reused_ts (" + relTime(e.ts) + ").") + "</p>");
+  h += sec("Evidence snippets",
+    '<p class="snip-label">candidate_snippet · ' + esc(c.candidate_info.file) + ":" + c.candidate_info.line_start + "</p>" +
+    '<pre class="code">' + esc(c.candidate_snippet) + "</pre>" +
+    '<p class="snip-label">canonical_snippet · ' + esc(c.canonical_file) + ":" + c.canonical_line + "</p>" +
+    '<pre class="code">' + esc(c.canonical_snippet) + "</pre>");
+  return h;
+}
+function detailMemory(e) {
+  var n = NOTES[e.note];
+  var h = '<h3 class="dt-title">' + esc(n.key) + "</h3>";
+  h += '<div class="chip-row gap"><span class="tag">' + esc(n.kind) + '</span><span class="tag">' + esc(n.scope) +
+    '</span><span class="tag">rev ' + n.rev + '</span><span class="tag">' + esc(n.store) + ' store</span><span class="' + ST_CLASS[n.ref_status] + '">' +
+    esc(n.ref_status) + "</span></div>";
+  h += sec("Body", '<p class="dt-note">' + esc(n.body) + "</p>");
+  h += '<dl class="dt-meta gap">' +
+    md("Store id", esc(n.store_id)) + md("Created", relTime(n.created_at)) +
+    md("Anchored", relTime(n.anchored_at)) + md("Last recalled", n.last_recalled_ts ? relTime(n.last_recalled_ts) : "never") +
+    md("Recalls", String(n.recall_count)) + md("Current rev", n.is_current ? "true" : "false") + "</dl>";
+  h += sec("Resolved refs", n.resolved_refs.map(function (r) {
+    return '<div class="ref-row"><span class="ref-type">' + esc(r.type) + '</span><span class="mono">' + esc(r.ref) + '</span><span class="' +
+      ST_CLASS[r.status] + '">' + esc(r.status) + "</span></div>";
+  }).join(""));
+  h += sec("Tags", '<div class="chip-row">' + n.tags.map(function (t) { return '<span class="tag">' + esc(t) + "</span>"; }).join("") + "</div>");
+  h += sec("Touch semantics", '<p class="dt-note">POST /api/memory/touch advances anchored_at only. ref_status and resolved_refs[].status change only when a fresh GET /api/memories re-resolves refs against the index; a broken ref stays broken after touch.</p>');
+  h += '<div class="dt-actions"><button type="button" class="btn primary" id="touchBtn">Verify &amp; re-anchor</button>' +
+    '<button type="button" class="btn ghost" id="refetchBtn">Refetch /api/memories</button>' +
+    '<button type="button" class="btn ghost" id="touchFailBtn">Simulate 409</button></div>';
+  h += '<div class="dt-actions"><span class="cliline">POST /api/memory/touch {key, store_id, rev}</span></div>';
+  return h;
+}
+function renderDetail() {
+  var el = $("#detail");
+  var e = state.sel ? EVENTS.filter(function (x) { return x.id === state.sel; })[0] : null;
+  if (!e) {
+    el.innerHTML = '<div class="dt-empty"><p>Select an event on the timeline to inspect its full record: journal entry, reuse candidate dossier or memory note with touch and ref-resolve actions.</p></div>';
+    return;
+  }
+  var h = '<div class="dt-head"><span class="lane-chip ' + LCLASS[e.lane] + '">' + LANES[e.lane] + "</span><time>" +
+    esc(fmtDay(e.ts)) + " &middot; " + fmtClock(e.ts) + " &middot; " + relTime(e.ts) + '</time><button type="button" class="btn ghost dt-close" id="dtClose">Close</button></div>';
+  if (e.lane === "graph" || e.lane === "build") h += detailGraph(e);
+  else if (e.lane === "prewrite") h += detailPrewrite(e);
+  else if (e.lane === "reuse") h += e.type === "scan" ? detailScan(e) : detailTwin(e);
+  else h += detailMemory(e);
+  h += nearbySection(e);
+  h += '<details class="payload"><summary>Raw payload (field names as served)</summary><pre class="code">' + esc(JSON.stringify(rawOf(e), null, 2)) + "</pre></details>";
+  el.innerHTML = h;
+}
+function selectEvent(id) {
+  state.sel = id;
+  $$("#tsList .ev.sel").forEach(function (r) { r.classList.remove("sel"); });
+  if (id) {
+    var row = $('#tsList [data-id="' + id + '"]');
+    if (row) row.classList.add("sel");
+  }
+  renderDetail();
+  shellEl.classList.toggle("dt-open", !!id);
+}
+
+/* ---------- actions ---------- */
+var toastTimer = null;
+function toast(msg) {
+  var t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.hidden = true; }, 3400);
+}
+function announce(msg) { $("#liveRegion").textContent = msg; }
+/* Touch follows the real contract: 200 advances anchored_at only; ref status
+   re-resolves on the next GET /api/memories. Error contract: {ok:false,error}. */
+function touchNote() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note];
+  var btn = $("#touchBtn");
+  btn.disabled = true;
+  btn.textContent = "POST\u2026";
+  setTimeout(function () {
+    n.anchored_at = Date.now();
+    n._reanchored = true;
+    renderDetail();
+    toast("200 ok:true · " + n.key + " · rev " + n.rev + " · anchored_at " + fmtClock(n.anchored_at));
+    announce("Touch accepted for " + n.key + "; anchored_at advanced, ref status pending refetch");
+  }, 350);
+}
+function touchFailNote() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note];
+  toast('409 {"ok":false,"error":"rev conflict on ' + n.key + ': note advanced since read"}');
+  announce("Touch rejected with 409 for " + n.key);
+}
+var REF_RANK = { valid: 0, unverified: 1, modified: 2, broken: 3 };
+function refetchMemories() {
+  var e = EVENTS.filter(function (x) { return x.id === state.sel; })[0];
+  if (!e || e.lane !== "memory") return;
+  var n = NOTES[e.note];
+  n.resolved_refs.forEach(function (r) {
+    if (r.status === "modified" && n._reanchored) r.status = "valid";
+    else if (r.status === "unverified") r.status = "valid";
+  });
+  n.ref_status = n.resolved_refs.reduce(function (w, r) { return REF_RANK[r.status] > REF_RANK[w] ? r.status : w; }, "valid");
+  renderStream();
+  renderDetail();
+  toast("GET /api/memories · refs re-resolved against current index · ref_status " + n.ref_status);
+  announce("Memory refetch re-resolved refs for " + n.key);
+}
+
+/* ---------- wiring ---------- */
+var shellEl = $(".shell");
+$("#tsList").addEventListener("click", function (ev) {
+  var row = ev.target.closest(".ev");
+  if (row) selectEvent(row.dataset.id);
+});
+$("#tsList").addEventListener("keydown", function (ev) {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  var row = ev.target.closest(".ev");
+  if (row) { ev.preventDefault(); selectEvent(row.dataset.id); }
+});
+$("#detail").addEventListener("click", function (ev) {
+  var j = ev.target.closest("[data-jump]");
+  if (j) { selectEvent(j.dataset.jump); return; }
+  if (ev.target.closest("#dtClose")) { selectEvent(null); return; }
+  if (ev.target.closest("#touchBtn")) touchNote();
+  if (ev.target.closest("#touchFailBtn")) touchFailNote();
+  if (ev.target.closest("#refetchBtn")) refetchMemories();
+});
+$("#detail").addEventListener("keydown", function (ev) {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  var j = ev.target.closest("[data-jump]");
+  if (j) { ev.preventDefault(); selectEvent(j.dataset.jump); }
+});
+function filterWs(row) {
+  state.wt = row.dataset.ws;
+  $("#wtSel").value = row.dataset.ws;
+  $$(".ws-row").forEach(function (x) { x.classList.toggle("on", x === row); });
+  renderStream();
+}
+$(".rail").addEventListener("click", function (ev) {
+  var ws = ev.target.closest(".ws-row");
+  if (ws) { filterWs(ws); return; }
+  var db = ev.target.closest(".det-btn");
+  if (db) {
+    state.detector = state.detector === db.dataset.det ? null : db.dataset.det;
+    $$(".det-btn").forEach(function (x) { x.setAttribute("aria-pressed", String(x.dataset.det === state.detector)); });
+    renderStream();
+  }
+});
+$(".rail").addEventListener("keydown", function (ev) {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  var ws = ev.target.closest(".ws-row");
+  if (ws) { ev.preventDefault(); filterWs(ws); }
+});
+$("#lanePills").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-lane]");
+  if (!b) return;
+  state.lane = b.dataset.lane;
+  syncPills();
+  renderStream();
+});
+function syncPills() {
+  $$("#lanePills [data-lane]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.lane === state.lane)); });
+}
+$("#errBtn").addEventListener("click", function () {
+  state.errorsOnly = !state.errorsOnly;
+  this.setAttribute("aria-pressed", String(state.errorsOnly));
+  renderStream();
+});
+$$(".seg-btn").forEach(function (b) {
+  b.addEventListener("click", function () {
+    state.zoom = b.dataset.zoom;
+    $$(".seg-btn").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+    renderStream();
+  });
+});
+$("#wtSel").addEventListener("change", function (ev) { state.wt = ev.target.value; renderStream(); });
+$("#agentSel").addEventListener("change", function (ev) { state.agent = ev.target.value; renderStream(); });
+$("#qInput").addEventListener("input", function (ev) { state.q = ev.target.value.trim(); renderStream(); });
+$("#clearBtn").addEventListener("click", function () {
+  state.lane = "all"; state.errorsOnly = false; state.detector = null; state.wt = "any"; state.agent = "any"; state.q = "";
+  $("#wtSel").value = "any"; $("#agentSel").value = "any"; $("#qInput").value = "";
+  $("#errBtn").setAttribute("aria-pressed", "false");
+  $$(".det-btn").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
+  $$(".ws-row").forEach(function (x) { x.classList.remove("on"); });
+  syncPills();
+  renderStream();
+});
+document.addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape") selectEvent(null);
+  if (ev.key === "/" && document.activeElement !== $("#qInput")) { ev.preventDefault(); $("#qInput").focus(); }
+});
+
+/* ---------- theme (toggle + localStorage, honours prefers-color-scheme) ---------- */
+var themeBtn = $("#themeBtn");
+function applyThemeLabel() {
+  var dark = document.documentElement.dataset.theme === "dark";
+  themeBtn.textContent = dark ? "Light" : "Dark";
+  themeBtn.setAttribute("aria-pressed", String(dark));
+}
+var savedTheme = null;
+try { savedTheme = localStorage.getItem("eg-theme"); } catch (e) { savedTheme = null; }
+if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+else if (window.matchMedia("(prefers-color-scheme: dark)").matches) document.documentElement.dataset.theme = "dark";
+applyThemeLabel();
+themeBtn.addEventListener("click", function () {
+  var next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("eg-theme", next); } catch (e) { /* storage unavailable */ }
+  applyThemeLabel();
+});
+
+/* ---------- live simulation with connection-state machine ----------
+   Chip mirrors EventSource states: live / reconnecting / paused (click to pause).
+   Every 5th tick the link drops for 3 ticks (~27s); the watchdog flags the
+   age chip stale once no journal event arrives for >30s while not paused. */
+var SSE_POOL = [
+  { lane: "graph", tool: "callers", repo_name: "app", agent: "zcode", exit_code: 0, shown: 5, result_count: 5, latency_us: 610, args: { name: "summary/payload.rs" } },
+  { lane: "prewrite", tool: "search", repo_name: "app", agent: "claude", exit_code: 0, shown: 7, result_count: 7, latency_us: 380, terms: ["scroll isolation"] },
+  { lane: "graph", tool: "context", repo_name: "engram", agent: "codex", exit_code: 0, shown: 10, result_count: 10, latency_us: 700, args: { name: "journal.rs" } },
+  { lane: "build", tool: "build", repo_name: "docs-site", agent: "zcode", exit_code: 0, shown: 0, result_count: 0, latency_us: 512000, args: {} },
+  { lane: "graph", tool: "symbols", repo_name: "docs-site", agent: "zcode", exit_code: 0, shown: 14, result_count: 14, latency_us: 170, args: { name: "quickstart-*" } }
+];
+var sse = { mode: "live", userPause: false, reconnectLeft: 0, tick: 0, poolI: 0, lastEventTs: Date.now() };
+function setChip(mode) {
+  var c = $("#sseChip");
+  c.classList.remove("is-live", "is-reconnect", "is-paused");
+  c.classList.add(mode === "live" ? "is-live" : mode === "reconnect" ? "is-reconnect" : "is-paused");
+  c.textContent = mode === "live" ? "LIVE · SSE /events" : mode === "reconnect" ? "RECONNECTING · /events" : "PAUSED · click to resume";
+}
+function appendLiveEvent() {
+  var ev = Object.assign({ id: "live-" + Date.now(), ts: Date.now() }, SSE_POOL[sse.poolI % SSE_POOL.length]);
+  sse.poolI += 1;
+  EVENTS.unshift(ev);
+  if (EVENTS.length > 50) EVENTS.length = 50; /* mirror the 50-entry retained window */
+  renderStream();
+  var row = $('#tsList [data-id="' + ev.id + '"]');
+  if (row) row.classList.add("flash");
+  sse.lastEventTs = ev.ts;
+  $("#ageChip").classList.remove("stale");
+  $("#ageChip").textContent = "Updated " + fmtClock(ev.ts);
+  var subject = ev.args && ev.args.name ? ev.args.name : (ev.terms || []).join(", ");
+  announce("Live journal event: " + ev.tool + " " + subject + " on " + ev.repo_name + " by " + ev.agent);
+}
+setInterval(function () {
+  sse.tick += 1;
+  if (sse.userPause) return;
+  if (sse.mode === "reconnect") {
+    sse.reconnectLeft -= 1;
+    if (sse.reconnectLeft <= 0) { sse.mode = "live"; setChip("live"); announce("SSE reconnected; live journal resumed"); }
+    return;
+  }
+  if (sse.tick % 5 === 0) { sse.mode = "reconnect"; sse.reconnectLeft = 3; setChip("reconnect"); announce("SSE connection lost; reconnecting"); return; }
+  appendLiveEvent();
+}, 9000);
+setInterval(function () {
+  var stale = !sse.userPause && Date.now() - sse.lastEventTs > 30000;
+  $("#ageChip").classList.toggle("stale", stale);
+}, 1000);
+$("#sseChip").addEventListener("click", function () {
+  sse.userPause = !sse.userPause;
+  this.setAttribute("aria-pressed", String(sse.userPause));
+  if (sse.userPause) { setChip("paused"); announce("Live stream paused"); }
+  else { setChip(sse.mode === "reconnect" ? "reconnect" : "live"); announce("Live stream resumed"); }
+});
+
+/* ---------- init ---------- */
+renderRail();
+renderStream();
+selectEvent("e10");
+setChip("live");
+$("#ageChip").textContent = "Updated " + fmtClock(SUMMARY.generated_at);
+</script>
+</body>
+</html>

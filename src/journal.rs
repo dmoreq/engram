@@ -195,9 +195,15 @@ pub(super) fn rewrite_pruned_atomic(path: &Path, text: &str) -> std::io::Result<
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "log has no parent")
     })?;
     let temp = parent.join(format!(
-        ".usage-prune-{}-{}",
+        // Nanosecond suffix: two prune attempts within the same second
+        // (same pid, same unix_now) must not collide on create_new.
+        ".usage-prune-{}-{}-{}",
         std::process::id(),
-        crate::db::unix_now()
+        crate::db::unix_now(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
     ));
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -250,7 +256,10 @@ fn append_line(path: &Path, line: &str) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             recreate_journal(path, eg_created_here);
-            match OpenOptions::new().create_new(true).append(true).open(path) {
+            // create(true), not create_new(true): a concurrent appender may
+            // have recreated the journal between our miss and this open, and
+            // discarding the line would lose telemetry.
+            match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(file) => file,
                 Err(_) => return,
             }

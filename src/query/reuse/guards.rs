@@ -7,7 +7,7 @@ pub(super) fn language_family(file: &str) -> String {
     let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     match ext {
         "py" | "pyi" => "python".to_string(),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => "tsjs".to_string(),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => "tsjs".to_string(),
         "rs" => "rust".to_string(),
         other => other.to_ascii_lowercase(),
     }
@@ -70,4 +70,13 @@ pub(super) fn weighted_balance(target: &SymbolData, candidate: &SymbolData) -> f
         return 0.0;
     }
     target_total.min(candidate_total) / target_total.max(candidate_total)
+}
+
+/// Jaccard similarity given intersection and union counts.
+pub(super) fn jaccard(intersection: usize, union: usize) -> f64 {
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
 }

@@ -123,7 +123,7 @@ pub(super) fn tokenize_name_sig(
 /// Shared tokenizer guard: keep lowercase tokens of at least three characters
 /// that the stoplist does not cover.
 fn keep_token(lower: &str) -> bool {
-    lower.len() >= 3 && !STOPLIST.contains(&lower)
+    lower.len() >= 3 && !STOPLIST.iter().any(|s| s.eq_ignore_ascii_case(lower))
 }
 
 /// Name tokens carried by more than 5% of the corpus are generic vocabulary,

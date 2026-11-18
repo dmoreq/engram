@@ -58,6 +58,7 @@ fn consolidation_tokens(body: &str, refs: &str, tags: &str, legacy: bool) -> Has
 
 /// Jaccard similarity in percent between a candidate note and one stored row.
 /// Both sides pass through [`consolidation_tokens`]; 0 when either is empty.
+#[cfg(test)]
 pub fn consolidation_similarity(
     note: &crate::memory::NormalizedNote,
     row: &crate::db::MemRow,
@@ -65,11 +66,15 @@ pub fn consolidation_similarity(
 ) -> u64 {
     let left = consolidation_tokens(&note.body, &note.refs, &note.tags, legacy);
     let right = consolidation_tokens(&row.body, &row.refs, &row.tags, legacy);
+    tokens_similarity(&left, &right)
+}
+
+fn tokens_similarity(left: &HashSet<String>, right: &HashSet<String>) -> u64 {
     if left.is_empty() || right.is_empty() {
         return 0;
     }
-    let shared = left.intersection(&right).count();
-    let union = left.union(&right).count();
+    let shared = left.intersection(right).count();
+    let union = left.union(right).count();
     (shared * 100).checked_div(union).unwrap_or(0) as u64
 }
 
@@ -118,12 +123,17 @@ pub fn find_consolidation_match(
         include_superseded: false,
         window,
     };
+    let left = consolidation_tokens(&note.body, &note.refs, &note.tags, legacy);
+    if left.is_empty() {
+        return None;
+    }
     crate::db::memory_rows_by_ids(conn, &ids)
         .ok()?
         .into_iter()
         .filter(|row| row.key != note.key && crate::db::memory_row_is_current(row, &filter))
         .filter_map(|row| {
-            let similarity_pct = consolidation_similarity(note, &row, legacy);
+            let right = consolidation_tokens(&row.body, &row.refs, &row.tags, legacy);
+            let similarity_pct = tokens_similarity(&left, &right);
             (similarity_pct >= CONSOLIDATION_THRESHOLD_PCT).then_some(ConsolidationMatch {
                 key: row.key,
                 rev: row.rev,
@@ -228,26 +238,42 @@ fn collect_guards(
     seen_keys: &mut HashSet<String>,
     out: &mut Vec<GuardedNote>,
 ) {
-    let Ok(rows) = crate::db::memory_current_rows(conn, filter, None) else {
-        return;
+    let sql = "SELECT key, kind, body, refs FROM memories
+               WHERE superseded_by IS NULL
+                 AND (expires_at = 0 OR expires_at > ?1)
+                 AND kind IN ('decision', 'gotcha')
+                 AND refs != ''
+               ORDER BY anchored_at DESC";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return,
     };
-    for row in rows {
-        if (row.kind != "decision" && row.kind != "gotcha") || row.refs.is_empty() {
-            continue;
-        }
-        if seen_keys.contains(&row.key) {
+    let rows = match stmt.query_map([filter.now], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    for r in rows.flatten() {
+        let (key, kind, body, refs) = r;
+        if seen_keys.contains(&key) {
             continue;
         }
         let matched = paths
             .iter()
             .chain(symbols.iter())
-            .find(|target| ref_matches_target(&row.refs, target));
+            .find(|target| ref_matches_target(&refs, target));
         if let Some(target) = matched {
-            seen_keys.insert(row.key.clone());
+            seen_keys.insert(key.clone());
             out.push(GuardedNote {
-                key: row.key,
-                kind: row.kind,
-                summary: compact_summary(&row.body),
+                key,
+                kind,
+                summary: compact_summary(&body),
                 target: target.to_string(),
             });
         }

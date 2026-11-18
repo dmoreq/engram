@@ -5,55 +5,43 @@ use super::*;
 use crate::db::EDGE_SRC_FILE_JOIN;
 use crate::extract::EdgeSiteKind;
 
-/// One direct call-edge row (caller or callee). Private loader output;
-/// rendering and journaling stay at the public surface. `confidence` is
-/// carried so `callees` and `context` keep the same ambiguous tagging.
-pub(super) struct CallEdgeRow {
-    pub(super) site_line: i64,
-    pub(super) confidence: String,
-    pub(super) path: String,
-    pub(super) qualname: String,
-}
-
 /// Count-then-bounded-fetch frame shared by the direct caller/callee loads:
 /// the count and the display set bind the same id list, then the display
-/// limit joins as the trailing parameter (`?N`, N = id count + 1). The two
-/// SQL strings carry everything that differs between the directions, so the
-/// fetch/order mechanics exist exactly once.
+/// limit joins as the trailing parameter (`?N`, N = id count + 1). Maps rows
+/// directly into `Pointer`.
 fn count_then_page(
     conn: &Connection,
     ids: &[i64],
     limit: usize,
     count_sql: &str,
     page_sql: &str,
-) -> Result<(Vec<CallEdgeRow>, usize)> {
+) -> Result<(Vec<Pointer>, usize)> {
     let mut params = id_params(ids);
     let total: usize =
         conn.query_row(count_sql, rusqlite::params_from_iter(params.iter()), |r| {
             r.get::<_, i64>(0)
         })? as usize;
-    // The display limit is the trailing bind parameter after the id list.
     params.push(rusqlite::types::Value::from(limit as i64));
     let mut stmt = conn.prepare(page_sql)?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok(CallEdgeRow {
-                site_line: r.get(0)?,
-                confidence: r.get(1)?,
-                path: r.get(2)?,
-                qualname: r.get(3)?,
+            let line = r.get(0)?;
+            let conf: String = r.get(1)?;
+            let file = r.get(2)?;
+            let detail = r.get(3)?;
+            Ok(Pointer {
+                file,
+                line,
+                tag: confidence_tag(&conf),
+                detail,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok((rows, total))
 }
 
-/// Per-direction knobs for `transitive_page`: the recursive-closure SQL pair,
-/// the display ORDER BY, and the trailing caveat. One struct keeps the two
-/// call sites from re-spelling the argument list (the `MemFilter` pattern).
-pub(super) struct TransitiveQuery {
-    pub(super) cte: String,
-    pub(super) select: String,
+pub(super) struct TransitivePlan {
+    pub(super) sql: (String, String),
     pub(super) order_by: &'static str,
     pub(super) caveat: Option<String>,
 }
@@ -62,15 +50,13 @@ pub(super) struct TransitiveQuery {
 /// traversals (R6 round-2), mirroring `count_then_page` for the recursive
 /// closures: the count and the display set bind the seed ids plus the two
 /// depth-cap parameters, then the display limit joins as the trailing
-/// parameter (`?N`, N = id count + 3). The [`TransitiveQuery`] knobs, row
-/// mapper, and empty-result detail carry everything that differs between the
-/// directions, so the bind mechanics exist exactly once.
+/// parameter (`?N`, N = id count + 3).
 pub(super) fn transitive_page<E, M>(
     ctx: &QueryCtx<'_>,
     ids: &[i64],
     depth: usize,
     limit: usize,
-    query: TransitiveQuery,
+    plan: TransitivePlan,
     empty_detail: E,
     map: M,
 ) -> Result<QueryOutput>
@@ -79,12 +65,9 @@ where
     M: Fn(&rusqlite::Row<'_>) -> rusqlite::Result<Pointer>,
 {
     let QueryCtx { conn, .. } = *ctx;
-    let TransitiveQuery {
-        cte,
-        select,
-        order_by,
-        caveat,
-    } = query;
+    let (cte, select) = plan.sql;
+    let order_by = plan.order_by;
+    let caveat = plan.caveat;
     let mut params = id_params(ids);
     params.push(rusqlite::types::Value::from(depth as i64));
     params.push(rusqlite::types::Value::from(depth as i64));
@@ -119,7 +102,7 @@ pub(super) fn direct_callers(
     conn: &Connection,
     ids: &[i64],
     limit: usize,
-) -> Result<(Vec<CallEdgeRow>, usize)> {
+) -> Result<(Vec<Pointer>, usize)> {
     let placeholders = crate::db::sql_placeholders(ids.len());
     let count_sql = format!(
         "SELECT COUNT(*) FROM edges e WHERE e.dst_id IN ({placeholders}) AND e.kind = '{}'",
@@ -131,7 +114,7 @@ pub(super) fn direct_callers(
          {EDGE_SRC_FILE_JOIN}
          LEFT JOIN symbols ds ON ds.id = e.dst_id
          WHERE e.dst_id IN ({placeholders}) AND e.kind = '{}'
-         ORDER BY f.path, e.site_line LIMIT ?{limit_param}",
+         ORDER BY f.path, e.site_line, s.qualname LIMIT ?{limit_param}",
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );
@@ -144,7 +127,7 @@ pub(super) fn direct_callees(
     conn: &Connection,
     ids: &[i64],
     limit: usize,
-) -> Result<(Vec<CallEdgeRow>, usize)> {
+) -> Result<(Vec<Pointer>, usize)> {
     let placeholders = crate::db::sql_placeholders(ids.len());
     let count_sql = format!(
         "SELECT COUNT(DISTINCT COALESCE(ds.id, -(1000000 + e.id)))
@@ -163,7 +146,7 @@ pub(super) fn direct_callees(
          LEFT JOIN files df ON df.id = ds.file_id
          WHERE e.src_id IN ({placeholders}) AND e.kind = '{}'
          GROUP BY COALESCE(ds.id, -(1000000 + e.id))
-         ORDER BY path, line LIMIT ?{limit_param}",
+         ORDER BY path, line, qn LIMIT ?{limit_param}",
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );
