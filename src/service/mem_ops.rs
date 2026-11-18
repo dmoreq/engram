@@ -299,7 +299,9 @@ fn mem_candidate(
     } else {
         set.intersection(query_tokens).count() as f64 / set.len() as f64
     };
-    let age_days = (filter.now - row.created_at).max(0) as f64 / 86400.0;
+    // Recency anchors on the verify clock: `mem touch` moves anchored_at
+    // forward, and a touched note must actually rise in the ranking.
+    let age_days = (filter.now - row.anchor()).max(0) as f64 / 86400.0;
     Some(crate::memory::Candidate {
         row: row.clone(),
         lex_raw,

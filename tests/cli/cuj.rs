@@ -309,27 +309,26 @@ fn impact_sites_empty_reason_keeps_edge_suffix() {
 
 #[test]
 fn impact_default_empty_names_importers() {
-    // Default calls-only impact on a file with importers but no inbound calls
-    // must not be a bare zero: the detail names the importer count and the
-    // rerun hint, while the caveat header states the calls-only shape.
+    // The default edge set now includes imports: a file with importers but
+    // no inbound calls surfaces its importer row (exit 0) instead of the
+    // calls-only bare zero the old default produced.
     let repo = temp_repo("impact-importer");
     write(&repo, "a.py", "def only():\n    return 1\n");
     write(&repo, "b.py", "import a\n");
     build(&repo);
     let out = eg(&repo).args(["impact", "a.py"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{out:?}");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("b.py"), "{stdout}");
     assert!(
-        stderr.contains("1 file(s) import and 0 file(s) inherit from this file"),
-        "{stderr}"
+        stdout.contains("unresolved imports/inherits are omitted"),
+        "{stdout}"
     );
-    assert!(
-        stderr.contains("rerun with --edges imports,inherits"),
-        "{stderr}"
-    );
+    // The calls-only caveat and rerun hint belong to the old default; the
+    // imports-aware caveat heads the payload now.
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.starts_with("eg: impact — resolved static call edges only"),
+        stdout.starts_with("eg: impact — resolved static edges only"),
         "{stdout}"
     );
     // The named relationship is real: --edges imports finds the importer.
@@ -415,11 +414,16 @@ fn root_ts_index_and_python_root_parent_imports_resolve() {
 fn response_contract_limit_clamps() {
     let repo = fixture("limit");
     build(&repo);
+    // 0 is the count-only convention: header totals, empty payload, exit 0.
     let out = eg(&repo)
         .args(["callers", "normalize", "--limit", "0"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(0), "count-only, not rejected");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Total preserved, zero pointer rows.
+    assert!(stdout.contains("showing 0 of 2"), "{stdout}");
+    assert!(!stdout.contains("normalize("), "{stdout}");
     let out = eg(&repo)
         .args(["callers", "normalize", "--limit", "999999"])
         .output()

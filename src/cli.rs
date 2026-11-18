@@ -97,7 +97,7 @@ pub enum Cmd {
         /// Transitive depth (default 1; max 10)
         #[arg(long, default_value_t = crate::query::DEFAULT_DEPTH)]
         depth: usize,
-        /// Edge kinds: calls,imports,inherits,all (default calls)
+        /// Edge kinds: calls,imports,inherits,all (default calls,imports,inherits)
         #[arg(long, default_value = crate::query::DEFAULT_IMPACT_EDGES)]
         edges: String,
         /// Maximum results shown (default 50, max 10000)

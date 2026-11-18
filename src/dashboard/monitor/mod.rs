@@ -23,7 +23,7 @@ use crate::error::Result;
 enum InputEvent {
     Tab(MonitorTab),
     NextTab,
-    PrevTab,
+
     Refresh,
     Quit,
 }
@@ -153,18 +153,10 @@ fn run_interactive(
                 b'\t' => Some(InputEvent::NextTab),
                 b'r' | b'R' => Some(InputEvent::Refresh),
                 b'q' | b'Q' | 3 => Some(InputEvent::Quit),
-                27 => {
-                    let mut seq = [0u8; 2];
-                    if stdin.read_exact(&mut seq).is_ok() && seq[0] == b'[' {
-                        match seq[1] {
-                            b'C' | b'B' => Some(InputEvent::NextTab),
-                            b'D' | b'A' => Some(InputEvent::PrevTab),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                }
+                // A lone Esc quits cleanly instead of blocking the reader on
+                // a 2-byte read_exact for a sequence that never arrives.
+                // Tab switching keeps the 1-4 keys and Tab.
+                27 => Some(InputEvent::Quit),
                 _ => None,
             };
             if let Some(e) = evt {
@@ -177,7 +169,6 @@ fn run_interactive(
 
     let mut tail = data::Tail::new(&log_path);
     let mut last_refresh = std::time::Instant::now();
-    let mut last_size_check = std::time::Instant::now();
     let root_path = root.map(Path::to_path_buf);
 
     let (mut cols, mut rows) = get_terminal_size();
@@ -205,10 +196,6 @@ fn run_interactive(
                     state.active_tab = state.active_tab.next();
                     need_render = true;
                 }
-                InputEvent::PrevTab => {
-                    state.active_tab = state.active_tab.prev();
-                    need_render = true;
-                }
                 InputEvent::Refresh => {
                     state.refresh(root_path.as_deref());
                     need_render = true;
@@ -226,17 +213,14 @@ fn run_interactive(
             need_render = true;
         }
 
-        if last_size_check.elapsed() >= Duration::from_secs(2) {
+        if need_render {
+            // Size probes run on renders, not on their own 2 s timer: no
+            // `stty` subprocess while the screen is idle.
             let (new_cols, new_rows) = get_terminal_size();
             if new_cols != cols || new_rows != rows {
                 cols = new_cols;
                 rows = new_rows;
-                need_render = true;
             }
-            last_size_check = std::time::Instant::now();
-        }
-
-        if need_render {
             let _ = render_screen(&mut stdout, &state, cols, rows);
         }
 

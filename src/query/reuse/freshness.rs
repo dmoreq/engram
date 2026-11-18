@@ -256,28 +256,29 @@ pub(super) fn evaluate(
     };
 
     for candidate in candidates.iter_mut() {
-        let mut state = Freshness::Fresh;
-        let files = [candidate.file.clone(), candidate.canonical_file.clone()];
-        for file in files {
-            let Some(result) = results.get(&file) else {
-                continue;
-            };
-            if result.state == Freshness::Unknown {
-                state = Freshness::Unknown;
-            } else if result.state == Freshness::Stale && state == Freshness::Fresh {
-                state = Freshness::Stale;
-            }
+        // The CANONICAL file is the evidence: it is the implementation the
+        // agent is told to reuse, so its staleness or unknown state must
+        // demote the candidate. The target file is what the agent is editing
+        // right now — a post-edit review always finds it newer than the
+        // index, and demoting on it would sink every honest review result.
+        // Target-side changes still surface through the report header.
+        let canonical_result = results.get(&candidate.canonical_file);
+        if let Some(result) = canonical_result {
             if result.reason == Some(UnknownReason::UnsafePath) {
                 push_reason(candidate, ReasonCode::UnsafePath);
             }
+            match result.state {
+                Freshness::Unknown => push_reason(candidate, ReasonCode::FreshnessUnknown),
+                Freshness::Stale => push_reason(candidate, ReasonCode::StaleIndex),
+                Freshness::Fresh => {}
+            }
         }
-        if state == Freshness::Unknown {
-            push_reason(candidate, ReasonCode::FreshnessUnknown);
-        } else if state == Freshness::Stale {
-            push_reason(candidate, ReasonCode::StaleIndex);
-        }
-        if state != Freshness::Fresh {
-            // Stale or unknown evidence never carries Medium/High authority.
+        let canonical_state = canonical_result
+            .map(|r| r.state)
+            .unwrap_or(Freshness::Fresh);
+        if canonical_state != Freshness::Fresh {
+            // Stale or unknown canonical evidence never carries Medium/High
+            // authority.
             candidate.confidence = ReuseConfidence::Low;
         }
     }

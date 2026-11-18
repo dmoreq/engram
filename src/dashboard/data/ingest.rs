@@ -309,7 +309,15 @@ fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
     }
     #[cfg(not(unix))]
     {
-        (0, meta.len())
+        // volume_serial_number + file_index survive appends; the old
+        // (0, len) identity fired a Reset on EVERY append because the length
+        // changed with each line. Unavailable metadata falls back to a
+        // constant identity: appends stream, never reset.
+        use std::os::windows::fs::MetadataExt;
+        match (meta.volume_serial_number(), meta.file_index()) {
+            (Some(vol), Some(idx)) => (u64::from(vol), u64::from(idx)),
+            _ => (0, 0),
+        }
     }
 }
 

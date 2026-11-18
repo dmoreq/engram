@@ -18,11 +18,35 @@ pub(super) fn signature_of(node: Node<'_>, src: &[u8]) -> String {
     let start = node.start_byte();
     let stop = src.len().min(start + 4096);
     let python = matches!(node.kind(), "function_definition" | "class_definition");
+    let arrow = node.kind() == "arrow_function";
     let mut depth = 0i32;
     let mut end = start;
     let mut prev_non_space: u8 = 0;
     while end < stop {
         let b = src[end];
+        // Comments never carry signature structure; skip them wholesale so a
+        // decorated declaration or a brace inside a comment cannot truncate
+        // the scan early.
+        if b == b'/' && end + 1 < stop && src[end + 1] == b'/' {
+            while end < stop && src[end] != b'\n' {
+                end += 1;
+            }
+            continue;
+        }
+        if b == b'/' && end + 1 < stop && src[end + 1] == b'*' {
+            end += 2;
+            while end + 1 < stop && !(src[end] == b'*' && src[end + 1] == b'/') {
+                end += 1;
+            }
+            end = (end + 2).min(stop);
+            continue;
+        }
+        if b == b'#' && python {
+            while end < stop && src[end] != b'\n' {
+                end += 1;
+            }
+            continue;
+        }
         match b {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
@@ -35,11 +59,24 @@ pub(super) fn signature_of(node: Node<'_>, src: &[u8]) -> String {
             b'}' => depth -= 1,
             b';' if depth == 0 && !python => break,
             b':' if depth == 0 && python => break,
+            // A brace-less TS arrow body (`() => expr`) must not be swallowed:
+            // the signature ends with the `=>` marker itself.
+            b'>' if arrow && prev_non_space == b'=' => break,
             b'\n'
                 if depth == 0
                     && !matches!(
                         prev_non_space,
-                        b',' | b'(' | b'[' | b'{' | b'&' | b'|' | b'=' | b'>'
+                        b',' | b'('
+                            | b'['
+                            | b'{'
+                            | b'&'
+                            | b'|'
+                            | b'='
+                            | b'>'
+                            | b'<'
+                            | b')'
+                            | b'-'
+                            | b':'
                     ) =>
             {
                 break;

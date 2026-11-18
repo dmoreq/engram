@@ -63,7 +63,14 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
         sanitize(&qualname),
     ));
 
-    let last_segment = qualname.split("::").last().unwrap_or("");
+    // Rust qualnames use '.', not '::' — the dot-rsplit works for every
+    // language's dotted qualname; the old '::' split returned the whole name
+    // for Rust and missed the method for memory-note guards.
+    let last_segment = qualname
+        .rsplit_once('.')
+        .map(|(_, s)| s.to_string())
+        .unwrap_or_else(|| qualname.clone());
+    let last_segment = last_segment.as_str();
     let guards =
         crate::memory::find_guarding_notes(ctx.root, &[&def_path], &[&qualname, last_segment]);
     for g in guards.iter().take(2) {

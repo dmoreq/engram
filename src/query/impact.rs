@@ -98,7 +98,21 @@ pub fn impact(
     let limit = clamp_limit(limit)?;
     let depth = depth.clamp(1, crate::query::MAX_DEPTH);
     let kind_sql = db::edge_kind_sql(&kinds);
-    let rel = indexed_file(qctx.conn, file)?;
+    // Symbol input: a name that is not an indexed file resolves through the
+    // identity predicate to its defining file, so a symbol's blast radius is
+    // queryable without knowing its path. (File-level granularity: the
+    // impact of every symbol in that file is reported.)
+    let (rel, symbol_origin) =
+        match indexed_file_opt(qctx.conn, &crate::query::relativize_path(qctx.root, file))? {
+            Some(rel) => (rel, None),
+            None => match symbol_defining_file(
+                qctx.conn,
+                &crate::query::relativize_path(qctx.root, file),
+            ) {
+                Some((rel, matched)) => (rel, Some(matched)),
+                None => return Err(EgError::not_indexed(file)),
+            },
+        };
     let extended = depth > 1 || kinds.iter().any(|k| *k != EdgeKind::Calls);
     let caveat = if extended {
         if kinds.iter().any(|k| *k != EdgeKind::Calls) {
@@ -134,6 +148,16 @@ pub fn impact(
         impact_deep(qctx, &ctx)?
     };
 
+    if let Some(matched) = symbol_origin {
+        prepend_header(
+            &mut out,
+            &format!(
+                "symbol resolved: '{}' -> {}",
+                sanitize(file),
+                sanitize(&matched)
+            ),
+        );
+    }
     let guards = crate::memory::find_guarding_notes(qctx.root, &[&rel], &[]);
     for g in guards.iter().filter(|g| g.kind == "decision").take(1) {
         prepend_header(
@@ -146,6 +170,20 @@ pub fn impact(
         );
     }
     Ok(out)
+}
+
+/// The file defining a symbol: exact identity (bare name or qualname), first
+/// match in the deterministic order. Ambiguous names pick the same file on
+/// every run.
+fn symbol_defining_file(conn: &Connection, name: &str) -> Option<(String, String)> {
+    conn.query_row(
+        "SELECT f.path, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+         WHERE s.name = ?1 OR s.qualname = ?1
+         ORDER BY s.qualname, f.path, s.line_start LIMIT 1",
+        [name],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
 }
 
 /// Shared, immutable arguments for the three impact phases. The phases stay

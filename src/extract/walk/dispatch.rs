@@ -166,7 +166,7 @@ fn visit_call<'a>(w: &mut Walker<'a, '_, '_>) {
             w.node
                 .child_by_field_name("function")
                 .map(|f| node_str(f, w.src)),
-            Some("describe" | "it")
+            Some("describe" | "it" | "test" | "suite")
         );
     if ts_test_call {
         let was_test_scope = w.ctx.test_scope;

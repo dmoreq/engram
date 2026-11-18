@@ -70,7 +70,17 @@ pub(super) fn finalize(
             report.freshness.state == Freshness::Stale,
             0,
         );
-        let mut lines = vec!["eg: reuse — 0 duplication candidate(s) found".to_string()];
+        // --limit 0 is the count-only convention: report the real total even
+        // though nothing is displayed.
+        let header = if opts.limit == 0 && report.counts.total > 0 {
+            format!(
+                "eg: reuse — {} duplication candidate(s) found (count-only: --limit 0)",
+                report.counts.total
+            )
+        } else {
+            "eg: reuse — 0 duplication candidate(s) found".to_string()
+        };
+        let mut lines = vec![header];
         lines.extend(freshness_headers);
         if below_threshold > 0 || report.counts.guarded_out > 0 || report.counts.suppressed > 0 {
             let mut summary = format!(

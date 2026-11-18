@@ -24,10 +24,14 @@ fn test_mem_query_empty_or_whitespace_normalizes_to_all() {
         "stdout should contain note: {stdout}"
     );
 
-    // Query whitespace string: should exit 2 per usage error contract
-    let (code, _stdout, stderr) = mem_out(&repo, &["query", "   "]);
-    assert_eq!(code, 2, "Querying whitespace must exit 2: {stderr}");
-    assert!(stderr.contains("provide terms or --all"), "{stderr}");
+    // Query whitespace string: normalizes to the --all listing (plan
+    // decision), so the seeded note is visible.
+    let (code, stdout, stderr) = mem_out(&repo, &["query", "   "]);
+    assert_eq!(
+        code, 0,
+        "Querying whitespace must list all: {stdout}{stderr}"
+    );
+    assert!(stdout.contains("note-empty-test"), "{stdout}");
 }
 
 #[test]

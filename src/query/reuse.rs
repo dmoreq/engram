@@ -392,11 +392,21 @@ pub(crate) fn analyze_corpus(
     let mut seen_pairs = HashSet::new();
 
     for target in &targets {
+        // Every detector weighs in; the strongest confidence wins. A first-hit
+        // break silently hid a stronger verdict from a later detector whenever
+        // an earlier one matched.
+        let mut best: Option<ReuseCandidate> = None;
         for detect in DETECTORS {
             if let Some(c) = detect(target, &corpus) {
-                accept_candidate(c, &mut seen_pairs, &mut candidates);
-                break;
+                best = Some(match best {
+                    None => c,
+                    Some(previous) if previous.confidence.rank() >= c.confidence.rank() => previous,
+                    _ => c,
+                });
             }
+        }
+        if let Some(c) = best {
+            accept_candidate(c, &mut seen_pairs, &mut candidates);
         }
     }
 
@@ -416,8 +426,8 @@ pub(crate) fn analyze_corpus(
     Ok((candidates, total, guarded_out))
 }
 
-/// Dedup the (symbol, canonical) pair and push. A repeated pair is dropped,
-/// but the target still stops at its first detector hit.
+/// Dedup the (symbol, canonical) pair and push. A repeated pair is dropped;
+/// the target keeps its highest-confidence detector verdict.
 fn accept_candidate(
     candidate: ReuseCandidate,
     seen_pairs: &mut HashSet<(String, String)>,

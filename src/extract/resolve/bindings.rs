@@ -115,12 +115,19 @@ pub(super) fn resolve_var_class(
     site_line: usize,
 ) -> Option<String> {
     let fctx = &t.file_ctx[fi];
-    let scopes: &[(&str, bool)] = if scope.is_empty() {
-        &[(scope, true)]
-    } else {
-        &[(scope, true), ("", false)]
-    };
-    for &(s, inc_params) in scopes {
+    // Walk the lexical parent scopes out to the module: a receiver typed in
+    // an enclosing function must be visible inside a closure or nested
+    // function whose own scope never recorded the annotation.
+    let mut scopes: Vec<(&str, bool)> = vec![(scope, true)];
+    let mut parent = scope;
+    while let Some((p, _)) = parent.rsplit_once('.') {
+        scopes.push((p, true));
+        parent = p;
+    }
+    if !scope.is_empty() {
+        scopes.push(("", false));
+    }
+    for &(s, inc_params) in &scopes {
         if let Some(target) = latest_binding(fctx, s, var, site_line, inc_params) {
             if target.is_empty() {
                 return None;
@@ -408,6 +415,13 @@ pub(super) fn chain_from_module(t: &Tables, module: String, rest: &[String]) -> 
                     0 => Outcome::Unresolved,
                     _ => Outcome::Ambiguous(r.join(".")),
                 };
+            }
+            // Module-qualified re-exports (`pub use inner::helper` in m's
+            // mod file): chase the binding chain when the direct child
+            // lookup misses, so the call resolves to the re-exported symbol.
+            let mut seen: HashSet<(&str, &str)> = HashSet::new();
+            if let Some(out) = follow_binding(t, (m.as_str(), r[0].as_str()), 0, &mut seen, &r[0]) {
+                return out;
             }
         }
         // Dotted path into the module: module.func or module.Class.method.

@@ -27,7 +27,7 @@ pub const MAX_DEPTH: usize = 10;
 /// Default candidate cap for `eg reuse` (CLI default and MCP fallback).
 pub const DEFAULT_REUSE_LIMIT: usize = 10;
 pub const DEFAULT_MAX_PARSE_ERROR_RATE: f64 = 0.05;
-pub const DEFAULT_IMPACT_EDGES: &str = "calls";
+pub const DEFAULT_IMPACT_EDGES: &str = "calls,imports,inherits";
 /// Cap on rendered ambiguous-name candidates (R6f: common method names could
 /// print megabytes; the total count still travels in the error).
 pub const MAX_AMBIGUOUS_CANDIDATES: usize = 50;
@@ -245,9 +245,8 @@ pub fn prepend_header(out: &mut QueryOutput, caveat: &str) {
 }
 
 pub fn clamp_limit(limit: usize) -> Result<usize> {
-    if limit == 0 {
-        return Err(EgError::Usage("--limit must be >= 1".to_string()));
-    }
+    // 0 is the count-only convention: header totals with an empty payload,
+    // exit 0. Each listing renders its own summary when nothing is shown.
     Ok(limit.min(MAX_LIMIT))
 }
 
@@ -287,6 +286,22 @@ fn search_lines(out: QueryOutput) -> Result<LineQuery> {
         stderr,
         out.shown,
     ))
+}
+
+/// Strip the workspace root from an absolute path an agent pasted in.
+/// Relative paths pass through untouched; unresolvable absolutes also pass
+/// through so the downstream not-indexed error keeps its original text.
+pub(crate) fn relativize_path(root: &Path, path: &str) -> String {
+    let candidate = std::path::Path::new(path);
+    if !candidate.is_absolute() {
+        return path.to_string();
+    }
+    let (Ok(abs), Ok(root_abs)) = (candidate.canonicalize(), root.canonicalize()) else {
+        return path.to_string();
+    };
+    abs.strip_prefix(&root_abs)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Resolve a repo-relative file path and fail with the shared not-indexed

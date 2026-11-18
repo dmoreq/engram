@@ -36,6 +36,9 @@ CREATE UNIQUE INDEX memories_key_rev ON memories(key, rev);
 CREATE INDEX memories_current ON memories(key, rev DESC) WHERE superseded_by IS NULL;
 CREATE INDEX memories_expiry ON memories(expires_at) WHERE expires_at > 0;
 CREATE INDEX memories_created ON memories(created_at);
+-- GC accelerator: every superseded revision carries the clock the retention
+-- sweep deletes by; without the partial index the sweep is a full-table scan.
+CREATE INDEX memories_superseded ON memories(superseded_at) WHERE superseded_by IS NOT NULL;
 CREATE INDEX memories_pending ON memories(id) WHERE fts_version < 2;
 
 -- Internal key/value state for the derived FTS indexes: fts_epoch (tokenizer

@@ -30,9 +30,15 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
         until: *until,
     };
     crate::memory::validate_window(&window, "mem query")?;
-    let clean_terms: Vec<String> = terms.iter().filter(|t| !t.is_empty()).cloned().collect();
+    // Whitespace-only terms normalize to the --all listing instead of exit 2:
+    // agents pass blank query strings when they mean "show me the notes".
+    let clean_terms: Vec<String> = terms
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     let effective_all = *all || clean_terms.is_empty();
-    validate_mem_query(terms, *all, effective_all, *include_superseded)?;
+    validate_mem_query(&clean_terms, *all, effective_all, *include_superseded)?;
     if *explain && effective_all {
         return Err(EgError::Usage(
             "mem query: --explain requires terms".to_string(),
@@ -333,11 +339,6 @@ fn validate_mem_query(
     if explicit_all && !terms.is_empty() {
         return Err(EgError::Usage(
             "mem query: --all and terms are mutually exclusive".to_string(),
-        ));
-    }
-    if !terms.is_empty() && terms.iter().all(|t| !t.is_empty() && t.trim().is_empty()) {
-        return Err(EgError::Usage(
-            "mem query: provide terms or --all".to_string(),
         ));
     }
     // Superseded rows participate in the explicit listing only; the

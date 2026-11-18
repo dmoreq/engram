@@ -102,9 +102,17 @@ pub(super) fn source_symbol_idx(t: &Tables, fctx: &FileCtx, site: &CallSite) -> 
     if site.scope_func.is_empty() {
         return fctx.module_sym_idx;
     }
+    // Two files can produce the same qualname (`a/b.py` and `a.b.py` both map
+    // to `a.b`); the call belongs to THIS file, so filter candidates by the
+    // file the enclosing module symbol lives in instead of taking the first.
+    let file_idx = t.symbols[fctx.module_sym_idx].file_idx;
     t.by_qualname
         .get(&site.scope_func)
-        .and_then(|v| v.first().copied())
+        .and_then(|v| {
+            v.iter()
+                .copied()
+                .find(|&i| t.symbols[i].file_idx == file_idx)
+        })
         .unwrap_or(fctx.module_sym_idx)
 }
 
@@ -209,11 +217,19 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
     if let Some(out) = alias_binding_lookup(ctx, name) {
         return out;
     }
-    // Star imports: defer to each star module's top-level names.
+    // Star imports: defer to each star module's top-level names. More than
+    // one star module supplying the same name is AMBIGUOUS — silently picking
+    // the first star's match manufactured edges across unrelated modules.
+    let mut star_hits: Vec<usize> = Vec::new();
     for (m, _) in &ctx.fctx.bindings.stars {
-        if let Some(out) = bare_candidates(ctx.t.mod_child(m, name), name) {
-            return out;
+        if let Some(idxs) = ctx.t.mod_child(m, name) {
+            star_hits.extend_from_slice(idxs);
         }
+    }
+    match star_hits.len() {
+        0 => {}
+        1 => return Outcome::Extracted(star_hits[0]),
+        _ => return Outcome::Ambiguous(name.to_string()),
     }
     // 4. Builtin table.
     if BUILTINS.contains(&name) {

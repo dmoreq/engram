@@ -125,11 +125,14 @@ fn is_unique_violation(e: &rusqlite::Error) -> bool {
 /// serialize on busy_timeout (or exit 4) and never compute the same rev. The
 /// FTS delta (delete superseded rowid, insert the new one) runs in the same
 /// transaction. A retried write with identical content is a successful no-op.
+/// Expired-session notes above [`OPPORTUNISTIC_GC_THRESHOLD`] trigger an
+/// opportunistic gc on the next write.
 pub fn memory_write(
     conn: &mut Connection,
     note: &MemNoteInput<'_>,
     now: i64,
 ) -> Result<MemWriteOutcome> {
+    opportunistic_gc(conn, now)?;
     // One in-transaction retry on a UNIQUE(key, rev) failure (a defect by
     // construction — rev is computed inside the lock — but never exit 2/5).
     let mut last_error = None;
@@ -145,6 +148,28 @@ pub fn memory_write(
             "memory write: no attempt completed".to_string(),
         )),
     }
+}
+
+/// Expired-session notes above this count trigger an opportunistic gc on the
+/// next write: the notes are already invisible to reads, and 50+ rows mean
+/// the store is silently growing between manual gc runs.
+const OPPORTUNISTIC_GC_THRESHOLD: i64 = 50;
+
+/// Best-effort prune when the expired backlog grows past the threshold. A
+/// failure never fails the write: gc remains the manual, authoritative path.
+fn opportunistic_gc(conn: &mut Connection, now: i64) -> Result<()> {
+    let expired: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE expires_at > 0 AND expires_at <= ?1",
+            rusqlite::params![now],
+            |r| r.get(0),
+        )
+        .map_err(map_memory_err)?;
+    if expired <= OPPORTUNISTIC_GC_THRESHOLD {
+        return Ok(());
+    }
+    let _ = crate::db::memory_gc(conn, now)?;
+    Ok(())
 }
 
 /// Aggregate outcome of one import batch.
@@ -249,8 +274,13 @@ fn try_write_revision(
                     rev: row.rev,
                 }));
             }
-            // Idempotent replay: nothing written, nothing to commit.
-            drop(tx);
+            // Idempotent replay: nothing written for THIS key — but a
+            // cross-key supersession requested on the same call must never be
+            // silently dropped just because the content is a duplicate.
+            if let Some(target) = note.supersedes {
+                supersede_cross_key(&tx, row.id, now, target)?;
+            }
+            tx.commit().map_err(map_memory_err)?;
             return Ok(WriteAttempt::Written(MemWriteOutcome::Duplicate {
                 rev: row.rev,
             }));

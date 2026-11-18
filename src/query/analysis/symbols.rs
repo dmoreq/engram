@@ -21,7 +21,10 @@ pub fn symbols(
     let QueryCtx { conn, .. } = *ctx;
     let SymbolsOpts { outline } = opts;
     let limit = clamp_limit(limit)?;
-    let rel = normalize_scope(file);
+    // Agents paste absolute workspace paths; strip the root so the indexed
+    // path matches.
+    let rel = crate::query::relativize_path(ctx.root, file);
+    let rel = normalize_scope(&rel);
     // `.` and `./` mean the repository root; the empty prefix matches every
     // indexed file without generating a "/" prefix.
     let rel = if rel == "." {
@@ -39,24 +42,21 @@ pub fn symbols(
         }
         return symbols_directory(ctx, &rel, limit, SymbolsOpts { outline });
     };
-    symbols_file(ctx, file, &rel, limit, outline)
+    symbols_file(ctx, &rel, limit, outline)
 }
 
 /// The single-file branch of [`symbols`]: symbol rows with the optional
 /// outline signature, the staleness header, and the cap footer. `file` is the
 /// original query text, kept for the not-indexed error; `rel` is the indexed
 /// path `indexed_file_opt` resolved.
-fn symbols_file(
-    ctx: &QueryCtx<'_>,
-    file: &str,
-    rel: &str,
-    limit: usize,
-    outline: bool,
-) -> Result<LineQuery> {
+fn symbols_file(ctx: &QueryCtx<'_>, rel: &str, limit: usize, outline: bool) -> Result<LineQuery> {
     let QueryCtx { conn, .. } = *ctx;
     let rows = file_symbol_rows(conn, rel, outline)?;
     if rows.is_empty() {
-        return Err(EgError::not_indexed(file));
+        // The file IS indexed: "not indexed" would mislead a scope check.
+        return Err(EgError::NoResults(format!(
+            "0 symbols found in '{rel}' (indexed)"
+        )));
     }
     let files = BTreeSet::from([rel.to_string()]);
     let (header, stale) = staleness_header(ctx, &files);

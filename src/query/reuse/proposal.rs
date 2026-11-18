@@ -35,9 +35,9 @@ pub(super) fn analyze(conn: &Connection, opts: &ReuseOpts) -> Result<Vec<ReuseCa
 
     let mut pool = Vec::new();
     for candidate in symbols.values() {
-        if candidate.qualname == name {
-            continue;
-        }
+        // An existing symbol whose qualname IS the bare proposal name is a
+        // match, not noise: re-proposing an already-indexed helper must
+        // surface the existing implementation, not skip it.
         if language
             .as_deref()
             .is_some_and(|family| family != language_family(&candidate.file_path))
@@ -159,9 +159,14 @@ fn score_proposed_tokens(
     shared_len: usize,
     token_overlap: f64,
 ) -> Option<(DetectorId, u64, ReuseConfidence, Vec<ReasonCode>)> {
-    if shared_len < 2 || token_overlap < 0.60 {
+    // A single shared token counts when it is the whole of both sides: the
+    // 1-token function (`fnv1a64`) is exactly the shape proposals protect.
+    let exact_single = shared_len == 1 && token_overlap >= 1.0;
+    if (shared_len < 2 && !exact_single) || token_overlap < 0.60 {
         return None;
     }
+    // An exact single-token overlap is an exact-name match: medium, like the
+    // strong token-overlap band.
     let confidence = if token_overlap >= 0.80 {
         ReuseConfidence::Medium
     } else {

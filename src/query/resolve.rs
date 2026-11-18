@@ -25,6 +25,15 @@ pub(super) const EXACT_IDENTITY_PREDICATE: &str = "(s.name = ?1 OR s.qualname = 
 /// Resolve the query name to target symbol ids. Multiple distinct symbols ->
 /// exit 2 with a `path:line qualname` candidate list on stdout (CUJ4).
 pub(super) fn target_ids(conn: &Connection, name: &str) -> Result<(Vec<i64>, Vec<NameCandidate>)> {
+    // Agents paste the `path:line qualname` pointer strings this CLI prints.
+    // Strip the locator and resolve the qualname; a bare `path:line` resolves
+    // to the symbol spanning that line.
+    if let Some(qualname) = pointer_qualname(name) {
+        return target_ids(conn, qualname);
+    }
+    if let Some(ids) = pointer_span_ids(conn, name)? {
+        return Ok((ids, Vec::new()));
+    }
     let mut stmt = conn.prepare(&format!(
         "{CANDIDATE_SELECT}
          WHERE {EXACT_IDENTITY_PREDICATE}
@@ -36,6 +45,41 @@ pub(super) fn target_ids(conn: &Connection, name: &str) -> Result<(Vec<i64>, Vec
         all = suffix_candidates(conn, name)?;
     }
     Ok(disambiguate(all))
+}
+
+/// `src/main.rs:11 src.main` -> "src.main". A plain name (no space) is not a
+/// pointer.
+fn pointer_qualname(name: &str) -> Option<&str> {
+    let (locator, rest) = name.split_once(' ')?;
+    let (_, line) = locator.rsplit_once(':')?;
+    line.trim().parse::<u64>().ok()?;
+    let qualname = rest.trim();
+    (!qualname.is_empty()).then_some(qualname)
+}
+
+/// `src/main.rs:11` -> the ids of the symbols spanning that line. The locator
+/// must look like a path (contains '/'); a bare `name:line` is never a
+/// pointer. `None` falls through to normal name resolution so the original
+/// error text survives.
+fn pointer_span_ids(conn: &Connection, name: &str) -> Result<Option<Vec<i64>>> {
+    let Some((path, line_text)) = name.rsplit_once(':') else {
+        return Ok(None);
+    };
+    let Ok(line) = line_text.trim().parse::<i64>() else {
+        return Ok(None);
+    };
+    if !path.contains('/') {
+        return Ok(None);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id FROM symbols
+         WHERE file_path = ?1 AND line_start <= ?2 AND line_end >= ?2
+         ORDER BY line_start, qualname",
+    )?;
+    let ids = stmt
+        .query_map(rusqlite::params![path, line], |r| r.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok((!ids.is_empty()).then_some(ids))
 }
 
 /// `Class.method` suffix form: the full qualname is `pkg.Class.method`, so

@@ -164,3 +164,46 @@ fn proposal_min_confidence_filters_weaker_signal() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("confidence=high"), "{stdout}");
 }
+
+#[test]
+fn proposal_matches_one_token_exact_names() {
+    // The 1-token protection: a proposed single-word function must surface
+    // the existing implementation at Medium, not vanish at shared_len < 2.
+    let repo = temp_repo("propose-one-token");
+    write(&repo, "a.py", "def normalize(value):\n    return value\n");
+    write(&repo, "b.py", "def other(value):\n    return value\n");
+    build(&repo);
+    let out = eg(&repo)
+        .args(["reuse", "--propose", "def normalize(value)"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("normalize"), "{stdout}");
+    assert!(stdout.contains("confidence=medium"), "{stdout}");
+}
+
+#[test]
+fn reuse_limit_zero_is_count_only() {
+    let repo = temp_repo("reuse-limit-zero");
+    write(
+        &repo,
+        "a.py",
+        "def normalize(value):\n    return value\n\ndef parse_token_value_data_extra(value):\n    return normalize(value)\n",
+    );
+    write(
+        &repo,
+        "b.py",
+        "def normalize(value):\n    return value\n\ndef parse_token_value(value):\n    return normalize(value)\n",
+    );
+    build(&repo);
+    let out = eg(&repo).args(["reuse", "--limit", "0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Count-only: the real total in the header, zero candidate rows.
+    assert!(
+        stdout.contains("duplication candidate(s) found (count-only: --limit 0)"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("[confidence="), "{stdout}");
+}

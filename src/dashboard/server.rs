@@ -138,6 +138,9 @@ pub fn admit_connection(
     {
         log_connection_cap_reached(MAX_CONCURRENT_CONNS);
         let mut stream = stream;
+        // The refuse path runs on the ACCEPT loop: a 1 s write bound keeps a
+        // dead client from stalling every subsequent accept.
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
         let _ = send_response(&mut stream, 503, "text/plain; charset=utf-8", b"", false);
         return;
     }
@@ -291,6 +294,9 @@ pub fn handle_client(
     global: bool,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    // A response write to a half-dead client must never wedge the worker:
+    // bounded writes for every route, not just the SSE stream.
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let Some(req) = read_http_request(&mut stream)? else {
         return Ok(());
     };

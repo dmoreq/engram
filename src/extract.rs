@@ -403,12 +403,12 @@ pub fn module_path_for(rel: &str) -> (String, bool) {
 /// same top directory; plain root modules have no crate root.
 fn rust_crate_root(rel: &str) -> Option<String> {
     let file_name = rel.rsplit('/').next().unwrap_or(rel);
-    match rel.rfind('/') {
-        Some(i) => rel[..i]
-            .replace('/', ".")
-            .split('.')
-            .next()
-            .map(str::to_string),
+    match rel.rfind("/src/") {
+        // Workspace member: crates/auth/src/anything.rs maps `crate::` to
+        // crates.auth.src. The old first-segment cut ("crates") sent every
+        // workspace crate:: lookup to the wrong module tree.
+        Some(i) => Some(format!("{}.src", rel[..i].replace('/', "."))),
+        None if rel.starts_with("src/") => Some("src".to_string()),
         None if file_name == "lib.rs" || file_name == "main.rs" => Some(String::new()),
         None => None,
     }

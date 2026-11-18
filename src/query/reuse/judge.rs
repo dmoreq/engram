@@ -251,8 +251,32 @@ fn pair_texts(
     } else {
         source(ctx, &candidate.file, &candidate.symbol)?
     };
-    let right = source(ctx, &candidate.canonical_file, &candidate.canonical)?;
+    let canonical = source(ctx, &candidate.canonical_file, &candidate.canonical)?;
+    // A proposal pair compares shapes: the proposal side is one signature
+    // line, so a 100-line canonical body would drown the signal. Trim the
+    // canonical side to its declaration; real symbol pairs keep full bodies.
+    let right = if candidate.file == "<proposal>" {
+        signature_excerpt(&canonical)
+    } else {
+        canonical
+    };
     Some((left, right))
+}
+
+/// Trim a symbol body to its declaration: everything up to and including the
+/// line that opens the body (`{`, `=>`, or ends with `;`), capped at four
+/// lines. A multi-line parameter list survives; the body does not.
+fn signature_excerpt(text: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines().take(4) {
+        let trimmed = line.trim_end();
+        let opens = trimmed.ends_with('{') || trimmed.ends_with("=>") || trimmed.ends_with(';');
+        out.push(line);
+        if opens || out.len() == 4 {
+            break;
+        }
+    }
+    out.join("\n")
 }
 
 /// Summed span of the rejected candidates' symbols: the redundant lines the

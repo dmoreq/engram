@@ -242,3 +242,32 @@ fn rust_trait_reexport_carries_inherit_edge() {
         "trait impl through a re-export must emit the inherits edge: {e:?}"
     );
 }
+
+#[test]
+fn rust_workspace_crate_root_maps_crate_paths() {
+    // A Cargo workspace member: crate:: from crates/auth/src/ must map to
+    // the crates.auth.src module tree, not the top-level "crates" segment.
+    let lib = "pub struct Session;\n";
+    let user = "use crate::session::Session;\n\npub fn connect() -> Session {\n    Session\n}\n";
+    let p1 = parse_source(lib.as_bytes(), Lang::Rust).unwrap();
+    let p2 = parse_source(user.as_bytes(), Lang::Rust).unwrap();
+    let fx1 = extract_file(0, "crates/auth/src/session.rs", lib.as_bytes(), &p1);
+    let fx2 = extract_file(1, "crates/auth/src/connect.rs", user.as_bytes(), &p2);
+    let resolution = resolve(vec![fx1, fx2], Default::default());
+    let e = resolution
+        .edges
+        .iter()
+        .map(|e| (e.kind, e.confidence, e.dst_name.as_str()))
+        .collect::<Vec<_>>();
+    // `use crate::session::Session` must resolve to
+    // crates.auth.src.session.Session — impossible under the old top-level
+    // "crates" crate-root cut.
+    assert!(
+        e.iter().any(|(k, c, n)| {
+            *k == EdgeKind::Imports
+                && *c == Confidence::Extracted
+                && *n == "crates.auth.src.session.Session"
+        }),
+        "workspace crate:: import must resolve through crates.auth.src: {e:?}"
+    );
+}

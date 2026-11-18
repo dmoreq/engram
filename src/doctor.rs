@@ -195,9 +195,20 @@ fn memory_report_line(root: &Path) -> String {
             ));
         }
         let notes: i64 = db::durable_note_count(&conn).unwrap_or(0);
-        Ok(format!(
-            "  memory: integrity ok, {notes} notes, {size} bytes"
-        ))
+        let expired: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE expires_at > 0 AND expires_at <= ?1",
+                [db::unix_now()],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let base = format!("  memory: integrity ok, {notes} notes, {size} bytes");
+        if expired > 0 {
+            return Ok(format!(
+                "{base}; {expired} expired notes pending gc (run eg mem gc)"
+            ));
+        }
+        Ok(base)
     });
     match line {
         Ok(line) => line,

@@ -24,9 +24,23 @@ pub(crate) fn env_tag(keys: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Session attribution for memory rows and journal lines.
+/// Process-lifetime MCP session id: pinned once per `eg mcp` connection so
+/// every telemetry line of one session shares a stable tag. No uuid crate:
+/// the tag is a pid+clock token.
+static MCP_SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Session attribution for memory rows and journal lines: the MCP session id
+/// wins over `$ENGRAM_SESSION` when the server pinned one.
 pub fn session_tag() -> String {
+    if let Some(tag) = MCP_SESSION.get() {
+        return tag.clone();
+    }
     env_tag(&["ENGRAM_SESSION"])
+}
+
+/// Pin the MCP session id for this process.
+pub fn set_mcp_session(tag: &str) {
+    let _ = MCP_SESSION.set(tag.to_string());
 }
 
 /// Set active agent context for subsequent journal invocations in this process

@@ -105,8 +105,9 @@ fn validate_reuse_args(
     callees: &[String],
     coverage: &[String],
 ) -> Result<()> {
-    if !(1..=100).contains(&limit) {
-        return Err(EgError::Usage("limit must be 1..=100".to_string()));
+    // 0 is the count-only convention: summary totals, empty payload.
+    if limit > 100 {
+        return Err(EgError::Usage("limit must be 0..=100".to_string()));
     }
     if !min_confidence.is_empty()
         && crate::query::reuse::ReuseConfidence::parse(min_confidence).is_none()

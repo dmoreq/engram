@@ -89,7 +89,7 @@ pub fn begin(surface: &'static str, tool: &str, args: &JournalArgs) {
             total: 0,
             ambiguous: 0,
             stale: false,
-            session: env_tag(&["ENGRAM_SESSION"]),
+            session: crate::journal::session_tag(),
             arm: env_tag(&["ENGRAM_ARM"]),
             agent: detect_agent(),
             judged: false,
@@ -326,7 +326,7 @@ pub use prune::{
 };
 
 use agent::env_tag;
-pub use agent::{detect_agent, session_tag, set_agent_context};
+pub use agent::{detect_agent, session_tag, set_agent_context, set_mcp_session};
 pub(crate) use outcome::*;
 pub(crate) use render::*;
 pub(crate) use tokens::*;

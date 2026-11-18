@@ -162,9 +162,11 @@ fn mem_empty_and_missing_store_are_exit1() {
     let (code, _stdout, stderr) = mem_out(&repo, &["query", "--all", "terms"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("mutually exclusive"), "{stderr}");
-    let (code, _stdout, stderr) = mem_out(&repo, &["query", "   "]);
-    assert_eq!(code, 2, "{stderr}");
-    assert!(stderr.contains("provide terms or --all"), "{stderr}");
+    // Whitespace-only terms normalize to the --all listing (plan decision),
+    // not exit 2.
+    let (code, stdout, stderr) = mem_out(&repo, &["query", "   "]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("solo"), "{stdout}");
     // Bare query without terms defaults to --all listing.
     let (code, stdout, stderr) = mem_out(&repo, &["query"]);
     assert_eq!(code, 0, "{stdout}{stderr}");

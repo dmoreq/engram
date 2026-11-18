@@ -110,10 +110,14 @@ fn fresh_higher_confidence_sorts_before_stale_low() {
         "from helpers import normalize\n\ndef parse_token_value(value):\n    return normalize(value)\n",
     );
     build(&repo);
+    // Demote via the CANONICAL side: editing a1.py (alpha_case's file) makes
+    // beta_case's reuse evidence stale, so the fresh medium parse_token_value
+    // candidate sorts ahead of the demoted low one under --limit 1. A
+    // target-only edit no longer demotes anything.
     write(
         &repo,
-        "b1.py",
-        "from helpers import h1, h2, h3\n\ndef beta_case():\n    return h1() + h2() + h3() + 1\n",
+        "a1.py",
+        "from helpers import h1, h2, h3\n\ndef alpha_case():\n    return h1() + h2() + h3() + 1\n",
     );
     let out = eg(&repo).args(["reuse", "--limit", "1"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

@@ -222,8 +222,9 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }),
         "reuse" => {
             if let Some(limit) = a.0.get("limit").and_then(serde_json::Value::as_i64) {
-                if !(1..=100).contains(&limit) {
-                    return Err(EgError::Usage("limit must be 1..=100".to_string()));
+                // 0 is the count-only convention (summary totals, no rows).
+                if !(0..=100).contains(&limit) {
+                    return Err(EgError::Usage("limit must be 0..=100".to_string()));
                 }
             }
             Ok(CommandRequest::Reuse {
@@ -254,17 +255,17 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             scope: a.s("scope").unwrap_or_else(|| "durable".to_string()),
             ttl: a.n_opt_spec(tool, "ttl")?.map(|v| v as u64),
             supersedes: a.s("supersedes"),
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
             touch: a.b("touch"),
             confirm: a.b("confirm"),
         }),
         "mem_touch" => Ok(CommandRequest::MemTouch {
             key: a.req("key")?,
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
         }),
         "mem_query" => {
             let local = a.b_spec(tool, "local")?;
-            let global = a.b("global");
+            let global = a.b_spec(tool, "global")?;
             super::scope::StoreScope::from_flags(local, global)?;
             let window = crate::memory::TimeWindow {
                 since: a
@@ -306,14 +307,14 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }
         "mem_get" => Ok(CommandRequest::MemGet {
             key: a.req("key")?,
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
         }),
         "mem_delete" => Ok(CommandRequest::MemDelete {
             key: a.req("key")?,
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
         }),
         "mem_gc" => Ok(CommandRequest::MemGc {
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
         }),
         "mem_export" => {
             let window = crate::memory::TimeWindow {
@@ -332,7 +333,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             Ok(CommandRequest::MemExport {
                 format: a.s("format"),
                 limit: a.n_opt_spec(tool, "limit")?,
-                global: a.b("global"),
+                global: a.b_spec(tool, "global")?,
                 since: window.since,
                 until: window.until,
                 scan: false,
@@ -342,10 +343,10 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             path: a.req("path")?,
             format: a.s("format"),
             force: a.b("force"),
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
         }),
         "mem_reindex" => Ok(CommandRequest::MemReindex {
-            global: a.b("global"),
+            global: a.b_spec(tool, "global")?,
             embed: a.b_spec(tool, "embed")?,
         }),
         _ => Err(unknown_tool(tool)),

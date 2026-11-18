@@ -15,13 +15,16 @@ fn p8a_impact_defaults_to_files_with_site_counts() {
     let out = eg(&repo).args(["impact", "a.py"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{stdout}");
+    // The imports-aware caveat header + one grouped row per caller file.
     assert_eq!(
         stdout.lines().count(),
-        1,
-        "one row per caller file: {stdout}"
+        2,
+        "caveat header plus one row per caller file: {stdout}"
     );
+    // Default edges = calls,imports,inherits: the 2 call sites plus the
+    // import edge land in the same grouped row.
     assert!(
-        stdout.contains("b.py") && stdout.contains("(2 sites)"),
+        stdout.contains("b.py") && stdout.contains("(3 sites)"),
         "{stdout}"
     );
 

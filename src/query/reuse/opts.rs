@@ -25,8 +25,9 @@ impl ReuseOpts {
         min_confidence: ReuseConfidence,
         explain: bool,
     ) -> Result<Self> {
-        if !(1..=100).contains(&limit) {
-            return Err(EgError::Usage("limit must be 1..=100".to_string()));
+        // 0 is the count-only convention: summary totals, empty payload.
+        if limit > 100 {
+            return Err(EgError::Usage("limit must be 0..=100".to_string()));
         }
         Ok(Self {
             mode: ReuseMode::Scan,
@@ -52,8 +53,9 @@ impl ReuseOpts {
         min_confidence: ReuseConfidence,
         explain: bool,
     ) -> Result<Self> {
-        if !(1..=100).contains(&limit) {
-            return Err(EgError::Usage("limit must be 1..=100".to_string()));
+        // 0 is the count-only convention: summary totals, empty payload.
+        if limit > 100 {
+            return Err(EgError::Usage("limit must be 0..=100".to_string()));
         }
         if signature.trim().is_empty() {
             return Err(EgError::Usage("propose must be non-empty".to_string()));

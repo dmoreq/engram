@@ -26,13 +26,14 @@ fn reuse_absolute_path_exits_two() {
 }
 
 #[test]
-fn reuse_limit_zero_rejected_before_index_open() {
+fn reuse_limit_zero_is_validated_before_index_open() {
+    // 0 is now the count-only convention: the range check passes on an
+    // unbuilt repo and the failure comes from the missing index instead.
     let repo = temp_repo("reuse-limit-zero-unbuilt");
     let out = eg(&repo).args(["reuse", "--limit", "0"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("limit must be 1..=100"), "{stderr}");
-    assert!(!stderr.contains("no index"), "{stderr}");
+    assert!(stderr.contains("no .engram/index.db"), "{stderr}");
 }
 
 #[test]
@@ -223,11 +224,11 @@ fn reuse_explain_appends_detector_and_reasons() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("detector=D2"), "{stdout}");
-    assert!(
-        stdout.contains("reasons=[same-name-subset]"),
-        "expected subset reason: {stdout}"
-    );
+    // Best-detector-wins: the D4 pass-through verdict (medium) outranks the
+    // D2 token-overlap verdict (low) for this target, and --explain still
+    // appends the detector and reason list of the surviving candidate.
+    assert!(stdout.contains("detector=D4"), "{stdout}");
+    assert!(stdout.contains("reasons=["), "{stdout}");
 }
 
 #[test]
@@ -365,6 +366,9 @@ fn stale_candidate_downgrades_high_to_low() {
     let before = eg(&repo).args(["reuse", "b.py"]).output().unwrap();
     let before_stdout = String::from_utf8_lossy(&before.stdout);
     assert!(before_stdout.contains("confidence=high"), "{before_stdout}");
+    // Post-edit review: the TARGET file is stale (expected while editing).
+    // The header must still warn, but the candidate keeps its High authority
+    // because the CANONICAL evidence is fresh.
     write(
         &repo,
         "b.py",
@@ -376,6 +380,17 @@ fn stale_candidate_downgrades_high_to_low() {
         stdout.contains("result files changed since build"),
         "{stdout}"
     );
+    assert!(stdout.contains("beta_case"), "{stdout}");
+    assert!(stdout.contains("confidence=high"), "{stdout}");
+    // Canonical staleness is the demotion trigger: editing the canonical
+    // file drops the same pair to Low.
+    write(
+        &repo,
+        "a.py",
+        "from helpers import h1, h2, h3\n\ndef alpha_case():\n    return h1() + h2() + h3() + 2\n",
+    );
+    let out = eg(&repo).args(["reuse", "b.py"]).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("beta_case"), "{stdout}");
     assert!(stdout.contains("confidence=low"), "{stdout}");
     assert!(!stdout.contains("confidence=high"), "{stdout}");

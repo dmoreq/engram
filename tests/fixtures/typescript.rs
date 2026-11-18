@@ -216,3 +216,27 @@ fn ts_import_dot_slash_dot_dot_normalizes_directory() {
         resolution.edges
     );
 }
+
+#[test]
+fn ts_barrel_reexport_binds_exported_names() {
+    // `export { Base } from './types'` binds Base -> types.Base inside the
+    // barrel, so a consumer importing from the barrel resolves the symbol.
+    let types = "export interface Base {\n    id: number\n}\n";
+    let barrel = "export { Base } from './types'\n";
+    let consumer =
+        "import { Base } from './pkg'\n\nexport function pick(b: Base): number {\n    return b.id\n}\n";
+    let p1 = parse_source(types.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(barrel.as_bytes(), Lang::TypeScript).unwrap();
+    let p3 = parse_source(consumer.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/types.ts", types.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/index.ts", barrel.as_bytes(), &p2);
+    let fx3 = extract_file(2, "app/pick.ts", consumer.as_bytes(), &p3);
+    let resolution = engram::extract::resolve(vec![fx1, fx2, fx3], Default::default());
+    // The re-export chain resolves the imported interface member access —
+    // asserted through no spurious unresolved import edge for Base.
+    assert!(
+        !resolution.unresolved_calls.iter().any(|u| u.name == "Base"),
+        "barrel re-export must not leave Base unresolved: {:?}",
+        resolution.unresolved_calls
+    );
+}

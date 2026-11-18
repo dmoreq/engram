@@ -37,6 +37,10 @@ struct ErrorRecord {
 struct ToolAgg {
     calls: usize,
     errors: usize,
+    /// exit 1 (empty/miss) and exit 2 (ambiguous/usage) counts: query
+    /// resolution, reported separately from engine health.
+    exit1: usize,
+    exit2: usize,
     /// Successful calls only: empty (exit 1) and ambiguous (exit 2) results
     /// carry no savings — the dashboard summary's Ok-only accounting.
     ok_calls: usize,
@@ -133,7 +137,8 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
             agg.total_results += fields.result_count.max(0) as usize;
         }
         crate::error::ExitClass::Error => agg.errors += 1,
-        crate::error::ExitClass::Empty | crate::error::ExitClass::Ambiguous => {}
+        crate::error::ExitClass::Empty => agg.exit1 += 1,
+        crate::error::ExitClass::Ambiguous => agg.exit2 += 1,
     }
     if fields.result_count == 0 {
         agg.empty += 1;
@@ -205,12 +210,50 @@ fn aggregate_usage(lines: &str) -> std::collections::BTreeMap<String, ToolAgg> {
     aggs
 }
 
+/// Engine health vs query resolution, stated separately: an engine failure
+/// (crash, corrupt store — exit 3/6) is a different animal from a query that
+/// found nothing (exit 1) or asked badly (exit 2). The aggregate ok%
+/// conflated the two and read as "8.62% failure" over honest empty answers.
+fn resolution_line(aggs: &std::collections::BTreeMap<String, ToolAgg>) -> String {
+    let (mut engine_errors, mut exit1, mut exit2) = (0usize, 0usize, 0usize);
+    for agg in aggs.values() {
+        engine_errors += agg.errors;
+        exit1 += agg.exit1;
+        exit2 += agg.exit2;
+    }
+    let total = total_calls(aggs);
+    let pct = |part: usize| {
+        if total > 0 {
+            100.0 * part as f64 / total as f64
+        } else {
+            0.0
+        }
+    };
+    // Resolution = calls that returned data (exit 0); empty/miss and
+    // ambiguous calls are enumerated so the operator reads them as query
+    // outcomes, not engine failures.
+    format!(
+        "eg usage: engine health {:.1}% clean ({} crashes/corrupt) · query resolution {:.1}% ({} returned data, {} empty/miss, {} ambiguous)",
+        100.0 - pct(engine_errors),
+        engine_errors,
+        100.0 - pct(engine_errors) - pct(exit1) - pct(exit2),
+        total.saturating_sub(engine_errors + exit1 + exit2),
+        exit1,
+        exit2,
+    )
+}
+
+fn total_calls(aggs: &std::collections::BTreeMap<String, ToolAgg>) -> usize {
+    aggs.values().map(|a| a.calls).sum()
+}
+
 fn render_summary(
     aggs: &std::collections::BTreeMap<String, ToolAgg>,
     quality: bool,
 ) -> Vec<String> {
     let total: usize = aggs.values().map(|a| a.calls).sum();
     let mut out = vec![format!("eg usage: {total} journaled calls")];
+    out.push(resolution_line(aggs));
     out.extend(kpi_section(aggs, ""));
 
     let mut rows: Vec<(&String, &ToolAgg)> = aggs.iter().collect();

@@ -159,11 +159,14 @@ fn callees_transitive(
             let conf: String = r.get(1)?;
             let path: String = r.get(2)?;
             let qualname: String = r.get(3)?;
+            let level: i64 = r.get(4)?;
             Ok(Pointer {
                 file: path,
                 line,
                 tag: confidence_tag(&conf),
-                detail: qualname,
+                // Parity with the transitive-callers detail: the hop depth
+                // tells the agent how far the callee sits in the graph.
+                detail: format!("{qualname} [depth={level}]"),
             })
         },
     )
@@ -191,7 +194,8 @@ fn transitive_sql(ids_len: usize) -> (String, String) {
         .join(", ");
     let select = format!(
         "SELECT MIN(COALESCE(ds.line_start, e.site_line)) AS line, MAX(e.confidence) AS confidence,
-                COALESCE(df.path, f.path) AS path, COALESCE(ds.qualname, e.dst_name) AS qn
+                COALESCE(df.path, f.path) AS path, COALESCE(ds.qualname, e.dst_name) AS qn,
+                MIN(r.d) + 1 AS lvl
          FROM reach r
          -- CROSS JOIN + WHERE lets SQLite drive from the recursive set and
          -- use edges_src, instead of scanning the whole edge table (R7).

@@ -105,7 +105,14 @@ pub(super) fn has_test_attr(node: Node<'_>, src: &[u8]) -> bool {
         match p.kind() {
             "attribute_item" => {
                 let t = node_str(p, src);
-                if t.contains("#[test]") || t.contains("#[cfg(test)]") {
+                // #[tokio::test], #[async_std::test], #[rstest] and friends
+                // carry the test path inside the macro path, not the bare
+                // #[test] attribute.
+                if t.contains("#[test]")
+                    || t.contains("#[cfg(test)]")
+                    || t.contains("::test]")
+                    || t.contains("rstest")
+                {
                     return true;
                 }
             }
