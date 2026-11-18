@@ -67,6 +67,7 @@ pub(super) struct JudgeTotals {
     pub(super) reviewed: usize,
     pub(super) rejected: usize,
     pub(super) failed: usize,
+    pub(super) rejected_loc: usize,
 }
 
 pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
@@ -75,6 +76,7 @@ pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
         reviewed: 0,
         rejected: 0,
         failed: 0,
+        rejected_loc: 0,
     };
     for e in entries {
         if e.get("tool").and_then(Value::as_str) != Some("reuse") {
@@ -93,6 +95,10 @@ pub(super) fn aggregate_judge_usage(entries: &[Value]) -> JudgeTotals {
         totals.reviewed += reviewed;
         totals.rejected += rejected;
         totals.failed += failed;
+        totals.rejected_loc += judge
+            .get("rejected_loc")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
     }
     totals
 }

@@ -95,6 +95,148 @@ fn mcp_reuse_judge_note_is_merged() {
 }
 
 #[test]
+fn mcp_reuse_judge_coprocess_reuses_one_child() {
+    use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = super::common::mem_fixture("mcp-reuse-coprocess");
+    fs::write(
+        repo.join("gray_a.py"),
+        "def normalize(value):\n    return value\n\ndef parse_token_value_data_extra(value):\n    return normalize(value)\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("gray_b.py"),
+        "def normalize(value):\n    return value\n\ndef parse_token_value(value):\n    return normalize(value)\n",
+    )
+    .unwrap();
+    let build = eg_cmd(&repo).arg("build").output().unwrap();
+    assert_eq!(build.status.code(), Some(0));
+
+    // serve-mode stub: one request line in, one verdict line out, until EOF;
+    // the PID log counts spawns (one distinct pid across two tool calls).
+    let pids = repo.join("judge-pids");
+    let bin = repo.join("judge.sh");
+    fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho $$ >> '{}'\nif [ \"$1\" = \"serve\" ]; then\n  while IFS= read -r line; do\n    printf '%s\\n' '{{\"decision\":\"duplicate\",\"similarity\":0.9}}'\n  done\n  exit 0\nfi\ncat >/dev/null\nprintf '%s\\n' '{{\"decision\":\"duplicate\",\"similarity\":0.9}}'\n",
+            pids.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+    let model = repo.join("model");
+    fs::create_dir_all(&model).unwrap();
+    // head_layers 0 -> similarity mode: the only shape the line protocol serves.
+    fs::write(model.join("lazy.json"), "{\"head_layers\":0}\n").unwrap();
+
+    let mut srv = spawn_with_env(
+        &repo,
+        true,
+        &[
+            ("EG_JUDGE_BIN", bin.as_path()),
+            ("EG_JUDGE_MODEL", model.as_path()),
+        ],
+    );
+    for id in [1, 2] {
+        let judged = rpc(
+            &mut srv,
+            id,
+            "tools/call",
+            json!({"name": "reuse", "arguments": {
+                "paths": ["gray_b.py"], "judge": true, "min_confidence": "medium"
+            }}),
+        );
+        assert_eq!(judged["result"]["isError"], false, "{judged}");
+        let text = result_text(&judged);
+        assert!(text.contains("1 duplication candidate(s) found"), "{text}");
+        assert!(text.contains("1 medium"), "{text}");
+        assert!(
+            text.contains("reviewed 1, rejected 0, promoted 1"),
+            "{text}"
+        );
+    }
+    let logged = fs::read_to_string(&pids).unwrap();
+    let distinct: HashSet<&str> = logged.lines().collect();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "two judged calls must reuse one coprocess child: {logged}"
+    );
+    let _ = fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn mcp_reuse_judge_serve_unsupported_falls_back_to_one_shot() {
+    use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = super::common::mem_fixture("mcp-reuse-serve-unsupported");
+    fs::write(
+        repo.join("gray_a.py"),
+        "def normalize(value):\n    return value\n\ndef parse_token_value_data_extra(value):\n    return normalize(value)\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("gray_b.py"),
+        "def normalize(value):\n    return value\n\ndef parse_token_value(value):\n    return normalize(value)\n",
+    )
+    .unwrap();
+    let build = eg_cmd(&repo).arg("build").output().unwrap();
+    assert_eq!(build.status.code(), Some(0));
+
+    // A binary without serve: the serve attempt exits 2 and every call falls
+    // back to the one-shot batch, which still answers.
+    let pids = repo.join("judge-pids");
+    let bin = repo.join("judge.sh");
+    fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho $$ >> '{}'\nif [ \"$1\" = \"serve\" ]; then\n  exit 2\nfi\ncat >/dev/null\nprintf '%s\\n' '{{\"decision\":\"duplicate\",\"similarity\":0.9}}'\n",
+            pids.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin, perms).unwrap();
+    let model = repo.join("model");
+    fs::create_dir_all(&model).unwrap();
+    fs::write(model.join("lazy.json"), "{\"head_layers\":0}\n").unwrap();
+
+    let mut srv = spawn_with_env(
+        &repo,
+        true,
+        &[
+            ("EG_JUDGE_BIN", bin.as_path()),
+            ("EG_JUDGE_MODEL", model.as_path()),
+        ],
+    );
+    for id in [1, 2] {
+        let judged = rpc(
+            &mut srv,
+            id,
+            "tools/call",
+            json!({"name": "reuse", "arguments": {"paths": ["gray_b.py"], "judge": true}}),
+        );
+        assert_eq!(judged["result"]["isError"], false, "{judged}");
+        let text = result_text(&judged);
+        assert!(text.contains("reviewed 1, rejected 0"), "{text}");
+    }
+    let logged = fs::read_to_string(&pids).unwrap();
+    let distinct: HashSet<&str> = logged.lines().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "serve attempt + one one-shot per call: {logged}"
+    );
+    let _ = fs::remove_dir_all(&repo);
+}
+
+#[test]
 fn mcp_reuse_phase4_coverage_parity() {
     let repo = fixture("mcp-reuse-phase4");
     let build = eg_cmd(&repo).arg("build").output().unwrap();

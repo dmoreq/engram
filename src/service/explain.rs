@@ -107,6 +107,7 @@ mod tests {
             lex_raw: 1.0,
             ref_raw: 0.5,
             graph_raw,
+            sem_raw: None,
             age_days: 0.0,
             score: 0.0,
             is_global: false,

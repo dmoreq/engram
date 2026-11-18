@@ -99,6 +99,11 @@ fn write_note(
     let mut conn = open_mem_conn(root_arg, global, MemoryMode::Store)?;
     let session = crate::journal::session_tag();
     let now = crate::db::unix_now();
+    // Embedding runs BEFORE the store opens: the subprocess must never hold
+    // the write lock. Without a text model the column stays NULL and ranking
+    // falls back to the lexical features.
+    let embedding = crate::memory::embed::embed_text(&note.body)
+        .map(|v| crate::memory::embed::embedding_blob(&v));
     crate::db::memory_write(
         &mut conn,
         &crate::db::MemNoteInput {
@@ -116,6 +121,7 @@ fn write_note(
                 now + note.ttl_secs
             },
             created_at: None,
+            embedding: embedding.as_deref(),
             supersedes,
             touch,
         },

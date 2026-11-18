@@ -432,5 +432,10 @@ pub enum MemAction {
         /// Rebuild the cross-project global memory store (~/.engram/memory.db)
         #[arg(long)]
         global: bool,
+        /// Compute note embeddings through the eg-judge text model
+        /// ($EG_JUDGE_TEXT_MODEL) for every current note; notes stay NULL
+        /// when the model is not configured
+        #[arg(long)]
+        embed: bool,
     },
 }

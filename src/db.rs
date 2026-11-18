@@ -428,6 +428,7 @@ pub use open::{check_schema_version, open_for_query, try_open_index, IndexOpenEr
 pub(crate) use inserts::*;
 pub(crate) use memory_fts::*;
 pub(crate) use memory_query::*;
+pub(crate) use memory_store::map_memory_err;
 pub(crate) use memory_store::*;
 pub(crate) use memory_write::*;
 pub(crate) use meta::*;

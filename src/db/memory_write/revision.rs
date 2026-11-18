@@ -66,8 +66,8 @@ pub(super) fn insert_revision(
 ) -> rusqlite::Result<usize> {
     let created_at = note.created_at.unwrap_or(now);
     tx.execute(
-        "INSERT INTO memories(key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at, fts_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 2)",
+        "INSERT INTO memories(key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at, fts_version, embedding)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 2, ?13)",
         rusqlite::params![
             note.key,
             rev,
@@ -81,6 +81,7 @@ pub(super) fn insert_revision(
             note.source,
             created_at,
             note.expires_at,
+            note.embedding,
         ],
     )
 }

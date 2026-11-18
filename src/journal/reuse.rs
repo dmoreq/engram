@@ -79,6 +79,9 @@ pub struct JudgeJournalCounts {
     pub reviewed: usize,
     pub rejected: usize,
     pub failed: usize,
+    /// Summed span of the symbols the judge rejected as distinct: the
+    /// redundant lines the arbitration removed from the agent's view.
+    pub rejected_loc: usize,
 }
 
 pub fn set_judge_counts(counts: JudgeJournalCounts) {

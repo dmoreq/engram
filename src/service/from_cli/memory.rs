@@ -33,7 +33,9 @@ impl CommandRequest {
                 global,
             }),
             MemAction::Gc { global } => Ok(CommandRequest::MemGc { global }),
-            MemAction::Reindex { global } => Ok(CommandRequest::MemReindex { global }),
+            MemAction::Reindex { global, embed } => {
+                Ok(CommandRequest::MemReindex { global, embed })
+            }
         }
     }
 

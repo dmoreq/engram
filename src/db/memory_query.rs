@@ -170,6 +170,46 @@ pub fn memory_fts_candidates(
 }
 
 /// Rows by id (candidate fetch; at most CANDIDATE_CAP ids).
+/// One `(id, body)` pair per current note, for the reindex `--embed` backfill.
+pub fn memory_current_note_bodies(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, body FROM memories
+         WHERE superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1)
+         ORDER BY id",
+    )?;
+    let now = crate::db::unix_now();
+    let rows = stmt.query_map(rusqlite::params![now], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::db::map_memory_err)
+}
+
+/// Embedding blobs for the given row ids, decoded to vectors. Absent or NULL
+/// embeddings simply have no entry.
+pub fn memory_embeddings(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<f32>>> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = sql_placeholders(ids.len());
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, embedding FROM memories WHERE id IN ({placeholders}) AND embedding IS NOT NULL"
+    ))?;
+    let mut map_rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    while let Some((id, blob)) = map_rows.next().transpose().map_err(map_memory_err)? {
+        if let Some(vector) = crate::memory::embed::embedding_from_blob(&blob) {
+            out.insert(id, vector);
+        }
+    }
+    Ok(out)
+}
+
 pub fn memory_rows_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<MemRow>> {
     if ids.is_empty() {
         return Ok(Vec::new());

@@ -336,6 +336,29 @@ function loadReuseData() {
           : 'No canonical callers recorded';
       }
 
+      // Judge tile: rendered ONLY with real judged data from the journal.
+      // Zero reviewed runs stays unmeasured — the tile must never headline a
+      // zero that no measurement produced.
+      const judgeStats = summary.judge || {};
+      const kpiStrip = callersKpi && callersKpi.closest('.kpi-strip');
+      document.getElementById('reuse-kpi-judge')?.remove();
+      if (kpiStrip && (judgeStats.reviewed || 0) > 0 && (judgeStats.rejected || 0) > 0) {
+        const tile = document.createElement('div');
+        tile.className = 'kpi-tile';
+        tile.id = 'reuse-kpi-judge';
+        const locNote = (judgeStats.rejected_loc || 0) > 0
+          ? ' · ' + judgeStats.rejected_loc.toLocaleString() + ' LOC redundant'
+          : '';
+        tile.innerHTML =
+          '<div class="kpi-label" data-tip="kpi.judge">Judge Arbitration</div>' +
+          '<div class="kpi-value badge-judge" id="reuse-kpi-judge-value">' +
+            judgeStats.rejected.toLocaleString() + '</div>' +
+          '<div class="kpi-sub" id="reuse-kpi-judge-sub">' +
+            'Gray-band candidates rejected' + locNote +
+            ' of ' + judgeStats.reviewed.toLocaleString() + ' reviewed</div>';
+        kpiStrip.appendChild(tile);
+      }
+
       const counts = summary.detector_counts || {};
       updateDetectorPills(counts, reuseCandidates.length);
       populateReuseRepoFilter();
@@ -1813,6 +1836,7 @@ const TIP = {
   'kpi.candidates': 'Functions that look like near-copies of another function.',
   'kpi.prewrite': 'Pre-write searches and reuse scans run by agents to discover existing helpers before authoring new code.',
   'kpi.avg_callers': 'Average number of call sites using each canonical helper, indicating strong codebase consolidation.',
+  'kpi.judge': 'Gray-band candidates the local eg-judge binary rejected as semantically distinct after the static detectors flagged them; the LOC figure is the measured span of the rejected symbols.',
   'kpi.currency': 'Share of current notes whose code refs resolve to the current index. Freshness is bounded by the last eg build. Notes without refs are excluded; notes in stores without an index are unverified.',
   'kpi.active_notes': 'Total current notes (decisions, gotchas, facts, tasks, procedures) retained across agent sessions.',
   'kpi.recalls': 'Total times agents looked up exact memory notes across all active stores in the retained journal.',

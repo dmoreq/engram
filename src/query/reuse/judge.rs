@@ -6,34 +6,31 @@
 //! The batch contract: one NDJSON payload, one child process, one checkpoint
 //! load, one verdict line per pair in order.
 
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use super::*;
 
+mod child;
+mod coprocess;
+
+use child::{build_payload, parse_verdict, run_child_batch};
+
 pub(super) const GRAY_LOW: u64 = 45;
 pub(super) const GRAY_HIGH: u64 = 75;
-/// Batch ceiling: one NDJSON line per judged candidate.
-const MAX_JUDGED: usize = 20;
-/// Cold Metal kernel compilation measured at 13.1 s; the deadline must cover
-/// one cold start plus a warm batch of 20 pairs.
-const TIMEOUT: Duration = Duration::from_millis(20_000);
-const POLL: Duration = Duration::from_millis(10);
-const MAX_INPUT: usize = 256 * 1024;
-const MAX_OUTPUT: usize = 256 * 1024;
+/// Batch ceiling: one NDJSON line per judged candidate. Warm verdicts cost
+/// ~60 ms, so 40 pairs still fit the timeout next to the one-time Metal cold
+/// start.
+const MAX_JUDGED: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VerdictDecision {
+pub(super) enum VerdictDecision {
     Duplicate,
     Distinct,
 }
 
-struct Setup {
+pub(super) struct Setup {
     binary: PathBuf,
     model: PathBuf,
     subcommand: &'static str,
@@ -47,6 +44,7 @@ struct Setup {
 struct BatchOutcome {
     reviewed: usize,
     rejected: usize,
+    promoted: usize,
     failed: usize,
     /// Candidate pool indices rejected as distinct.
     reject_indices: Vec<usize>,
@@ -85,6 +83,7 @@ pub(super) fn apply(
             reviewed: 0,
             rejected: 0,
             failed: 0,
+            rejected_loc: 0,
         });
         return Some("eg: judge: 0 judgeable candidates".to_string());
     }
@@ -101,19 +100,26 @@ pub(super) fn apply(
             reviewed: 1,
             rejected: 0,
             failed: 1,
+            rejected_loc: 0,
         });
         return Some(
             "eg: judge unavailable: judge payload exceeds the cap; static result kept".to_string(),
         );
     };
+    // The MCP coprocess answers one request line per verdict line on a
+    // long-lived child; any failure tears the session down and the one-shot
+    // batch below keeps the result deterministic.
+    let lines =
+        coprocess::judge_batch(&setup, &pairs).or_else(|| run_child_batch(&setup, &payload));
     let reviewed = pairs.len();
     let mut outcome = BatchOutcome {
         reviewed,
         rejected: 0,
+        promoted: 0,
         failed: reviewed,
         reject_indices: Vec::new(),
     };
-    if let Some(lines) = run_child_batch(&setup, &payload) {
+    if let Some(lines) = &lines {
         if lines.len() == reviewed {
             outcome.failed = 0;
             for (position, raw) in lines.iter().enumerate() {
@@ -122,7 +128,16 @@ pub(super) fn apply(
                         outcome.reject_indices.push(indices[position]);
                         outcome.rejected += 1;
                     }
-                    Some(VerdictDecision::Duplicate) => {}
+                    Some(VerdictDecision::Duplicate) => {
+                        // A semantic duplicate outranks the static provisional
+                        // band: promote it into the display so a judged gray
+                        // candidate survives a higher --min-confidence.
+                        let candidate = &mut pool[indices[position]];
+                        if candidate.confidence.rank() < ReuseConfidence::Medium.rank() {
+                            candidate.confidence = ReuseConfidence::Medium;
+                            outcome.promoted += 1;
+                        }
+                    }
                     None => outcome.failed += 1,
                 }
             }
@@ -134,6 +149,7 @@ pub(super) fn apply(
         reviewed: outcome.reviewed,
         rejected: outcome.rejected,
         failed: outcome.failed,
+        rejected_loc: rejected_symbol_loc(ctx, pool, &outcome.reject_indices),
     });
     if successes == 0 {
         return Some("eg: judge unavailable: arbitration failed; static result kept".to_string());
@@ -148,10 +164,19 @@ pub(super) fn apply(
         "eg: judge: reviewed {}, rejected {}",
         outcome.reviewed, outcome.rejected
     );
+    if outcome.promoted > 0 {
+        note.push_str(&format!(", promoted {}", outcome.promoted));
+    }
     if outcome.failed > 0 {
         note.push_str(&format!(", {} failed", outcome.failed));
     }
     Some(note)
+}
+
+/// Process-lifetime switch for the MCP coprocess session; see
+/// [`crate::query::reuse::enable_judge_coprocess`].
+pub(super) fn enable_coprocess() {
+    coprocess::enable();
 }
 
 fn is_judgeable(candidate: &ReuseCandidate, mode: ReuseMode) -> bool {
@@ -230,6 +255,32 @@ fn pair_texts(
     Some((left, right))
 }
 
+/// Summed span of the rejected candidates' symbols: the redundant lines the
+/// arbitration removed from the agent's view. Unresolvable spans contribute 0
+/// rather than guessing.
+fn rejected_symbol_loc(
+    ctx: &QueryCtx<'_>,
+    pool: &[ReuseCandidate],
+    reject_indices: &[usize],
+) -> usize {
+    reject_indices
+        .iter()
+        .filter_map(|&i| pool.get(i))
+        .filter_map(|c| {
+            ctx.conn
+                .query_row(
+                    "SELECT line_end - line_start FROM symbols \
+                     WHERE file_path = ?1 AND (name = ?2 OR qualname = ?2) \
+                     ORDER BY line_start, qualname LIMIT 1",
+                    rusqlite::params![c.file, c.symbol],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+                .map(|v| v.max(0) as usize)
+        })
+        .sum()
+}
+
 /// Source text of one symbol from its indexed span. The path must stay inside
 /// the repository and may not be a symlink.
 fn source(ctx: &QueryCtx<'_>, file: &str, name: &str) -> Option<String> {
@@ -267,138 +318,6 @@ fn source(ctx: &QueryCtx<'_>, file: &str, name: &str) -> Option<String> {
         return None;
     }
     Some(lines[start..end.min(lines.len())].join("\n"))
-}
-
-/// One NDJSON line per pair, in candidate order.
-fn build_payload(setup: &Setup, pairs: &[(String, String)]) -> Option<Vec<u8>> {
-    let mut payload = Vec::new();
-    for (left, right) in pairs {
-        let line = if setup.subcommand == "similarity" {
-            serde_json::json!({"text_a": left, "text_b": right})
-        } else {
-            serde_json::json!({"code_a": left, "code_b": right})
-        };
-        serde_json::to_writer(&mut payload, &line).ok()?;
-        payload.push(b'\n');
-    }
-    if payload.len() > MAX_INPUT {
-        return None;
-    }
-    Some(payload)
-}
-
-/// Spawn one child, feed the batch, and return its verdict lines in order.
-/// `None` means the whole batch failed (spawn, timeout, cap, or shape).
-fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<String>> {
-    let mut command = Command::new(&setup.binary);
-    command
-        .arg(setup.subcommand)
-        .arg("--stdin")
-        .arg("--model")
-        .arg(&setup.model);
-    if let Some(recipe) = &setup.recipe {
-        command.arg("--recipe").arg(recipe);
-    }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env_clear();
-    if let Some(home) = &setup.home {
-        command.env("HOME", home);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().ok()?;
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let payload = payload.to_vec();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&payload);
-    });
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
-            _ => {
-                kill_group(&child);
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = writer.join();
-                return None;
-            }
-        }
-    }
-    // The judge may have exited after forking a helper that inherited stdout.
-    // Tear down the process group before draining so the read is bounded.
-    kill_group(&child);
-    let _ = writer.join();
-    let stdout = child.stdout.take()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut raw = String::new();
-        let result = stdout
-            .take((MAX_OUTPUT + 1) as u64)
-            .read_to_string(&mut raw)
-            .ok()
-            .map(|_| raw);
-        let _ = tx.send(result);
-    });
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let raw = match rx.recv_timeout(remaining.max(Duration::from_millis(1))) {
-        Ok(Some(raw)) => raw,
-        _ => return None,
-    };
-    if raw.len() > MAX_OUTPUT {
-        return None;
-    }
-    let lines: Vec<String> = raw
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect();
-    Some(lines)
-}
-
-#[cfg(unix)]
-fn kill_group(child: &std::process::Child) {
-    let group = format!("-{}", child.id());
-    for signal in ["-TERM", "-KILL"] {
-        let _ = Command::new("kill")
-            .arg(signal)
-            .arg(&group)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_group(_child: &std::process::Child) {}
-
-fn parse_verdict(raw: &str) -> Option<VerdictDecision> {
-    let value: Value = serde_json::from_str(raw.trim()).ok()?;
-    let decision = match value.get("decision")?.as_str()? {
-        "duplicate" => VerdictDecision::Duplicate,
-        "distinct" => VerdictDecision::Distinct,
-        _ => return None,
-    };
-    let probability = value
-        .get("probability")
-        .or_else(|| value.get("similarity"))?
-        .as_f64()?;
-    if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
-        return None;
-    }
-    Some(decision)
 }
 
 #[cfg(test)]

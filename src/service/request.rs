@@ -146,5 +146,6 @@ pub enum CommandRequest {
     },
     MemReindex {
         global: bool,
+        embed: bool,
     },
 }

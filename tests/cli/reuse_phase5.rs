@@ -152,7 +152,7 @@ fn judge_malformed_output_keeps_static_result_with_note() {
 
 #[cfg(unix)]
 #[test]
-fn reuse_min_confidence_medium_skips_judge_and_keeps_freshness_scope() {
+fn reuse_min_confidence_medium_judges_gray_candidates() {
     use std::os::unix::fs::PermissionsExt;
 
     let repo = temp_repo("reuse-judge-gate");
@@ -167,9 +167,6 @@ fn reuse_min_confidence_medium_skips_judge_and_keeps_freshness_scope() {
         "def normalize(value):\n    return value\n\ndef parse_token_value(value):\n    return normalize(value)\n",
     );
     build(&repo);
-    // An on-disk file the index never saw: freshness must surface it through
-    // the scope walk even when every candidate was filtered before judge.
-    write(&repo, "new_file.py", "def brand_new():\n    return 1\n");
 
     // Counting stub: the judge runs with a cleared environment, so the count
     // file path is baked into the script text.
@@ -189,13 +186,38 @@ fn reuse_min_confidence_medium_skips_judge_and_keeps_freshness_scope() {
     std::fs::create_dir_all(repo.join("model")).unwrap();
     std::fs::write(repo.join("model/lazy.json"), "{\"head_layers\":1}\n").unwrap();
 
-    // Low-only pool with --min-confidence medium: zero judge subprocess
-    // spawns, the below-threshold count surfaces, and the scope walk still
-    // reports the unindexed new file.
-    let gated = eg(&repo)
+    // Gray-band pool with --min-confidence medium: the judge arbitrates the
+    // gray candidate BEFORE the gate, the duplicate verdict promotes it into
+    // the display, and nothing stays below threshold.
+    let judged = eg(&repo)
         .env("EG_JUDGE_BIN", &bin)
         .env("EG_JUDGE_MODEL", repo.join("model"))
         .args(["reuse", "--judge", "--min-confidence", "medium"])
+        .output()
+        .unwrap();
+    assert_eq!(judged.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&judged.stdout);
+    assert!(
+        stdout.contains("1 duplication candidate(s) found"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("1 medium"), "{stdout}");
+    assert!(stdout.contains("0 below threshold"), "{stdout}");
+    // The judge note travels on stderr: one spawn, one promotion.
+    let stderr = String::from_utf8_lossy(&judged.stderr);
+    assert!(
+        stderr.contains("reviewed 1, rejected 0, promoted 1"),
+        "{stderr}"
+    );
+    let counts = std::fs::read_to_string(&count_file).unwrap();
+    assert_eq!(counts.lines().count(), 1, "one judge spawn: {counts}");
+
+    // Control: without --judge the static gate still filters the gray
+    // candidate as below threshold, and nothing spawns.
+    let gated = eg(&repo)
+        .env("EG_JUDGE_BIN", &bin)
+        .env("EG_JUDGE_MODEL", repo.join("model"))
+        .args(["reuse", "--min-confidence", "medium"])
         .output()
         .unwrap();
     assert_eq!(gated.status.code(), Some(0));
@@ -205,30 +227,6 @@ fn reuse_min_confidence_medium_skips_judge_and_keeps_freshness_scope() {
         "{stdout}"
     );
     assert!(stdout.contains("1 below threshold"), "{stdout}");
-    assert!(stdout.contains("freshness unknown"), "{stdout}");
-    assert!(
-        !count_file.exists(),
-        "judge must not spawn for sub-threshold candidates: {stdout}"
-    );
-
-    // Control: at the default threshold the same stub runs, so the spy works.
-    let control = eg(&repo)
-        .env("EG_JUDGE_BIN", &bin)
-        .env("EG_JUDGE_MODEL", repo.join("model"))
-        .args(["reuse", "--judge"])
-        .output()
-        .unwrap();
-    assert_eq!(control.status.code(), Some(0));
-    let control_stdout = String::from_utf8_lossy(&control.stdout);
-    assert!(
-        control_stdout.contains("1 duplication candidate(s) found"),
-        "{control_stdout}"
-    );
-    let counts = std::fs::read_to_string(&count_file).unwrap();
-    assert!(
-        !counts.trim().is_empty(),
-        "judge stub must run above the threshold"
-    );
 }
 
 #[test]

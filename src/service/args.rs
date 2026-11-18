@@ -346,6 +346,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }),
         "mem_reindex" => Ok(CommandRequest::MemReindex {
             global: a.b("global"),
+            embed: a.b_spec(tool, "embed")?,
         }),
         _ => Err(unknown_tool(tool)),
     }

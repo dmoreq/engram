@@ -93,6 +93,10 @@ pub fn serve(
         // Amendment 6 opt-out must hold on the MCP surface too (R6d A7).
         crate::journal::disable();
     }
+    // Coprocess mode: gray-band judge calls reuse one `eg-judge serve` child
+    // for this server's lifetime. Nothing spawns until a judged call happens,
+    // and any failure falls back to the one-shot batch.
+    crate::query::reuse::enable_judge_coprocess();
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     let stdout = std::io::stdout();

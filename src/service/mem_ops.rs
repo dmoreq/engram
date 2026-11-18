@@ -248,6 +248,25 @@ pub(super) fn mem_ranked(
             candidates.push(candidate);
         }
     }
+
+    // Semantic feature (best-effort): only when the text model is configured,
+    // the query embeds, and EVERY candidate carries an embedding. Partial
+    // coverage would grade embedded notes against unembedded ones on a shared
+    // constant offset, so it is skipped outright.
+    if let Some(query_vector) = crate::memory::embed::embed_text(joined_terms) {
+        let ids: Vec<i64> = candidates.iter().map(|c| c.row.id).collect();
+        let embeddings = crate::db::memory_embeddings(conn, &ids)?;
+        if !candidates.is_empty() && embeddings.len() == candidates.len() {
+            for candidate in &mut candidates {
+                if let Some(vector) = embeddings.get(&candidate.row.id) {
+                    candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
+                        &query_vector,
+                        vector,
+                    )));
+                }
+            }
+        }
+    }
     Ok(candidates)
 }
 
@@ -286,6 +305,7 @@ fn mem_candidate(
         lex_raw,
         ref_raw,
         graph_raw: 0.0,
+        sem_raw: None,
         age_days,
         score: 0.0,
         is_global,

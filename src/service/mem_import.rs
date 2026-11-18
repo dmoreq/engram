@@ -80,6 +80,8 @@ pub(super) fn run_mem_import(
             source: "import",
             expires_at: note.expires_at,
             created_at: note.created_at,
+            // Imports land unembedded; `eg mem reindex --embed` backfills.
+            embedding: None,
             supersedes: None,
             touch: false,
         })

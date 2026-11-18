@@ -146,6 +146,7 @@ pub const RETENTION_DAYS: i64 = 30;
 // `memories_fts_v2`. The secret detector and time grammar are standalone.
 // ---------------------------------------------------------------------------
 
+pub mod embed;
 pub mod secret;
 pub mod time;
 pub use time::{parse_time_bound, validate_window, TimeWindow};
@@ -313,6 +314,7 @@ mod tests {
             lex_raw: lex,
             ref_raw: r#ref,
             graph_raw: 0.0,
+            sem_raw: None,
             age_days: age,
             score: 0.0,
             is_global: false,

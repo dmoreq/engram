@@ -163,6 +163,7 @@ pub fn finalize(root: Option<&Path>, exit_code: i32, latency_us: u64) {
                 "reviewed": j.reviewed,
                 "rejected": j.rejected,
                 "failed": j.failed,
+                "rejected_loc": j.rejected_loc,
             })
         }).unwrap_or(Value::Null),
     });

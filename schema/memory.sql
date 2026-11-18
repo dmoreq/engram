@@ -1,4 +1,4 @@
--- eg memory schema (user_version 2) — the project-memory store `.engram/memory.db`
+-- eg memory schema (user_version 3) — the project-memory store `.engram/memory.db`
 -- (companion design: docs/architecture/memory-store.md). Separate
 -- file from index.db on purpose: memory is primary data, the index is derived.
 -- The binary gates this store on its own compiled MEMORY_SCHEMA_VERSION
@@ -27,7 +27,9 @@ CREATE TABLE memories(
     expires_at INTEGER NOT NULL DEFAULT 0,   -- 0 = never; session rows carry the TTL deadline
     superseded_by INTEGER,          -- id of the replacing rev; NULL = current row
     superseded_at INTEGER NOT NULL DEFAULT 0, -- unix secs when superseded; 0 = current; the gc retention clock
-    fts_version INTEGER NOT NULL DEFAULT 0    -- 0 = legacy writer (v2 index may lag); 2 = indexed in both FTS tables
+    fts_version INTEGER NOT NULL DEFAULT 0,  -- 0 = legacy writer (v2 index may lag); 2 = indexed in both FTS tables
+    embedding BLOB                -- optional L2-normalised f32 LE vector (eg-judge text model); NULL = not
+                                  -- embedded: ranking falls back to the lexical features when absent
 );
 
 CREATE UNIQUE INDEX memories_key_rev ON memories(key, rev);

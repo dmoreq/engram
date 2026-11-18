@@ -318,7 +318,10 @@ mod tests {
                 force: false,
                 global: false,
             },
-            CommandRequest::MemReindex { global: false },
+            CommandRequest::MemReindex {
+                global: false,
+                embed: false,
+            },
         ]
     }
 

@@ -12,6 +12,12 @@ const W_REC: f64 = 0.2;
 /// an all-zero feature min-max-normalizes to the design's all-equal 1.0, which
 /// is a constant score offset for every row.
 const W_GRAPH: f64 = 0.25;
+/// Weight of the semantic-similarity feature (eg-judge text model). The
+/// feature activates only when EVERY candidate carries an embedding: a
+/// partial-coverage blend would grade embedded notes against unembedded ones
+/// on a shared constant offset. Weight 0.25 mirrors the graph signal: a
+/// secondary evidence term, never a replacement for the lexical rank.
+const W_SEM: f64 = 0.25;
 
 /// One candidate row with its raw signals. `lex_raw` is the FTS5 bm25 rank
 /// (smaller is better); `ref_raw` is the token-overlap fraction in [0,1];
@@ -22,6 +28,9 @@ pub struct Candidate {
     pub lex_raw: f64,
     pub ref_raw: f64,
     pub graph_raw: f64,
+    /// Cosine(query, note) through the eg-judge text model; `None` when the
+    /// model is not configured or coverage is partial.
+    pub sem_raw: Option<f64>,
     pub age_days: f64,
     /// Fused score, filled by [`fuse`].
     pub score: f64,
@@ -58,12 +67,18 @@ pub fn fuse(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
     let lex_b = bounds(candidates.iter().map(|c| c.lex_raw));
     let ref_b = bounds(candidates.iter().map(|c| c.ref_raw));
     let graph_b = bounds(candidates.iter().map(|c| c.graph_raw));
+    let sem_active = candidates.iter().all(|c| c.sem_raw.is_some());
+    let sem_b = bounds(candidates.iter().filter_map(|c| c.sem_raw));
     for c in &mut candidates {
         let rec = 1.0 / (1.0 + c.age_days);
         let lex = norm(c.lex_raw, lex_b, true);
         let reference = norm(c.ref_raw, ref_b, false);
         let graph = norm(c.graph_raw, graph_b, false);
         c.score = W_LEX * lex + W_REF * reference + W_REC * rec + W_GRAPH * graph;
+        if sem_active {
+            let sem = norm(c.sem_raw.unwrap_or(0.0), sem_b, false);
+            c.score += W_SEM * sem;
+        }
     }
     candidates.sort_by(|a, b| {
         b.score

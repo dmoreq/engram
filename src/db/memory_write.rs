@@ -79,6 +79,9 @@ pub struct MemNoteInput<'a> {
     /// Preserve the exported row's authorship date on import; `None` stamps
     /// the write time.
     pub created_at: Option<i64>,
+    /// Precomputed L2-normalised embedding bytes (eg-judge text model);
+    /// `None` stores NULL and ranking falls back to the lexical features.
+    pub embedding: Option<&'a [u8]>,
     pub supersedes: Option<&'a str>,
     pub touch: bool,
 }

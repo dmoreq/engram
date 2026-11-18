@@ -330,8 +330,11 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "mem_reindex",
-        description: "Rebuild the derived Unicode memory index; notes are untouched",
-        params: &[p_bool!("global", "Rebuild the cross-project global memory store")],
+        description: "Rebuild the derived Unicode memory index; notes are untouched. With embed, computes note embeddings through the eg-judge text model",
+        params: &[
+            p_bool!("global", "Rebuild the cross-project global memory store"),
+            p_bool!("embed", "Compute note embeddings through the eg-judge text model (EG_JUDGE_TEXT_MODEL)"),
+        ],
         core: false,
     },
 ];

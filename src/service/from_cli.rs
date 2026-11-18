@@ -274,7 +274,9 @@ impl CommandRequest {
                 vec![("key", key.clone()), ("global", global.to_string())]
             }
             CommandRequest::MemGc { global } => vec![("global", global.to_string())],
-            CommandRequest::MemReindex { global } => vec![("global", global.to_string())],
+            CommandRequest::MemReindex { global, embed } => {
+                vec![("global", global.to_string()), ("embed", embed.to_string())]
+            }
             CommandRequest::MemExport {
                 format,
                 limit,

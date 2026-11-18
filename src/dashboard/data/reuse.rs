@@ -220,6 +220,7 @@ pub fn collect_reuse_candidates(
         "reviewed": judge.reviewed,
         "rejected": judge.rejected,
         "failed": judge.failed,
+        "rejected_loc": judge.rejected_loc,
     });
     summary["cache_hit"] = json!(cache_hit);
     summary["cache_age_ms"] = json!(cache_age_ms);

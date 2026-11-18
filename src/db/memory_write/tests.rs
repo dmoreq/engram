@@ -21,6 +21,7 @@ fn note<'a>(key: &'a str, body: &'a str, expires_at: i64) -> MemNoteInput<'a> {
         source: "cli",
         expires_at,
         created_at: None,
+        embedding: None,
         supersedes: None,
         touch: false,
     }

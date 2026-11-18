@@ -293,6 +293,7 @@ mod tests {
             source: "cli",
             expires_at: 0,
             created_at: None,
+            embedding: None,
             supersedes: None,
             touch: false,
         }

@@ -8,7 +8,7 @@ use super::*;
 /// gates the index, with a diverging policy: older-but-structurally-complete
 /// stores open read-write (memory cannot be rebuilt), only newer-than-binary
 /// or missing-required-structure exits 5.
-pub const MEMORY_SCHEMA_VERSION: i32 = 2;
+pub const MEMORY_SCHEMA_VERSION: i32 = 3;
 const MEMORY_BUSY_TIMEOUT_MS: u64 = 5000;
 /// Recovery hint shared by every memory-store failure message (corruption
 /// and both schema-gate shapes) so the wording cannot drift apart.
@@ -41,7 +41,7 @@ pub(super) const MEMORY_REQUIRED: [(&str, &str); 15] = [
 
 /// Map a rusqlite failure to the memory error contract: corruption -> exit 3,
 /// busy after the timeout -> exit 4, everything else internal (exit 6).
-pub(super) fn map_memory_err(e: rusqlite::Error) -> EgError {
+pub(crate) fn map_memory_err(e: rusqlite::Error) -> EgError {
     if let rusqlite::Error::SqliteFailure(ffi, _) = &e {
         if is_sqlite_corruption(&e) {
             return EgError::CorruptMemory(format!(
@@ -366,6 +366,7 @@ fn migrate_memory_schema(conn: &Connection) -> Result<()> {
     // transaction on every `mem write` open.
     let ready = column_present(conn, "memories", "anchored_at").map_err(map_memory_err)?
         && column_present(conn, "memories", "fts_version").map_err(map_memory_err)?
+        && column_present(conn, "memories", "embedding").map_err(map_memory_err)?
         && super::query_state::object_exists_result(conn, "table", "memory_meta")
             .map_err(map_memory_err)?
         && super::query_state::object_exists_result(conn, "index", "memories_created")
@@ -389,6 +390,15 @@ fn migrate_memory_schema(conn: &Connection) -> Result<()> {
             "memories",
             "fts_version",
             "ALTER TABLE memories ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0",
+        )?;
+        // Additive v2 -> v3: optional note embeddings for semantic ranking.
+        // NULL stays a legal value: ranking falls back to the lexical
+        // features whenever the column is absent for a candidate.
+        add_column_if_missing(
+            conn,
+            "memories",
+            "embedding",
+            "ALTER TABLE memories ADD COLUMN embedding BLOB",
         )?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS memory_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);

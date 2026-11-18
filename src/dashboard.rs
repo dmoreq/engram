@@ -242,18 +242,25 @@ mod client_contract_tests {
     }
 
     #[test]
-    fn judge_payload_stays_api_only() {
-        // The judge tile was removed (zero judged runs in every real journal
-        // — a permanently unmeasured headline); the structured `judge` block
-        // remains a documented /api/reuse payload field, so the client must
-        // NOT render it anywhere.
+    fn judge_tile_is_data_gated_not_static() {
+        // Truthfulness contract: zero judged runs must never headline as a
+        // zero. The tile is not in the static HTML; the client injects it
+        // only when the journal carries real reviewed AND rejected counts.
         assert!(
             !HTML.contains("reuse-kpi-judge"),
-            "judge tile must stay removed"
+            "static HTML must not carry a judge tile"
         );
         assert!(
-            !JS.contains("'kpi.judge'"),
-            "judge tooltip must stay removed"
+            JS.contains("reuse-kpi-judge"),
+            "client must know how to inject the tile on real data"
+        );
+        assert!(
+            JS.contains("judgeStats.rejected || 0) > 0"),
+            "the tile gate must require a non-zero measured rejection count"
+        );
+        assert!(
+            JS.contains("'kpi.judge'"),
+            "the injected tile must carry a tooltip entry"
         );
     }
 

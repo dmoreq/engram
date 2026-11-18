@@ -190,6 +190,14 @@ pub fn detect_hints(ctx: &QueryCtx<'_>, new_names: &HashSet<String>) -> Result<V
         .collect())
 }
 
+/// Turn on the judge coprocess for this process: `eg mcp` calls this once at
+/// startup so gray-band reuse tool calls reuse one `eg-judge serve` child
+/// across the session instead of spawning per call. CLI one-shot runs never
+/// enable it.
+pub fn enable_judge_coprocess() {
+    judge::enable_coprocess();
+}
+
 pub struct ReuseRunArgs {
     pub paths: Vec<String>,
     pub limit: usize,
@@ -290,18 +298,14 @@ pub(super) fn analyze_corpus_with(
             });
         }
     }
-    // Confidence gate BEFORE judge and freshness. The production judge only
-    // rejects candidates (it never assigns confidence) and freshness only
-    // demotes to Low, so a sub-threshold candidate can never be promoted
-    // back: running the subprocess judge on it pays for candidates finalize
-    // discards, and a non-empty pool would skip the scope walk that surfaces
-    // unindexed new files. `for_hints()` forces min_confidence Low, so hint
-    // detection is unaffected.
-    let below_threshold = pool
-        .iter()
-        .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
-        .count();
-    pool.retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
+    // Judge BEFORE the confidence gate. The judge removes gray-band candidates
+    // the semantic side calls distinct and promotes surviving gray duplicates,
+    // so a sub-threshold candidate CAN return: an early gate would drop
+    // exactly the candidates the judge exists to arbitrate, and
+    // `--min-confidence medium` used to yield "0 judgeable candidates".
+    // Without --judge the call is a no-op, so the reorder costs nothing on
+    // the default path; freshness still only demotes, so it stays after the
+    // gate. `for_hints()` forces min_confidence Low, so hints are unaffected.
     let judge_note = judge::apply(
         ctx,
         &mut pool,
@@ -309,6 +313,11 @@ pub(super) fn analyze_corpus_with(
         opts.mode,
         opts.proposal_signature.as_deref(),
     );
+    let below_threshold = pool
+        .iter()
+        .filter(|c| c.confidence.rank() < opts.min_confidence.rank())
+        .count();
+    pool.retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     let total = pool.len() + below_threshold;
     let freshness = if opts.freshness_mode == FreshnessMode::Full {
         freshness::evaluate(ctx, scope, &mut pool)?

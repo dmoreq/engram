@@ -112,6 +112,7 @@ fn write_session_note(root: &Path, key: &str, body: &str, expires_at: i64, now: 
             source: "cli",
             expires_at,
             created_at: None,
+            embedding: None,
             supersedes: None,
             touch: false,
         },
