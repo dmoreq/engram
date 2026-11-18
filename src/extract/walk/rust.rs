@@ -295,6 +295,11 @@ pub(super) fn impl_type_name(node: Node<'_>, src: &[u8]) -> String {
             "reference_type" => t
                 .child_by_field_name("type")
                 .and_then(|inner| nominal(inner, src)),
+            // `impl pkg::Trait for pkg::Type` — the impl target is a
+            // scoped_type_identifier whose `name` field carries the type.
+            "scoped_type_identifier" => t
+                .child_by_field_name("name")
+                .and_then(|inner| nominal(inner, src)),
             _ => None,
         }
     }

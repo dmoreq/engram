@@ -105,7 +105,7 @@ eg build
 
 # 2. USP 2: Discover canonical interfaces before writing code
 eg search "read bounded"
-# Output: src/walk.rs:42 fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> [callers=14]
+# Output: src/walk.rs:250 fn read_bounded(path: &Path) -> Result<Vec<u8>> [callers=8]
 
 # 3. USP 1: Inspect surroundings and callers in sub-2ms
 eg context read_bounded
@@ -212,7 +212,7 @@ See the complete [CLI Reference](docs/cli-reference.md) for flag details and exi
 ### Real-Time Performance & Telemetry Footer
 Every MCP response includes a compact execution summary:
 ```text
-⚡ eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
+eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
 ```
 Verify aggregate session savings at any time:
 ```bash

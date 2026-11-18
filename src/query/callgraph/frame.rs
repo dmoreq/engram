@@ -114,7 +114,7 @@ pub(super) fn direct_callers(
          {EDGE_SRC_FILE_JOIN}
          LEFT JOIN symbols ds ON ds.id = e.dst_id
          WHERE e.dst_id IN ({placeholders}) AND e.kind = '{}'
-         ORDER BY f.path, e.site_line, s.qualname LIMIT ?{limit_param}",
+         ORDER BY f.path, e.site_line, s.qualname, s.line_start, e.confidence LIMIT ?{limit_param}",
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );

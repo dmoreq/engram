@@ -61,6 +61,9 @@ pub fn estimated_tokens_saved(
             shown * GRAPH_ROW_TOKENS + calls * QUERY_CALL_TOKENS
         }
         "search" => shown * SEARCH_ROW_TOKENS + calls * QUERY_CALL_TOKENS,
+        // An empty reuse result leaves the agent with the same work as
+        // before: no rows were replaced, so no call overhead is priced.
+        "reuse" if result_count == 0 => 0,
         "reuse" => result_count * REUSE_RESULT_TOKENS + calls * REUSE_CALL_TOKENS,
         "symbols" => shown * SYMBOL_ROW_TOKENS,
         "build" => calls * BUILD_CALL_TOKENS,

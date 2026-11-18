@@ -115,6 +115,7 @@ fn write_note(
             } else {
                 now + note.ttl_secs
             },
+            created_at: None,
             supersedes,
             touch,
         },

@@ -117,13 +117,32 @@ pub(crate) fn result_text(resp: &Value) -> String {
 }
 
 pub(crate) fn strip_footer(text: &str) -> &str {
-    if let Some(pos) = text.rfind("\n───\n⚡ eg:") {
+    if let Some(pos) = text.rfind("\n───\neg:") {
         &text[..=pos]
-    } else if let Some(pos) = text.rfind("⚡ eg:") {
-        &text[..pos]
     } else {
-        text
+        // Separator-less footer (no body above it): only strip when the first
+        // line matches the KPI shape `eg: {n}ms | {n} items`. A caveat line
+        // such as `eg: memory — ...` must stay intact.
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        if footer_line(&text[..first_line_end]) {
+            ""
+        } else {
+            text
+        }
     }
+}
+
+/// The KPI footer line shape: `eg: {latency}ms | {N} items[ | ~{T} tokens
+/// saved]`.
+fn footer_line(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("eg: ") else {
+        return false;
+    };
+    let Some(ms) = rest.find("ms | ") else {
+        return false;
+    };
+    let latency = &rest[..ms];
+    !latency.is_empty() && latency.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Temporary repository that deletes itself when the last handle drops.

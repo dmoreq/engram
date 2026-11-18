@@ -125,7 +125,10 @@ fn has_jwt(text: &str) -> bool {
         let run_end = text[idx..]
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
             .unwrap_or(text.len() - idx);
-        let parts: Vec<&str> = text[idx..idx + run_end].split('.').collect();
+        // A trailing sentence period must not shrink the final segment to an
+        // empty part and bypass the three-segment shape check.
+        let run = text[idx..idx + run_end].trim_end_matches('.');
+        let parts: Vec<&str> = run.split('.').collect();
         if parts.len() >= 3
             && parts.iter().all(|p| {
                 p.len() >= 10
@@ -192,7 +195,15 @@ fn has_bearer_token(text: &str) -> bool {
 
 fn has_database_url(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    for scheme in ["postgres://", "postgresql://", "mysql://", "mongodb://"] {
+    for scheme in [
+        "postgres://",
+        "postgresql://",
+        "mysql://",
+        "mongodb://",
+        "redis://",
+        "rediss://",
+        "mariadb://",
+    ] {
         for (idx, _) in lower.match_indices(scheme) {
             if !boundary(&lower, idx) {
                 continue;
@@ -203,7 +214,10 @@ fn has_database_url(text: &str) -> bool {
                 continue;
             };
             if let Some((user, pass)) = userinfo.split_once(':') {
-                if !user.is_empty() && !pass.is_empty() {
+                // Username is optional (`redis://:pass@host`); an empty
+                // password (`user:@host`) is not a credential.
+                let _ = user;
+                if !pass.is_empty() {
                     return true;
                 }
             }
@@ -284,6 +298,43 @@ mod tests {
         ] {
             assert_eq!(suspected_secret(&text), Some("jwt"), "{text}");
         }
+    }
+
+    #[test]
+    fn jwt_with_trailing_sentence_period_still_detected() {
+        let seg1 = format!("eyJ{}", "a".repeat(10));
+        let seg2 = format!("eyJ{}", "b".repeat(10));
+        let seg3 = "c".repeat(10);
+        // A sentence-final dot used to shrink the last segment to an empty
+        // part and bypass the shape check.
+        assert_eq!(
+            suspected_secret(&format!("token leaked {seg1}.{seg2}.{seg3}.")),
+            Some("jwt")
+        );
+    }
+
+    #[test]
+    fn database_url_detects_redis_mariadb_and_password_only() {
+        assert_eq!(
+            suspected_secret("redis://:s3cret@host:6379/0"),
+            Some("database-url")
+        );
+        assert_eq!(
+            suspected_secret("rediss://:s3cret@host:6379/0"),
+            Some("database-url")
+        );
+        assert_eq!(
+            suspected_secret("mariadb://root:s3cret@host/db"),
+            Some("database-url")
+        );
+        assert_eq!(
+            suspected_secret("postgresql://:s3cret@host/db"),
+            Some("database-url")
+        );
+        // Negative shapes: empty password and credential-less URLs stay clean.
+        assert_eq!(suspected_secret("redis://host:6379/0"), None);
+        assert_eq!(suspected_secret("mariadb://root@host/db"), None);
+        assert_eq!(suspected_secret("redis://user:@host/0"), None);
     }
 
     #[test]

@@ -10,12 +10,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) mod http;
+mod sse;
 pub(crate) mod touch;
 
 use crate::dashboard::data;
 use crate::db;
 use crate::error::{EgError, Result};
 use http::{host_allowed, read_http_request, send_response, RequestLog};
+pub use sse::poll_sse_file;
+use sse::stream_sse_events;
 
 static INDEX_HTML: &str = include_str!("assets/index.html");
 static STYLE_CSS: &str = include_str!("assets/style.css");
@@ -125,13 +128,19 @@ pub fn admit_connection(
     root: Option<PathBuf>,
     is_global: bool,
 ) {
-    if ACTIVE_CONNS.load(Ordering::SeqCst) >= MAX_CONCURRENT_CONNS {
+    // Reserve a slot atomically: a check-then-increment race could admit two
+    // threads past a full cap.
+    if ACTIVE_CONNS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+            cur.checked_add(1).filter(|&c| c < MAX_CONCURRENT_CONNS)
+        })
+        .is_err()
+    {
         log_connection_cap_reached(MAX_CONCURRENT_CONNS);
         let mut stream = stream;
         let _ = send_response(&mut stream, 503, "text/plain; charset=utf-8", b"", false);
         return;
     }
-    ACTIVE_CONNS.fetch_add(1, Ordering::SeqCst);
     thread::spawn(move || {
         let _guard = ConnGuard;
         let _ = handle_client(stream, &log_path, root.as_deref(), is_global);
@@ -261,91 +270,6 @@ fn serve_api_route(
         _ => Ok(false),
     }
 }
-
-fn stream_sse_events(
-    stream: &mut TcpStream,
-    log_path: &Path,
-    root: Option<&Path>,
-    global: bool,
-) -> std::io::Result<()> {
-    stream.set_read_timeout(None)?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    // Same-origin only: the stream carries repository paths and search terms.
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-    stream.write_all(header.as_bytes())?;
-    stream.flush()?;
-
-    let mut tail = data::Tail::new(log_path);
-    let mut last_keepalive = Instant::now();
-    let mut last_gate = Instant::now();
-
-    loop {
-        if last_gate.elapsed() >= Duration::from_secs(5) {
-            if local_gate(root, global).is_err() {
-                return Ok(());
-            }
-            last_gate = Instant::now();
-        }
-        let now = Instant::now();
-        poll_sse_file(
-            stream,
-            &mut tail,
-            log_path,
-            &mut last_keepalive,
-            now,
-            global,
-        )?;
-
-        if now.duration_since(last_keepalive) >= Duration::from_secs(15) {
-            stream.write_all(b": keepalive\n\n")?;
-            stream.flush()?;
-            last_keepalive = now;
-        }
-
-        thread::sleep(Duration::from_millis(500));
-    }
-}
-
-/// Pump one tail poll to the SSE client. A shrink or rotation emits the named
-/// `reset` event and no replayed frames. Global mode hides scratch roots; a
-/// linked-worktree frame is stamped with its main repository either way.
-pub fn poll_sse_file(
-    stream: &mut TcpStream,
-    tail: &mut data::Tail,
-    log_path: &Path,
-    last_keepalive: &mut Instant,
-    now: Instant,
-    global: bool,
-) -> std::io::Result<()> {
-    let mut frames: Vec<String> = Vec::new();
-    let mut reset = false;
-    tail.poll(log_path, |event| match event {
-        data::TailEvent::Reset => reset = true,
-        data::TailEvent::Line(line) => {
-            if let Some(mut val) = data::live_event(line) {
-                if global && crate::journal::liveness::entry_is_ephemeral(&val) {
-                    return;
-                }
-                data::annotate_worktree_main(&mut val);
-                if let Ok(payload) = serde_json::to_string(&val) {
-                    frames.push(format!("data: {payload}\n\n"));
-                }
-            }
-        }
-    });
-    if reset {
-        // Named event: a pre-upgrade tab's default onmessage handler ignores
-        // it instead of treating it as a journal row.
-        stream.write_all(b"event: reset\ndata: {}\n\n")?;
-        *last_keepalive = now;
-    }
-    for frame in frames {
-        stream.write_all(frame.as_bytes())?;
-        *last_keepalive = now;
-    }
-    stream.flush()
-}
-
 /// Gate the captured local log path. Global mode reads `~/.engram/usage.log`
 /// and is not repository provenance.
 fn local_gate(root: Option<&Path>, global: bool) -> Result<()> {
@@ -403,7 +327,8 @@ pub fn handle_client(
     }
 
     if method != "GET" && method != "HEAD" {
-        let resp = "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n";
+        let resp =
+            "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         stream.write_all(resp.as_bytes())?;
         return Ok(());
     }

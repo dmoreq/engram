@@ -29,6 +29,19 @@ pub(super) fn index_parent_module(t: &mut Tables, idx: usize, module: &str) {
                 .or_default()
                 .push(idx);
         }
+        // A child module whose parent module symbol is registered later (file
+        // order): derive the parent from the qualname itself so `pkg.sub`
+        // stays importable regardless of processing order.
+        _ if kind == SymbolKind::Module && qualname.contains('.') => {
+            let parent = qualname
+                .rsplit_once('.')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_default();
+            t.by_mod_name
+                .entry((parent, name.to_string()))
+                .or_default()
+                .push(idx);
+        }
         _ if direct_child && kind != SymbolKind::Method => {
             t.by_mod_name
                 .entry((module.to_string(), name.to_string()))
@@ -98,19 +111,34 @@ pub(super) fn emit_inherit_edge(
 ) -> Option<String> {
     let class_file = ctx.t.symbols[src_idx].file_idx;
     let src_qn = ctx.t.symbols[src_idx].qualname.clone();
-    let base_qn = resolve_base_chain(ctx.t, class_file, chain, &src_qn);
-    if let Some(qn) = base_qn {
-        if let Some(dst) = unique_class_index(ctx.t, &qn) {
+    match resolve_base_chain(ctx.t, class_file, chain, &src_qn) {
+        BaseChain::Unique(qn) => {
+            if let Some(dst) = unique_class_index(ctx.t, &qn) {
+                ctx.t.edges.push(NewEdge {
+                    src_idx,
+                    dst_idx: Some(dst),
+                    dst_name: qn.clone(),
+                    kind: EdgeKind::Inherits,
+                    confidence: Confidence::Extracted,
+                    site_line,
+                });
+                return Some(qn);
+            }
+        }
+        BaseChain::Ambiguous(qn) => {
+            // Several class-kind symbols share the base qualname: keep the
+            // relation visible as an AMBIGUOUS dst-less edge instead of
+            // silently collapsing the site into a plain unresolved row.
             ctx.t.edges.push(NewEdge {
                 src_idx,
-                dst_idx: Some(dst),
+                dst_idx: None,
                 dst_name: qn.clone(),
                 kind: EdgeKind::Inherits,
-                confidence: Confidence::Extracted,
+                confidence: Confidence::Ambiguous,
                 site_line,
             });
-            return Some(qn);
         }
+        BaseChain::NotFound => {}
     }
     ctx.unresolved_calls.push(UnresolvedSite {
         file_idx: class_file,

@@ -116,7 +116,7 @@ eg search "read bounded"
 
 Output delivers **Concise Interface Cards** ranked by caller popularity:
 ```text
-src/walk.rs:42 fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> [callers=14]
+src/walk.rs:250 fn read_bounded(path: &Path) -> Result<Vec<u8>> [callers=8]
 ```
 The `[callers=14]` tag signals that `read_bounded` is an established, canonical helper that you should reuse.
 

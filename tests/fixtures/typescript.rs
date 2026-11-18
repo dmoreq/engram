@@ -147,3 +147,72 @@ fn ts_export_default_class_binds_default_alias() {
         resolution.edges
     );
 }
+
+#[test]
+fn ts_export_default_identifier_binds_alias() {
+    // `export default makeRepo;` (identifier form) binds the "default" alias
+    // to the referenced symbol, so a consumer's default import resolves the
+    // call. A non-identifier default export stays unbound (negative below).
+    let src1 = "export function makeRepo(): number {\n  return 1\n}\n\nexport default makeRepo;\n";
+    let src2 =
+        "import makeRepo from './repo'\n\nexport function run(): number {\n  return makeRepo()\n}\n";
+    let p1 = parse_source(src1.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(src2.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/repo.ts", src1.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/run.ts", src2.as_bytes(), &p2);
+    let resolution = engram::extract::resolve(vec![fx1, fx2], Default::default());
+    assert!(
+        resolution.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name.ends_with(".makeRepo")
+        }),
+        "default-imported function call must resolve: {:?}",
+        resolution.edges
+    );
+}
+
+#[test]
+fn ts_export_default_object_literal_stays_unresolved() {
+    // `export default { ... }` has no identifier to alias: the import site
+    // stays an unresolved call, never a fabricated edge.
+    let src1 = "export default {\n  run(): number {\n    return 1\n  },\n};\n";
+    let src2 = "import handler from './handler'\n\nexport function run(): number {\n  return handler.run()\n}\n";
+    let p1 = parse_source(src1.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(src2.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/handler.ts", src1.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/run.ts", src2.as_bytes(), &p2);
+    let resolution = engram::extract::resolve(vec![fx1, fx2], Default::default());
+    assert!(
+        !resolution
+            .edges
+            .iter()
+            .any(|e| { e.kind == EdgeKind::Calls && e.dst_name.ends_with(".handler") }),
+        "object-literal default export must not fabricate an edge: {:?}",
+        resolution.edges
+    );
+}
+
+#[test]
+fn ts_import_dot_slash_dot_dot_normalizes_directory() {
+    // `./../shared` must pop the directory base even though the leading `./`
+    // already consumed one segment: the resolved module is pkg.shared, not
+    // pkg.sub.shared.
+    let src1 = "export function make(n: number): number {\n  return n\n}\n";
+    let src2 = "import { make } from './../shared'\n\nexport function run(): number {\n  return make(1)\n}\n";
+    let p1 = parse_source(src1.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(src2.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/shared.ts", src1.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/sub/run.ts", src2.as_bytes(), &p2);
+    let resolution = engram::extract::resolve(vec![fx1, fx2], Default::default());
+    let hit = resolution.edges.iter().any(|e| {
+        e.kind == EdgeKind::Calls
+            && e.confidence == Confidence::Extracted
+            && e.dst_name == "pkg.shared.make"
+    });
+    assert!(
+        hit,
+        "./../shared must resolve to pkg.shared: {:?}",
+        resolution.edges
+    );
+}

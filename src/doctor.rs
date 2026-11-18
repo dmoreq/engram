@@ -9,6 +9,10 @@ use crate::db;
 use crate::error::Result;
 
 pub fn invalidate(root: &Path) -> Result<Vec<String>> {
+    // Refuse tracked `.engram` state before mutating anything: the reset must
+    // not delete committed files, exactly like the build path's provenance
+    // gate.
+    db::reject_tracked_eg_dir(root)?;
     // Serialize with builds through the same `.engram/build.lock` flock a build
     // holds, so an invalidate cannot start while a build is running.
     let lock = db::BuildLock::acquire(root)?;

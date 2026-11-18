@@ -138,14 +138,17 @@ fn class_candidates(conn: &Connection) -> Result<Vec<ReuseCandidate>> {
             } else {
                 ReuseConfidence::Low
             };
+            // Deterministic keep/drop direction: the qualname/file order is
+            // fixed by the query's ORDER BY, so the FIRST occurrence is the
+            // canonical (kept) class and the later one is the duplicate.
             pool.push(ReuseCandidate {
                 detector: DetectorId::D5,
-                symbol: left.2.clone(),
-                file: left.4.clone(),
-                line: left.5,
-                canonical: right.2.clone(),
-                canonical_file: right.4.clone(),
-                canonical_line: right.5,
+                symbol: right.2.clone(),
+                file: right.4.clone(),
+                line: right.5,
+                canonical: left.2.clone(),
+                canonical_file: left.4.clone(),
+                canonical_line: left.5,
                 canonical_callers: 0,
                 overlap_pct: None,
                 shared_items: shared,

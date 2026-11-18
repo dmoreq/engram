@@ -88,9 +88,12 @@ impl RawModeGuard {
             }
         });
 
+        // raw turns off echo/ICANON/ISIG (quit keys arrive as bytes the reader
+        // already handles); opost keeps newline/output translation intact.
         let status = Command::new("stty")
             .arg("-echo")
-            .arg("cbreak")
+            .arg("raw")
+            .arg("opost")
             .status()
             .ok()?;
         if status.success() {
@@ -112,7 +115,9 @@ impl Drop for RawModeGuard {
         if let Some(ref s) = self.saved {
             let _ = Command::new("stty").arg(s).status();
         } else {
-            let _ = Command::new("stty").arg("echo").arg("-cbreak").status();
+            // No saved state: restore a sane terminal instead of leaving raw
+            // mode stuck on after an abnormal exit.
+            let _ = Command::new("stty").arg("sane").status();
         }
     }
 }
@@ -274,11 +279,9 @@ fn poll_log_new_events(
 }
 
 fn get_terminal_size() -> (usize, usize) {
-    if let Ok(out) = Command::new("stty")
-        .arg("size")
-        .stdin(std::process::Stdio::null())
-        .output()
-    {
+    // stty queries the controlling terminal through stdin; a null stdin makes
+    // it fail and forces the 80x24 default on every resize.
+    if let Ok(out) = Command::new("stty").arg("size").output() {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
             let mut parts = text.split_whitespace();

@@ -194,23 +194,26 @@ fn merge_search_pointers(exact: Vec<Pointer>, fts: Vec<Pointer>) -> Vec<Pointer>
 pub fn search(ctx: &QueryCtx<'_>, terms: &str, limit: usize) -> Result<LineQuery> {
     let QueryCtx { conn, .. } = *ctx;
     let limit = clamp_limit(limit)?;
-    let (toks, expr, terms_cap) = search_expr(conn, terms)?;
+    let (_, expr, terms_cap) = search_expr(conn, terms)?;
     let (fts_ptrs, total) = search_fts_page(conn, &expr, limit)?;
-    let (pointers, total) = if toks.len() == 1 {
-        let exact_name = toks.join(" ");
-        let (exact_ptrs, exact_total) = search_exact_page(conn, &exact_name, limit)?;
+    // Exact-identity tier: match the user's original spelling instead of the
+    // lowercased token stream — CamelCase and snake_case names only equal
+    // `s.name`/`s.qualname` in their original form, whatever the token count.
+    let exact_name = terms.trim();
+    let (pointers, total) = if exact_name.is_empty() {
+        (fts_ptrs, total)
+    } else {
+        let (exact_ptrs, exact_total) = search_exact_page(conn, exact_name, limit)?;
         if exact_total > 0 {
             // The capped page overlap is not the full overlap: count the
             // union of exact and FTS identities.
             (
                 merge_search_pointers(exact_ptrs, fts_ptrs),
-                search_union_total(conn, &exact_name, &expr)?,
+                search_union_total(conn, exact_name, &expr)?,
             )
         } else {
             (fts_ptrs, total)
         }
-    } else {
-        (fts_ptrs, total)
     };
     if total == 0 {
         return Err(EgError::NoResults(format!(

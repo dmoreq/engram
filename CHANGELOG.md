@@ -14,6 +14,49 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [Unreleased]
+
+### Changed
+- The MCP KPI footer drops its decorative prefix and reads `eg: {latency}ms |
+  {N} items[ | ~{T} tokens saved]`; the hygiene gate no longer carries an
+  emoji exception and now also rejects Unicode 13+ symbol blocks.
+
+### Fixed
+- Incremental builds on Windows no longer fail to publish the replacement
+  index: the old read connection closes before the atomic rename, and the
+  build lock rejects unlinked inodes and reports the holder pid reliably.
+- Re-exported traits and interfaces now carry inheritance edges through
+  preludes/index files; `export default foo;` identifier exports resolve for
+  default imports; Rust `impl pkg::Type` targets with scoped type paths
+  extract; deeply nested destructuring no longer recurses on the thread
+  stack.
+- Transitive callee listings collapse to one row per destination (strongest
+  confidence wins) and no longer list a seed symbol as its own callee in
+  call cycles; BFS path traversal and direct-caller ordering gained the
+  remaining deterministic tie-breakers.
+- Reuse detector D1 ranks confidence before raw overlap, D5 class coverage
+  reports the lexicographically-first class as canonical, proposal
+  candidates skip filesystem freshness stat, `eg reuse` with zero results
+  prices zero tokens, and the judge child keeps `$HOME` after its env clear.
+- Memory writes supersede expired session notes so revision chains stay
+  connected, confirm FNV-1a hash matches against stored fields before
+  reporting duplicates, and `mem import` preserves exported `created_at`
+  dates; the MCP `mem_import` tool gained the `global` flag for CLI/MCP
+  parity.
+- Secret screening catches JWTs before a trailing sentence period, database
+  URLs on the `redis://`, `rediss://`, and `mariadb://` schemes, and URLs
+  that carry only a password.
+- The dashboard Host guard rejects `0.0.0.0` (wildcard-loopback attacks),
+  duplicate `Host`/`Content-Length` headers refuse the request, request logs
+  sanitize ANSI escapes, SSE streams detect a half-closed client instead of
+  spinning, the connection cap reserves slots atomically, and `eg monitor`
+  reads the real terminal size and restores the terminal with `stty sane`.
+- `eg doctor --invalidate` refuses tracked `.engram` directories before the
+  reset, audit checks report the alias/value of the repository or family
+  behind the worst finding instead of the first warning, journal pruning
+  survives invalid UTF-8 bytes, and usage-log rotation holds a file lock
+  across the size check and rename.
+
 ## [1.1.0] - 2026-11-15
 
 ### Changed
@@ -574,8 +617,9 @@ changes bump the minor while 0.x is unstable.
   `ENGRAM_SESSION`, `ENGRAM_GLOBAL_DIR`, and `ENGRAM_AGENT` resolve the legacy
   `AW_*` spelling as a fallback, so existing privacy opt-outs and global-store
   overrides keep applying.
-- The MCP server identifies itself as `engram`, the KPI footer reads `⚡ eg:`,
-  and CLI output prefixes read `eg: ...`. The routing skill moves to
+- The MCP server identifies itself as `engram`, the KPI footer carried a
+  decorative emoji prefix (removed in a later release), and CLI output
+  prefixes read `eg: ...`. The routing skill moves to
   `skills/engram-first`, and the installer provides clean configuration for all running agent hosts.
 - Security hardening: repo-local `.engram/` state that is tracked in Git is
   rejected with exit 2 (`eg: security: ...`) to block committed memory

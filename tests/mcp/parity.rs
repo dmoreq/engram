@@ -77,7 +77,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&callers)),
         String::from_utf8_lossy(&cli_callers.stdout).into_owned()
     );
-    assert!(result_text(&callers).contains("⚡ eg:"));
+    assert!(result_text(&callers).contains("eg:"));
 
     let symbols = rpc(
         &mut srv,
@@ -89,7 +89,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&symbols)),
         String::from_utf8_lossy(&cli_symbols.stdout).into_owned()
     );
-    assert!(result_text(&symbols).contains("⚡ eg:"));
+    assert!(result_text(&symbols).contains("eg:"));
 
     let symbols_outline = rpc(
         &mut srv,
@@ -101,7 +101,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&symbols_outline)),
         String::from_utf8_lossy(&cli_symbols_outline.stdout).into_owned()
     );
-    assert!(result_text(&symbols_outline).contains("⚡ eg:"));
+    assert!(result_text(&symbols_outline).contains("eg:"));
 
     let search = rpc(
         &mut srv,
@@ -113,7 +113,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&search)),
         String::from_utf8_lossy(&cli_search.stdout).into_owned()
     );
-    assert!(result_text(&search).contains("⚡ eg:"));
+    assert!(result_text(&search).contains("eg:"));
 
     // R6e: parity covers every pointer tool that does not depend on
     // wall-clock timings or journal state.
@@ -153,7 +153,7 @@ fn g10_initialize_tools_list_and_parity() {
             String::from_utf8_lossy(&cli.stdout).into_owned(),
             "{tool} byte parity"
         );
-        assert!(result_text(&via_mcp).contains("⚡ eg:"));
+        assert!(result_text(&via_mcp).contains("eg:"));
     }
 
     // P8 no-result parity: imports on an unknown file (CLI stderr, MCP text).
@@ -170,7 +170,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&imports_missing)).trim_end(),
         String::from_utf8_lossy(&cli_imports_missing.stderr).trim_end()
     );
-    assert!(result_text(&imports_missing).contains("⚡ eg:"));
+    assert!(result_text(&imports_missing).contains("eg:"));
 
     // G10 parity extends to context (Amendment 17).
     let cli_context = eg_cmd(&repo)
@@ -188,7 +188,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&context_call)),
         String::from_utf8_lossy(&cli_context.stdout).into_owned()
     );
-    assert!(result_text(&context_call).contains("⚡ eg:"));
+    assert!(result_text(&context_call).contains("eg:"));
 
     // G10 parity extends to path (Amendment 13): hop pointers + chain line
     // byte-equal between the surfaces.
@@ -207,7 +207,7 @@ fn g10_initialize_tools_list_and_parity() {
         strip_footer(&result_text(&path_call)),
         String::from_utf8_lossy(&cli_path.stdout).into_owned()
     );
-    assert!(result_text(&path_call).contains("⚡ eg:"));
+    assert!(result_text(&path_call).contains("eg:"));
     assert!(
         result_text(&path_call).starts_with("eg: path — resolved static edges only;"),
         "path caveat first: {}",

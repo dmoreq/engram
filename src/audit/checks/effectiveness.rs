@@ -138,8 +138,10 @@ pub(super) fn pillars(data: &AuditData) -> CheckResult {
 
 pub(super) fn empty_results(data: &AuditData) -> CheckResult {
     let mut worst = Status::Pass;
-    let mut value = 0.0;
-    let mut family = "";
+    let mut worst_value = 0.0;
+    let mut worst_family = "";
+    let mut max_value = 0.0;
+    let mut max_family = "";
     for (name, successes, empty, floor) in [
         (
             "navigation",
@@ -164,20 +166,25 @@ pub(super) fn empty_results(data: &AuditData) -> CheckResult {
             continue;
         }
         let rate = empty as f64 / successes as f64;
-        if family.is_empty() || rate > value {
-            value = rate;
-            family = name;
+        if max_family.is_empty() || rate > max_value {
+            max_value = rate;
+            max_family = name;
         }
         let status = if rate > floor {
             Status::Warn
         } else {
             Status::Pass
         };
+        // Value and family must both describe the family behind the worst
+        // status: the per-family floors let a lower-rate family Warn while a
+        // higher-rate family stays Pass.
         if severity(status) > severity(worst) {
             worst = status;
+            worst_value = rate;
+            worst_family = name;
         }
     }
-    if family.is_empty() {
+    if max_family.is_empty() {
         return check(
             "quality.empty_results",
             "effectiveness",
@@ -189,6 +196,11 @@ pub(super) fn empty_results(data: &AuditData) -> CheckResult {
             "no family has 10 successful calls".into(),
         );
     }
+    let (value, family) = if worst == Status::Pass {
+        (max_value, max_family)
+    } else {
+        (worst_value, worst_family)
+    };
     let mut c = check(
         "quality.empty_results",
         "effectiveness",

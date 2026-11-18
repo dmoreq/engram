@@ -42,10 +42,12 @@ pub(super) fn index_integrity(data: &AuditData) -> CheckResult {
         };
         if status != Status::Pass {
             failures += 1.0;
-            alias.get_or_insert_with(|| repo.alias.clone());
         }
+        // The alias must name the repo behind the reported worst status, not
+        // the first non-passing one (a Warn before a Critical used to win).
         if severity(status) > severity(worst) {
             worst = status;
+            alias = Some(repo.alias.clone());
         }
     }
     let message = if hard > 0 {
@@ -85,8 +87,10 @@ pub(super) fn index_integrity(data: &AuditData) -> CheckResult {
 
 pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
     let mut worst = Status::Pass;
-    let mut value = 0.0;
-    let mut alias = None;
+    let mut worst_value = 0.0;
+    let mut worst_alias = None;
+    let mut max_value = 0.0;
+    let mut max_alias = None;
     let mut eligible = 0;
     for repo in &data.repos {
         let (IndexState::Ok(f) | IndexState::Empty(f)) = &repo.state else {
@@ -97,9 +101,9 @@ pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
         }
         eligible += 1;
         let rate = f.parse_errors as f64 / f.files as f64;
-        if rate > value {
-            value = rate;
-            alias = Some(repo.alias.clone());
+        if rate > max_value {
+            max_value = rate;
+            max_alias = Some(repo.alias.clone());
         }
         let status = if rate > 0.10 && f.parse_errors >= 5 {
             Status::Critical
@@ -108,8 +112,13 @@ pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
         } else {
             Status::Pass
         };
+        // Value and alias must both describe the repo behind the worst
+        // status: the error-count floors make a lower-rate repo Critical
+        // while a higher-rate repo stays Warn.
         if severity(status) > severity(worst) {
             worst = status;
+            worst_value = rate;
+            worst_alias = Some(repo.alias.clone());
         }
     }
     if eligible == 0 {
@@ -124,6 +133,11 @@ pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
             "no index has the 20-file minimum for parse-rate evaluation".into(),
         );
     }
+    let (value, alias) = if worst == Status::Pass {
+        (max_value, max_alias)
+    } else {
+        (worst_value, worst_alias)
+    };
     let mut c = check(
         "index.parse_errors",
         "freshness",
@@ -132,7 +146,7 @@ pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
         "ratio",
         lower(0.05, Some(0.10), None),
         "doctor",
-        format!("highest parse-error rate is {}", pct(value)),
+        format!("worst parse-error rate is {}", pct(value)),
     );
     c.repo_alias = alias;
     c
@@ -140,8 +154,10 @@ pub(super) fn parse_errors(data: &AuditData) -> CheckResult {
 
 pub(super) fn staleness(data: &AuditData) -> CheckResult {
     let mut worst = Status::Pass;
-    let mut value = 0.0;
-    let mut alias = None;
+    let mut worst_value = 0.0;
+    let mut worst_alias = None;
+    let mut max_value = 0.0;
+    let mut max_alias = None;
     let mut eligible = 0;
     let mut moving = false;
     for repo in &data.repos {
@@ -149,9 +165,9 @@ pub(super) fn staleness(data: &AuditData) -> CheckResult {
             IndexState::BuildInProgress => moving = true,
             IndexState::Ok(f) if f.files >= 20 => {
                 eligible += 1;
-                if f.stale_ratio > value {
-                    value = f.stale_ratio;
-                    alias = Some(repo.alias.clone());
+                if f.stale_ratio > max_value {
+                    max_value = f.stale_ratio;
+                    max_alias = Some(repo.alias.clone());
                 }
                 let changed = (f.stale_ratio * f.files as f64).round() as i64;
                 let status = if f.stale_ratio > 0.25 && changed >= 5 {
@@ -161,8 +177,13 @@ pub(super) fn staleness(data: &AuditData) -> CheckResult {
                 } else {
                     Status::Pass
                 };
+                // Value and alias follow the repo behind the worst status;
+                // the changed-file floor lets a lower-ratio repo be Critical
+                // while a higher-ratio repo stays Warn.
                 if severity(status) > severity(worst) {
                     worst = status;
+                    worst_value = f.stale_ratio;
+                    worst_alias = Some(repo.alias.clone());
                 }
             }
             IndexState::TooLarge => moving = true,
@@ -174,7 +195,7 @@ pub(super) fn staleness(data: &AuditData) -> CheckResult {
             "index.staleness",
             "freshness",
             Status::Insufficient,
-            Some(value),
+            Some(max_value),
             "ratio",
             lower(0.10, Some(0.25), None),
             "doctor",
@@ -193,6 +214,11 @@ pub(super) fn staleness(data: &AuditData) -> CheckResult {
             "no index has the 20-file minimum for staleness evaluation".into(),
         );
     }
+    let (value, alias) = if worst == Status::Pass {
+        (max_value, max_alias)
+    } else {
+        (worst_value, worst_alias)
+    };
     let mut c = check(
         "index.staleness",
         "freshness",
@@ -201,7 +227,7 @@ pub(super) fn staleness(data: &AuditData) -> CheckResult {
         "ratio",
         lower(0.10, Some(0.25), None),
         "doctor",
-        format!("highest stale ratio is {}", pct(value)),
+        format!("worst stale ratio is {}", pct(value)),
     );
     c.repo_alias = alias;
     c

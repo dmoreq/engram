@@ -292,6 +292,7 @@ mod tests {
             body,
             source: "cli",
             expires_at: 0,
+            created_at: None,
             supersedes: None,
             touch: false,
         }

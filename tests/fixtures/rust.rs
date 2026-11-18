@@ -198,3 +198,47 @@ fn rust_scoped_self_import_binds_module_alias() {
         "inner::helper() must resolve through the scoped self alias: {edges:?}"
     );
 }
+
+#[test]
+fn rust_impl_scoped_type_target_binds_impl_methods() {
+    // `impl crate::widget::Widget` parses a scoped_type_identifier impl
+    // target; the method must scope under Widget, never UnknownImpl.
+    let src = "pub struct Widget;\n\nimpl crate::widget::Widget {\n    pub fn make() -> i32 {\n        1\n    }\n}\n";
+    let parsed = parse_source(src.as_bytes(), Lang::Rust).unwrap();
+    let fx = extract_file(0, "src/widget.rs", src.as_bytes(), &parsed);
+    let qns: Vec<&str> = fx.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    assert!(
+        qns.iter().any(|q| q.ends_with(".Widget.make")),
+        "scoped impl target must name the type: {qns:?}"
+    );
+    assert!(
+        !qns.iter().any(|q| q.contains("UnknownImpl")),
+        "scoped impl target must not fall back to UnknownImpl: {qns:?}"
+    );
+}
+
+#[test]
+fn rust_trait_reexport_carries_inherit_edge() {
+    // A trait re-exported through the crate root (`pub use base::Base`) must
+    // carry the same inherit machinery as a class re-export.
+    // 2018 edition: a plain `use base::Base` is an external crate path; the
+    // crate-qualified spelling is the internal re-export.
+    let lib = "pub mod base {\n    pub trait Base {\n        fn go(&self);\n    }\n}\npub use crate::base::Base;\n";
+    let user = "use crate::Base;\n\npub struct Widget;\n\nimpl Base for Widget {\n    fn go(&self) {}\n}\n";
+    let p1 = parse_source(lib.as_bytes(), Lang::Rust).unwrap();
+    let p2 = parse_source(user.as_bytes(), Lang::Rust).unwrap();
+    let fx1 = extract_file(0, "src/lib.rs", lib.as_bytes(), &p1);
+    let fx2 = extract_file(1, "src/user.rs", user.as_bytes(), &p2);
+    let resolution = resolve(vec![fx1, fx2], Default::default());
+    let e = resolution
+        .edges
+        .iter()
+        .map(|e| (e.kind, e.confidence, e.dst_name.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        e.iter().any(|(k, c, n)| {
+            *k == EdgeKind::Inherits && *c == Confidence::Extracted && n.ends_with(".Base")
+        }),
+        "trait impl through a re-export must emit the inherits edge: {e:?}"
+    );
+}

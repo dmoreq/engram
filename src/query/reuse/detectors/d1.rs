@@ -98,12 +98,6 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
             continue;
         }
         let pct = (ratio * 100.0).round() as u64;
-        let can_win = best.as_ref().is_none_or(|(best_pct, best_sym, ..)| {
-            pct > *best_pct || (pct == *best_pct && is_more_canonical(candidate, best_sym))
-        });
-        if !can_win {
-            continue;
-        }
         let shared_ids: Vec<i64> = target
             .deep_weights
             .keys()
@@ -141,7 +135,19 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
         }
         let weak = distinctive_weakness(corpus, &shared_ids);
         let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
-        best = Some((pct, candidate, shared, confidence, reasons));
+        // Confidence ranks before raw overlap; the pct pre-filter cannot be
+        // applied because a lower-overlap candidate may carry a higher rank.
+        let better = best
+            .as_ref()
+            .is_none_or(|(best_pct, best_sym, _, best_conf, _)| {
+                confidence.rank() > best_conf.rank()
+                    || (confidence.rank() == best_conf.rank()
+                        && (pct > *best_pct
+                            || (pct == *best_pct && is_more_canonical(candidate, best_sym))))
+            });
+        if better {
+            best = Some((pct, candidate, shared, confidence, reasons));
+        }
     }
     best.map(|(pct, candidate, shared, confidence, reasons)| {
         make_candidate(

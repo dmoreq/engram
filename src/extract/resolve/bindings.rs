@@ -36,7 +36,11 @@ pub(super) fn follow_binding<'a>(
     }
     let file_idx = *t.file_by_module.get(module)?;
     let fctx = &t.file_ctx[file_idx];
-    match file_alias(fctx, name) {
+    // Look the binding up under the file's own module scope: top-level Rust
+    // `use` items record under it, and a scope-"" lookup would miss every
+    // Rust re-export link. Python file-level imports record under "" and
+    // stay visible from any scope.
+    match nearest_alias_scoped(fctx, &fctx.module, name).map(|(_, target)| target) {
         Some(ImportTarget::Symbol {
             module: m2,
             name: n2,
@@ -134,8 +138,20 @@ pub(super) fn resolve_base_chain(
     fi: usize,
     chain: &[String],
     inheriting_qn: &str,
-) -> Option<String> {
+) -> BaseChain {
     let chain_str = chain.join(".");
+    // File-local alias wins first: `use pkg::Type as T` inside pkg's own
+    // module must follow the alias before the ancestor-package walk tries
+    // `pkg.T`, which can bind a different, unrelated symbol. The lookup scope
+    // is the file's module: top-level Rust `use` items record under it, and
+    // Python file-level imports record under "" (always visible).
+    if let Some(qn) = alias_class(t, &t.file_ctx[fi], chain, &t.file_ctx[fi].module) {
+        return match class_match_count(t, &qn) {
+            1 => BaseChain::Unique(qn),
+            count if count > 1 => BaseChain::Ambiguous(qn),
+            _ => BaseChain::NotFound,
+        };
+    }
     let mut parent = inheriting_qn
         .rsplit_once('.')
         .map(|(p, _)| p)
@@ -146,15 +162,30 @@ pub(super) fn resolve_base_chain(
         } else {
             format!("{parent}.{chain_str}")
         };
-        if unique_class_exists(t, &candidate) {
-            return Some(candidate);
+        match class_match_count(t, &candidate) {
+            1 => return BaseChain::Unique(candidate),
+            count if count > 1 => return BaseChain::Ambiguous(candidate),
+            _ => {}
         }
         match parent.rsplit_once('.') {
             Some((p, _)) => parent = p,
             None => break,
         }
     }
-    resolve_class_of_chain(t, fi, chain, "")
+    match resolve_class_of_chain(t, fi, chain, &t.file_ctx[fi].module) {
+        Some(qn) if class_match_count(t, &qn) > 1 => BaseChain::Ambiguous(qn),
+        Some(qn) => BaseChain::Unique(qn),
+        None => BaseChain::NotFound,
+    }
+}
+
+/// Base-chain outcome for inheritance: unique candidates join the MRO, and a
+/// multi-match candidate keeps a visible (dst-less, AMBIGUOUS) edge instead of
+/// collapsing into a bare unresolved site.
+pub(super) enum BaseChain {
+    Unique(String),
+    Ambiguous(String),
+    NotFound,
 }
 
 pub(super) fn resolve_class_of_chain(
@@ -240,7 +271,9 @@ pub(super) fn alias_class(
 pub(super) fn follow_reexport(t: &Tables, module: &str, name: &str) -> Option<String> {
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
     match follow_binding(t, (module, name), 0, &mut seen, name) {
-        Some(Outcome::Extracted(idx)) if t.symbols[idx].kind == SymbolKind::Class => {
+        // Traits and interfaces re-exported through a prelude/index file carry
+        // inheritance edges too; restricting to Class severed those chains.
+        Some(Outcome::Extracted(idx)) if is_class_kind(t.symbols[idx].kind) => {
             Some(t.symbols[idx].qualname.to_string())
         }
         _ => None,
@@ -249,6 +282,15 @@ pub(super) fn follow_reexport(t: &Tables, module: &str, name: &str) -> Option<St
 
 pub(super) fn unique_class_exists(t: &Tables, qualname: &str) -> bool {
     unique_class_index(t, qualname).is_some()
+}
+
+/// Number of class-kind symbols sharing one qualname (0 when absent).
+pub(super) fn class_match_count(t: &Tables, qualname: &str) -> usize {
+    t.by_qualname.get(qualname).map_or(0, |v| {
+        v.iter()
+            .filter(|&&i| is_class_kind(t.symbols[i].kind))
+            .count()
+    })
 }
 
 /// The single class/trait/interface index for a qualname, when exactly one
@@ -326,6 +368,14 @@ pub(super) fn module_chain_outcome(
                 // Imported class: ImportedClass.method(...)
                 if class_exists(t, &qn) && chain.len() == 2 {
                     return mro_outcome(t, &qn, &chain[1]);
+                }
+                // An imported symbol whose origin module is not indexed
+                // (third-party or stdlib package) is an external call site,
+                // not this repo's unresolved gap.
+                if !t.module_paths.contains(module)
+                    || STDLIB_MODULES.contains(&module.split('.').next().unwrap_or(module))
+                {
+                    return Outcome::Dropped;
                 }
                 return Outcome::Unresolved;
             }

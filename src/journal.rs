@@ -290,7 +290,20 @@ fn recreate_journal(path: &Path, eg_created_here: bool) {
 }
 
 fn rotate_if_needed(path: &Path, max: u64) {
-    let oversized = fs::metadata(path).map(|m| m.len() > max).unwrap_or(false);
+    // Serialize size-check and rename against concurrent appenders: two
+    // processes rotating the same oversize log would double-rename and lose
+    // the lines appended between the two renames. Lock the inode the fstat
+    // reads, so the check and the rename share one holder.
+    let Ok(file) = OpenOptions::new().read(true).open(path) else {
+        return;
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        // Another appender owns the rotation window; its rename covers us.
+        Err(std::fs::TryLockError::WouldBlock) => return,
+        Err(std::fs::TryLockError::Error(_)) => return,
+    }
+    let oversized = file.metadata().map(|m| m.len() > max).unwrap_or(false);
     if !oversized {
         return;
     }

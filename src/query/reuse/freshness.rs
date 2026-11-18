@@ -201,6 +201,11 @@ pub(super) fn evaluate(
     };
     let mut seen = HashSet::new();
     for file in files {
+        // Proposal candidates have no backing file; stat-ing the sentinel
+        // path fails on Windows (InvalidInput) and misreports elsewhere.
+        if file == "<proposal>" {
+            continue;
+        }
         if !seen.insert(file.clone()) {
             continue;
         }

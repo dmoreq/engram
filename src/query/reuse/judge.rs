@@ -38,6 +38,9 @@ struct Setup {
     model: PathBuf,
     subcommand: &'static str,
     recipe: Option<PathBuf>,
+    /// Preserved across the judge child's `env_clear()` so checkpoint and
+    /// cache lookups that rely on `$HOME` keep working.
+    home: Option<String>,
 }
 
 /// Judge outcome for one invocation, in candidate order.
@@ -202,6 +205,7 @@ fn detect_setup() -> std::result::Result<Setup, String> {
         model,
         subcommand,
         recipe,
+        home: std::env::var("HOME").ok(),
     })
 }
 
@@ -300,6 +304,9 @@ fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<String>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_clear();
+    if let Some(home) = &setup.home {
+        command.env("HOME", home);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -449,6 +456,7 @@ mod tests {
             model: PathBuf::from("model"),
             subcommand,
             recipe: None,
+            home: None,
         };
         let pairs = vec![("left".to_string(), "right".to_string())];
         let payload = build_payload(&setup("similarity"), &pairs).unwrap();

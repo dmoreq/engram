@@ -100,7 +100,7 @@ fn push_typed_param(w: &mut Walker<'_, '_, '_>, p: Node<'_>, scope: &str) {
     }
     let ident = p.child_by_field_name("name").or_else(|| {
         (0..p.child_count())
-            .map(|i| p.child(i).unwrap())
+            .filter_map(|i| p.child(i))
             .find(|ch| ch.kind() == "identifier")
     });
     let ty = p.child_by_field_name("type");
@@ -183,6 +183,19 @@ pub(super) fn record_assignment(w: &mut Walker<'_, '_, '_>) {
     let Some(left) = node.child_by_field_name("left") else {
         return;
     };
+    // Python `x: T = v` / bare `x: T` (annotated_assignment): the annotation
+    // types the variable even when no value is assigned yet, so later calls
+    // on x resolve through its class.
+    if left.kind() == "identifier" {
+        if let Some(ty) = node.child_by_field_name("type") {
+            push_param_type(
+                w.fx,
+                text(left, src),
+                dotted_chain(ty, src),
+                &w.ctx.scope_func(),
+            );
+        }
+    }
     if matches!(
         left.kind(),
         "pattern_list" | "tuple_pattern" | "list_pattern" | "expression_list" | "list"
@@ -196,8 +209,10 @@ pub(super) fn record_assignment(w: &mut Walker<'_, '_, '_>) {
     let Some(target) = direct_call_target(right, src) else {
         // A simple `x = <unknown>` still overwrites an earlier constructor
         // type; record it as an unknown binding instead of leaving the old
-        // assignment in place.
-        if left.kind() == "identifier" {
+        // assignment in place. An annotated assignment (`x: T = unknown`)
+        // keeps its annotation instead: the empty binding would shadow the
+        // type recorded above.
+        if left.kind() == "identifier" && node.child_by_field_name("type").is_none() {
             push_assignment(
                 w.fx,
                 text(left, src),
@@ -209,13 +224,20 @@ pub(super) fn record_assignment(w: &mut Walker<'_, '_, '_>) {
         return;
     };
     match left.kind() {
-        "identifier" => push_assignment(
-            w.fx,
-            text(left, src),
-            target,
-            w.ctx,
-            node.start_position().row + 1,
-        ),
+        "identifier" => {
+            // An annotated assignment's declared type outranks whatever the
+            // RHS call suggests: the annotation is already recorded above,
+            // and a plain-call target (build()) must not shadow it.
+            if node.child_by_field_name("type").is_none() {
+                push_assignment(
+                    w.fx,
+                    text(left, src),
+                    target,
+                    w.ctx,
+                    node.start_position().row + 1,
+                );
+            }
+        }
         "attribute" => record_self_field_assignment(left, target, w.ctx, w.fx, src),
         _ => {}
     }
@@ -286,22 +308,27 @@ fn record_pattern_shadow(
     ctx: &WalkCtx,
     site_line: usize,
 ) {
-    if node.kind() == "identifier" {
-        push_assignment(fx, text(node, src), Vec::new(), ctx, site_line);
-        return;
-    }
-    // Attribute assignment targets (`self.x = v`, `obj.x = v`) are not
-    // patterns: descending would record `x` as a shadowing local and erase
-    // the receiver's known type for later calls.
-    if matches!(
-        node.kind(),
-        "attribute" | "member_expression" | "field_expression"
-    ) {
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        record_pattern_shadow(child, src, fx, ctx, site_line);
+    // Heap stack instead of recursion: deeply nested destructuring (>500
+    // levels) would otherwise overflow the thread stack.
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "identifier" {
+            push_assignment(fx, text(current, src), Vec::new(), ctx, site_line);
+            continue;
+        }
+        // Attribute assignment targets (`self.x = v`, `obj.x = v`) are not
+        // patterns: descending would record `x` as a shadowing local and erase
+        // the receiver's known type for later calls.
+        if matches!(
+            current.kind(),
+            "attribute" | "member_expression" | "field_expression"
+        ) {
+            continue;
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
     }
 }
 

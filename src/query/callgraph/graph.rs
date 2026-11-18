@@ -183,8 +183,14 @@ fn transitive_sql(ids_len: usize) -> (String, String) {
         EdgeKind::Calls.as_str(),
         d = 1 + ids_len
     );
+    // Numbered placeholders re-reference the seed ids already bound ?1..?N;
+    // bare `?`s here would declare new parameters and break the bind count.
+    let seed_refs = (1..=ids_len)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let select = format!(
-        "SELECT DISTINCT COALESCE(ds.line_start, e.site_line) AS line, e.confidence,
+        "SELECT MIN(COALESCE(ds.line_start, e.site_line)) AS line, MAX(e.confidence) AS confidence,
                 COALESCE(df.path, f.path) AS path, COALESCE(ds.qualname, e.dst_name) AS qn
          FROM reach r
          -- CROSS JOIN + WHERE lets SQLite drive from the recursive set and
@@ -193,7 +199,13 @@ fn transitive_sql(ids_len: usize) -> (String, String) {
          {EDGE_SRC_FILE_JOIN}
          LEFT JOIN symbols ds ON ds.id = e.dst_id
          LEFT JOIN files df ON df.id = ds.file_id
-         WHERE e.src_id = r.sym AND e.kind = '{}' AND r.d < ?{d2}",
+         WHERE e.src_id = r.sym AND e.kind = '{}' AND r.d < ?{d2}
+           -- A call cycle would otherwise list a seed as its own callee.
+           AND COALESCE(ds.id, 0) NOT IN ({seed_refs})
+         -- One row per destination: the strongest confidence wins over a
+         -- duplicate line row when two edges of different confidence reach
+         -- the same symbol. Dst-less edges group per edge id.
+         GROUP BY COALESCE(ds.id, e.id)",
         EdgeKind::Calls.as_str(),
         d2 = 2 + ids_len
     );

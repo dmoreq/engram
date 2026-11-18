@@ -212,7 +212,35 @@ pub(super) fn record_ts_variable_binding(
 pub(super) fn record_export_ts(node: Node<'_>, src: &[u8], fx: &mut FileExtraction) {
     if let Some(source_node) = node.child_by_field_name("source") {
         push_ts_module_edge(fx, src, source_node, node.start_position().row + 1);
+        return;
     }
+    // `export default foo;` (identifier form): bind the file-local name
+    // "default" to the referenced symbol so `import X from './this'` in
+    // another file resolves through the re-export chase. Declaration forms
+    // (`export default class Foo {}`) define their own symbol and need no
+    // extra binding.
+    let mut cursor = node.walk();
+    let has_default = node.children(&mut cursor).any(|c| c.kind() == "default");
+    if !has_default {
+        return;
+    }
+    let Some(value) = node.child_by_field_name("value").or_else(|| {
+        node.children(&mut node.walk())
+            .find(|c| c.kind() == "identifier")
+    }) else {
+        return;
+    };
+    if value.kind() != "identifier" {
+        return;
+    }
+    fx.bindings.aliases.push((
+        String::new(),
+        "default".to_string(),
+        ImportTarget::Symbol {
+            module: fx.module.clone(),
+            name: text(value, src),
+        },
+    ));
 }
 
 /// Push one module edge for a TS/JS import source node and return its path.
@@ -365,16 +393,14 @@ pub(super) fn resolve_ts_module(source: &str, dir: &str) -> String {
     } else {
         Vec::new()
     };
-    // One normalization pass: a `..` pops the directory base only while it
-    // still leads the segment stream (`..` after the first non-`..` segment
-    // is dropped without popping, and `.` is always dropped from the output).
-    let mut leading = true;
+    // One normalization pass: every `..` pops one directory segment (a `./..`
+    // spelling must not strand the pop behind a skipped `.`), and `.` is
+    // always dropped from the output.
     for seg in stripped.split('/').filter(|s| !s.is_empty()) {
-        if seg == ".." && leading {
+        if seg == ".." {
             parts.pop();
             continue;
         }
-        leading = false;
         if seg != "." {
             parts.push(seg);
         }

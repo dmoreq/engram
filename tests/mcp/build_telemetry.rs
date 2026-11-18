@@ -72,7 +72,7 @@ fn mcp_response_includes_kpi_footer() {
     );
     assert_eq!(ctx["result"]["isError"], false);
     let text = result_text(&ctx);
-    assert!(text.contains("\n───\n⚡ eg:"), "context footer: {text}");
+    assert!(text.contains("\n───\neg:"), "context footer: {text}");
     assert!(
         text.contains("tokens saved vs file reads"),
         "context tokens: {text}"
@@ -87,7 +87,7 @@ fn mcp_response_includes_kpi_footer() {
     );
     assert_eq!(search["result"]["isError"], false);
     let text = result_text(&search);
-    assert!(text.contains("\n───\n⚡ eg:"), "search footer: {text}");
+    assert!(text.contains("\n───\neg:"), "search footer: {text}");
     assert!(
         text.contains("tokens saved vs file reads"),
         "search tokens: {text}"
@@ -102,7 +102,7 @@ fn mcp_response_includes_kpi_footer() {
     );
     assert_eq!(reuse["result"]["isError"], false);
     let text = result_text(&reuse);
-    assert!(text.contains("\n───\n⚡ eg:"), "reuse footer: {text}");
+    assert!(text.contains("\n───\neg:"), "reuse footer: {text}");
     assert!(
         text.contains("tokens saved vs file reads"),
         "reuse tokens: {text}"
@@ -117,10 +117,7 @@ fn mcp_response_includes_kpi_footer() {
     );
     assert_eq!(leaf["result"]["isError"], true);
     let leaf_text = result_text(&leaf);
-    assert!(
-        leaf_text.contains("\n───\n⚡ eg:"),
-        "leaf footer: {leaf_text}"
-    );
+    assert!(leaf_text.contains("\n───\neg:"), "leaf footer: {leaf_text}");
     assert!(
         leaf_text.contains("| 0 items"),
         "leaf zero items: {leaf_text}"
@@ -176,7 +173,7 @@ fn mcp_usage_tool_returns_telemetry() {
     assert!(text.contains("callers:"), "callers: {text}");
     // usage is an on-demand telemetry card; it must not append a redundant footer
     assert!(
-        !text.contains("⚡ eg:"),
+        !text.contains("eg:"),
         "usage has no redundant footer: {text}"
     );
 

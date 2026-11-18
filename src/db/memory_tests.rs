@@ -16,6 +16,7 @@ pub(super) fn note<'a>(key: &'a str, body: &'a str, kind: &'a str) -> MemNoteInp
         body,
         source: "cli",
         expires_at: 0,
+        created_at: None,
         supersedes: None,
         touch: false,
     }
@@ -366,6 +367,7 @@ fn memory_touch_migrates_v1_store_and_keeps_created_at() {
             refs: "",
             source: "cli",
             expires_at: 0,
+            created_at: None,
             supersedes: None,
             touch: false,
         },

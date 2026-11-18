@@ -142,7 +142,7 @@ pub fn run_build(
     heal_gaps(&mut prep, &mut fe)?;
     let parse_secs = t0.elapsed().as_secs_f64();
     parse_gate(&prep, &fe)?;
-    finish_index(&prep, fe, parse_secs)
+    finish_index(&mut prep, fe, parse_secs)
 }
 
 /// Resolve, write, and journal the fresh extraction — the second half of

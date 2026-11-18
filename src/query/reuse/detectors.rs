@@ -158,10 +158,15 @@ fn best_by_overlap(
         let Some((pct, shared, confidence, reasons)) = signal(candidate) else {
             continue;
         };
+        // Confidence ranks before raw overlap: a Low-confidence candidate
+        // with a bigger percentage must not displace a High-confidence one.
         let better = match &best {
             None => true,
-            Some((best_pct, best_sym, _, _, _)) => {
-                pct > *best_pct || (pct == *best_pct && is_more_canonical(candidate, best_sym))
+            Some((best_pct, best_sym, _, best_conf, _)) => {
+                confidence.rank() > best_conf.rank()
+                    || (confidence.rank() == best_conf.rank()
+                        && (pct > *best_pct
+                            || (pct == *best_pct && is_more_canonical(candidate, best_sym))))
             }
         };
         if better {

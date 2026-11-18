@@ -283,7 +283,7 @@ Time bounds accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SSZ`, or `@<unix-seconds>`. B
 | `get` | `eg mem get <KEY> [--global]` | Fetch current revision and total revision count for an exact key. |
 | `delete` | `eg mem delete <KEY> [--global]` | Hard-delete all revisions and FTS rows for a key. |
 | `export` | `eg mem export [--format jsonl\|markdown] [--limit <N>] [--global] [--since <TIME>] [--until <TIME>] [--scan]` | Export active notes as JSONL (default) or fenced Markdown to stdout. `--scan` reports suspected secrets on stderr without changing stdout or the exit code. |
-| `import` | `eg mem import <PATH> [--format jsonl\|markdown] [--force] [--global]` | Restore a JSONL/Markdown export (use `-` for stdin). Conflicting keys are skipped unless `--force` overwrites; imported rows carry `[imported]`. MCP import is confined to the project store. |
+| `import` | `eg mem import <PATH> [--format jsonl\|markdown] [--force] [--global]` | Restore a JSONL/Markdown export (use `-` for stdin). Conflicting keys are skipped unless `--force` overwrites; imported rows carry `[imported]`. MCP import targets the project store unless `global: true`. |
 | `gc` | `eg mem gc [--global]` | Purge expired session notes and superseded revisions older than 30 days. |
 | `reindex` | `eg mem reindex [--global]` | Rebuild the derived Unicode FTS index; notes are primary data and are untouched. |
 

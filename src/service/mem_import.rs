@@ -79,6 +79,7 @@ pub(super) fn run_mem_import(
             body: &note.body,
             source: "import",
             expires_at: note.expires_at,
+            created_at: note.created_at,
             supersedes: None,
             touch: false,
         })

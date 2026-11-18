@@ -7,7 +7,8 @@ use std::fs;
 use serde_json::json;
 
 use super::common::{
-    cli_mem, eg_cmd, mem_fixture, notification, result_text, rpc, spawn_with, strip_footer,
+    cli_mem, eg_cmd, mem_fixture, notification, result_text, rpc, spawn_with, spawn_with_global,
+    strip_footer,
 };
 
 #[test]
@@ -50,6 +51,52 @@ fn mem_import_rejects_traversal_and_allowlist_keys() {
     assert_eq!(stdin_path["result"]["isError"], true, "{stdin_path}");
     let _ = fs::remove_file(outside);
     let _ = fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn mem_import_global_flag_targets_the_global_store() {
+    let repo = mem_fixture("import-global");
+    let global_dir = mem_fixture("import-global-eg");
+    fs::write(
+        repo.join("global-notes.jsonl"),
+        r#"{"key":"imported_global","kind":"fact","body":"cross project knowledge"}"#,
+    )
+    .unwrap();
+
+    let mut srv = spawn_with_global(&repo, &global_dir);
+    notification(&mut srv, "notifications/initialized");
+    let import = rpc(
+        &mut srv,
+        1,
+        "tools/call",
+        json!({
+            "name": "mem_import",
+            "arguments": {"path": "global-notes.jsonl", "global": true}
+        }),
+    );
+    assert_eq!(import["result"]["isError"], false, "{import}");
+    let text = result_text(&import);
+    assert!(text.contains("ok: imported 1"), "{text}");
+
+    // The global store carries the row; the project store stays absent.
+    assert!(global_dir.join("memory.db").exists());
+    assert!(!repo.join(".engram/memory.db").exists());
+
+    let get = rpc(
+        &mut srv,
+        2,
+        "tools/call",
+        json!({
+            "name": "mem_get",
+            "arguments": {"key": "imported_global", "global": true}
+        }),
+    );
+    assert_eq!(get["result"]["isError"], false, "{get}");
+    let text = result_text(&get);
+    assert!(text.contains("imported_global r1 fact durable"), "{text}");
+    assert!(text.contains("cross project knowledge"), "{text}");
+    let _ = fs::remove_dir_all(&repo);
+    let _ = fs::remove_dir_all(&global_dir);
 }
 
 #[cfg(unix)]

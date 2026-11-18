@@ -48,6 +48,11 @@ pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Optio
     let mut line = String::new();
     let mut header_bytes = request_line.len();
     let mut header_count = 0usize;
+    // Duplicate routing headers are a request-smuggling primitive: the first
+    // value decides the parse here, a proxy may forward the last, so any
+    // second Host or Content-Length refuses the request outright.
+    let mut saw_host = false;
+    let mut saw_content_length = false;
     loop {
         line.clear();
         // Bound each header line read like the request line above: take()
@@ -71,12 +76,20 @@ pub(super) fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Optio
             let name = header_name.trim();
             let val = header_val.trim();
             if name.eq_ignore_ascii_case("content-length") {
+                if saw_content_length {
+                    return Ok(None);
+                }
+                saw_content_length = true;
                 content_length = val.parse().unwrap_or(0);
             } else if name.eq_ignore_ascii_case("content-type") {
                 content_type = val.to_ascii_lowercase();
             } else if name.eq_ignore_ascii_case("origin") {
                 origin = Some(val.to_string());
             } else if name.eq_ignore_ascii_case("host") {
+                if saw_host {
+                    return Ok(None);
+                }
+                saw_host = true;
                 host = Some(val.to_string());
             }
         }
@@ -116,7 +129,10 @@ pub(super) fn host_allowed(host: Option<&str>) -> bool {
     let Some(name) = host_name(host) else {
         return false;
     };
-    matches!(name, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0")
+    // "0.0.0.0" is deliberately absent: some platforms route a public
+    // wildcard destination to loopback (the "0.0.0.0 Day" class), so it is
+    // not a loopback attestation.
+    matches!(name, "127.0.0.1" | "localhost" | "::1")
 }
 
 /// Extract the Host header's hostname: the text between brackets for a
@@ -162,10 +178,12 @@ pub(super) struct RequestLog {
 
 impl Drop for RequestLog {
     fn drop(&mut self) {
+        // Sanitize: a raw request path can carry ANSI escapes that forge
+        // terminal log lines.
         eprintln!(
             "eg dashboard: {} {} {:.1}ms",
-            self.method,
-            self.path,
+            crate::query::sanitize(&self.method),
+            crate::query::sanitize(&self.path),
             self.started.elapsed().as_secs_f64() * 1000.0
         );
     }
@@ -215,7 +233,6 @@ mod tests {
             "[::1]:8080",
             "127.0.0.1:8080",
             "localhost:3000",
-            "0.0.0.0:80",
             "localhost",
         ] {
             assert!(host_allowed(Some(host)), "{host} must be accepted");
@@ -230,6 +247,9 @@ mod tests {
             "[2001:db8::1]:443",
             "::1",
             "::1:8080",
+            // Wildcard destinations are not loopback attestations (0.0.0.0 Day).
+            "0.0.0.0:80",
+            "0.0.0.0",
         ] {
             assert!(!host_allowed(Some(host)), "{host} must be rejected");
         }
@@ -263,5 +283,25 @@ mod tests {
         let req = read_http_request(&mut server).unwrap();
         assert!(req.is_some(), "a request line of exactly the cap parses");
         assert_eq!(req.unwrap().path.len(), MAX_HEADER_BYTES - 4 - tail.len());
+    }
+
+    #[test]
+    fn duplicate_routing_headers_are_rejected() {
+        for headers in [
+            "Host: 127.0.0.1:8080\r\nHost: 127.0.0.1:8080\r\n",
+            "Content-Length: 2\r\nContent-Length: 2\r\n",
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let raw = format!("POST / HTTP/1.1\r\n{headers}Connection: close\r\n\r\n");
+            let mut client = std::net::TcpStream::connect(addr).unwrap();
+            std::io::Write::write_all(&mut client, raw.as_bytes()).unwrap();
+            drop(client);
+            let (mut server, _) = listener.accept().unwrap();
+            assert!(
+                read_http_request(&mut server).unwrap().is_none(),
+                "duplicate {headers:?} must refuse the request"
+            );
+        }
     }
 }

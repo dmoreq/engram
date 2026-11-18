@@ -6,5 +6,6 @@
 mod common;
 mod misc;
 mod python;
+mod python_edge;
 mod rust;
 mod typescript;

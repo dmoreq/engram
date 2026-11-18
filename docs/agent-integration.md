@@ -117,7 +117,7 @@ By default, `eg mcp` exposes 13 high-ROI tools focused on navigation, anti-reinv
 | `mem_write` | `key`, `body`, `kind`, `tags?`, `refs?`, `scope?`, `ttl?`, `supersedes?`, `touch?`, `global?`, `confirm?` | Persist architectural decisions and gotchas; `touch=true` re-asserts the invocation's TTL (`expires_at`) instead of the verify anchor; `confirm=true` is required for `reuse-allow/` over MCP |
 
 ### Extended Surface (`--all-tools`)
-Passing `--all-tools` exposes 7 additional memory maintenance tools (20 total): `mem_touch`, `mem_get`, `mem_delete`, `mem_gc`, `mem_export` (JSONL or Markdown, optional `since`/`until`), `mem_import` (reject-on-conflict restore; confined to the project store), and `mem_reindex` (rebuild the derived Unicode index). `mem_export` over MCP does not expose `--scan`; agents that need a scanned backup run the CLI, which reports suspected secrets on stderr without blocking the export.
+Passing `--all-tools` exposes 7 additional memory maintenance tools (20 total): `mem_touch`, `mem_get`, `mem_delete`, `mem_gc`, `mem_export` (JSONL or Markdown, optional `since`/`until`), `mem_import` (reject-on-conflict restore; project store by default, `global: true` targets the global store), and `mem_reindex` (rebuild the derived Unicode index). `mem_export` over MCP does not expose `--scan`; agents that need a scanned backup run the CLI, which reports suspected secrets on stderr without blocking the export.
 
 *Note*: `doctor`, `audit`, `stats`, and `unresolved` are intentionally reserved for human CLI inspection and omitted from MCP stdio dispatch. `eg audit --json` is the machine-readable health surface; it is read-only and redacted by default.
 
@@ -128,7 +128,7 @@ Passing `--all-tools` exposes 7 additional memory maintenance tools (20 total): 
 Every MCP tool response appends an execution telemetry footer:
 
 ```text
-⚡ eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
+eg: 1.2ms | 2 items | ~3.8k tokens saved vs file reads
 ```
 
 This footer reflects:

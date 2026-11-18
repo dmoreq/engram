@@ -21,7 +21,12 @@ fn coverage_class_finds_duplicate_shapes() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("class 'a.Parser'"), "{stdout}");
+    // Canonical = the lexicographically-first class (a.py); the later b.py
+    // Parser is reported as the duplicate to clean up.
+    assert!(
+        stdout.contains("class 'b.Parser' overlaps existing 'a.Parser'"),
+        "{stdout}"
+    );
     assert!(stdout.contains("detector=D5"), "{stdout}");
 }
 

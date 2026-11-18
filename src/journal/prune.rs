@@ -16,10 +16,13 @@ fn prune_matching(
     // read and the rewrite makes the kept list stale; defer the prune
     // instead of silently dropping the appended lines.
     let initial_len = fs::symlink_metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    let content = match fs::read_to_string(log_path) {
-        Ok(c) => c,
+    // Lossy decode: one invalid byte (torn write, foreign writer) must not
+    // abort the whole prune; the invalid line survives verbatim.
+    let bytes = match fs::read(log_path) {
+        Ok(b) => b,
         Err(_) => return Ok(0),
     };
+    let content = String::from_utf8_lossy(&bytes);
     let mut kept = Vec::new();
     let mut pruned = 0;
     for line in content.lines() {

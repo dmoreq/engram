@@ -319,11 +319,12 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "mem_import",
-        description: "Restore project-memory notes from a JSONL or fenced-Markdown file; CLI also accepts '-' for stdin. Conflicting keys are skipped unless force overwrites them. MCP writes are confined to the project store",
+        description: "Restore project-memory notes from a JSONL or fenced-Markdown file; CLI also accepts '-' for stdin. Conflicting keys are skipped unless force overwrites them. MCP writes are confined to the project store unless global is set",
         params: &[
             p_str!("path", true, "Repo-relative input file over MCP; CLI also accepts '-' for stdin"),
             p_str!("format", false, "Input format: jsonl or markdown (default: detect from path/first line)"),
             p_bool!("force", "Overwrite a key whose local content differs (default: reject and skip)"),
+            p_bool!("global", "Import into the global memory store instead of the project store"),
         ],
         core: false,
     },

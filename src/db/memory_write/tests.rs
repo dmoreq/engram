@@ -20,6 +20,7 @@ fn note<'a>(key: &'a str, body: &'a str, expires_at: i64) -> MemNoteInput<'a> {
         body,
         source: "cli",
         expires_at,
+        created_at: None,
         supersedes: None,
         touch: false,
     }
@@ -91,10 +92,17 @@ fn cross_key_superseded_note_rejects_touch_and_can_be_rewritten_with_same_body()
 fn cross_key_supersede_marks_highest_non_superseded_target_rev() {
     let root = temp_root("mem-wr-cross-expired");
     let mut conn = open_memory_store(&root).unwrap();
-    // rev 1 expires at 500; the re-write at 600 appends rev 2 and leaves
-    // rev 1's chain alone, so two rows of k1 carry `superseded_by NULL`.
+    // rev 1 expires at 500; the re-write at 600 appends rev 2 and (since the
+    // supersede-on-expiry change) marks rev 1 superseded. Force rev 1 back to
+    // the legacy shape binaries before that change left behind, so the probe
+    // below still faces two unsuperseded rows for one key.
     memory_write(&mut conn, &note("k1", "body one", 500), 100).unwrap();
     memory_write(&mut conn, &note("k1", "body two", 900), 600).unwrap();
+    conn.execute(
+        "UPDATE memories SET superseded_by = NULL WHERE key = 'k1' AND rev = 1",
+        [],
+    )
+    .unwrap();
     let null_rows: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memories WHERE key = 'k1' AND superseded_by IS NULL",
@@ -104,7 +112,7 @@ fn cross_key_supersede_marks_highest_non_superseded_target_rev() {
         .unwrap();
     assert_eq!(
         null_rows, 2,
-        "expired rev 1 and live rev 2 are both current"
+        "legacy-shape expired rev 1 and live rev 2 are both current"
     );
 
     // The cross-key probe must pick the highest non-superseded revision,
@@ -129,7 +137,10 @@ fn cross_key_supersede_marks_highest_non_superseded_target_rev() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(rev1_by, None, "the expired rev 1 chain stays untouched");
+    assert_eq!(
+        rev1_by, None,
+        "the expired rev 1 chain stays untouched by the cross-key probe"
+    );
     let k2_rev_id: i64 = conn
         .query_row(
             "SELECT id FROM memories WHERE key = 'k2' AND rev = 1",

@@ -2,7 +2,6 @@
 //! supersession (same-key and cross-key), and the unix clock.
 
 use super::*;
-use rusqlite::OptionalExtension;
 
 /// Unix seconds (writes stamp created_at/superseded_at).
 pub fn unix_now() -> i64 {
@@ -77,6 +76,9 @@ pub struct MemNoteInput<'a> {
     pub body: &'a str,
     pub source: &'a str,
     pub expires_at: i64,
+    /// Preserve the exported row's authorship date on import; `None` stamps
+    /// the write time.
+    pub created_at: Option<i64>,
     pub supersedes: Option<&'a str>,
     pub touch: bool,
 }
@@ -181,7 +183,9 @@ pub fn memory_write_batch(
             // identical content still appends a revision so the key re-enters
             // the FTS index, and a conflict is only reported against a live row.
             if row.is_active(now) {
-                if row.content_hash == hash {
+                // FNV-1a is not cryptographic: confirm the stored fields
+                // before treating a hash match as a true duplicate.
+                if row.content_hash == hash && stored_content_matches(&tx, row.id, note)? {
                     stats.skipped += 1;
                     continue;
                 }
@@ -206,29 +210,6 @@ enum WriteAttempt {
     Retry(rusqlite::Error),
 }
 
-/// The current memory revision row for a key: row id, revision number, the
-/// revision's content hash, and the two lifecycle columns that decide whether
-/// the row can still answer writes and touches. Named so the i64 columns
-/// cannot be swapped positionally in `try_write_revision`.
-struct Revision {
-    id: i64,
-    rev: i64,
-    content_hash: i64,
-    superseded_by: Option<i64>,
-    expires_at: i64,
-}
-
-impl Revision {
-    /// A revision is active while nothing replaced it and its TTL has not
-    /// passed (`expires_at == 0` is durable). An inactive row is read only for
-    /// revision numbering: a re-write must append a revision and restore the
-    /// FTS rows instead of reporting `Duplicate`/`Touched`, and a touch must
-    /// refuse it.
-    fn is_active(&self, now: i64) -> bool {
-        self.superseded_by.is_none() && (self.expires_at == 0 || self.expires_at > now)
-    }
-}
-
 fn try_write_revision(
     conn: &mut Connection,
     note: &MemNoteInput<'_>,
@@ -247,7 +228,10 @@ fn try_write_revision(
         // An inactive (superseded or expired) row is live only for revision
         // numbering: identical content must fall through to `insert_revision`
         // so the key re-enters the FTS index, never return Duplicate/Touched.
-        if row.is_active(now) && row.content_hash == hash {
+        if row.is_active(now)
+            && row.content_hash == hash
+            && stored_content_matches(&tx, row.id, note)?
+        {
             if note.touch {
                 // The Touch contract owns `anchored_at`; `mem write --touch`
                 // re-asserts the invocation's TTL policy instead: `created_at`
@@ -286,139 +270,6 @@ fn try_write_revision(
         rev: new_rev,
         superseded_rev: current.as_ref().map(|row| row.rev),
     }))
-}
-
-fn write_fts_and_supersede(
-    tx: &rusqlite::Transaction<'_>,
-    current: &Option<Revision>,
-    new_id: i64,
-    now: i64,
-    fts_legacy: &str,
-    fts_unicode: &str,
-) -> Result<()> {
-    if let Some(row) = current {
-        if row.is_active(now) {
-            supersede_current(tx, new_id, now, row.id)?;
-        }
-    }
-    tx.execute(
-        "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
-        rusqlite::params![new_id, fts_legacy],
-    )
-    .map_err(map_memory_err)?;
-    tx.execute(
-        "INSERT INTO memories_fts_v2(rowid, text) VALUES (?1, ?2)",
-        rusqlite::params![new_id, fts_unicode],
-    )
-    .map_err(map_memory_err)?;
-    Ok(())
-}
-
-fn insert_revision(
-    tx: &rusqlite::Transaction<'_>,
-    note: &MemNoteInput<'_>,
-    now: i64,
-    hash: i64,
-    rev: i64,
-) -> rusqlite::Result<usize> {
-    tx.execute(
-        "INSERT INTO memories(key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at, fts_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 2)",
-        rusqlite::params![
-            note.key,
-            rev,
-            note.kind,
-            note.scope,
-            note.session,
-            note.body,
-            note.tags,
-            note.refs,
-            hash,
-            note.source,
-            now,
-            note.expires_at,
-        ],
-    )
-}
-
-fn current_revision(tx: &rusqlite::Transaction<'_>, key: &str) -> Result<Option<Revision>> {
-    tx.query_row(
-        "SELECT id, rev, content_hash, superseded_by, expires_at FROM memories
-         WHERE key = ?1 ORDER BY rev DESC LIMIT 1",
-        rusqlite::params![key],
-        |r| {
-            Ok(Revision {
-                id: r.get(0)?,
-                rev: r.get(1)?,
-                content_hash: r.get(2)?,
-                superseded_by: r.get(3)?,
-                expires_at: r.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(map_memory_err)
-}
-
-/// Mark one revision superseded and drop its FTS row (the caller inserts the
-/// new revision's FTS row). Shared by same-key and cross-key supersession so
-/// both paths apply the same invariant.
-fn supersede_current(
-    tx: &rusqlite::Transaction<'_>,
-    new_id: i64,
-    now: i64,
-    old_id: i64,
-) -> Result<()> {
-    tx.execute(
-        "UPDATE memories SET superseded_by = ?1, superseded_at = ?2 WHERE id = ?3",
-        rusqlite::params![new_id, now, old_id],
-    )
-    .map_err(map_memory_err)?;
-    tx.execute(
-        "DELETE FROM memories_fts WHERE rowid = ?1",
-        rusqlite::params![old_id],
-    )
-    .map_err(map_memory_err)?;
-    tx.execute(
-        "DELETE FROM memories_fts_v2 WHERE rowid = ?1",
-        rusqlite::params![old_id],
-    )
-    .map_err(map_memory_err)?;
-    Ok(())
-}
-
-/// Cross-key supersession inside the caller's transaction: the target's
-/// current revision becomes superseded and its FTS row leaves the index with
-/// it. Same invariant as same-key supersession; without the FTS delete `mem
-/// query` would return a note that `mem get` calls unknown. The pick is
-/// `ORDER BY rev DESC`, stated in SQL like `current_revision` and `memory_get`
-/// instead of borrowed from the `memories_current` partial index's scan
-/// order — after an expired-key re-write, one key can carry two
-/// `superseded_by IS NULL` rows and the highest revision must win under any
-/// planner. An unknown target rolls the whole write back (exit 1). A
-/// replayed identical write never reaches here, so the side effects do not
-/// re-apply.
-fn supersede_cross_key(
-    tx: &rusqlite::Transaction<'_>,
-    new_id: i64,
-    now: i64,
-    target: &str,
-) -> Result<()> {
-    let target_id: Option<i64> = tx
-        .query_row(
-            "SELECT id FROM memories WHERE key = ?1 AND superseded_by IS NULL
-             ORDER BY rev DESC LIMIT 1",
-            rusqlite::params![target],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(map_memory_err)?;
-    let Some(target_id) = target_id else {
-        return Err(EgError::NoResults(format!(
-            "unknown memory key '{target}' — nothing superseded, write rolled back"
-        )));
-    };
-    supersede_current(tx, new_id, now, target_id)
 }
 
 /// Refresh `anchored_at = now` only when the active revision still equals
@@ -477,6 +328,13 @@ pub fn memory_touch(conn: &mut Connection, key: &str, now: i64) -> Result<Option
     tx.commit().map_err(map_memory_err)?;
     Ok(Some(rev_info.rev))
 }
+
+mod revision;
+
+use revision::{
+    current_revision, insert_revision, stored_content_matches, supersede_cross_key,
+    write_fts_and_supersede,
+};
 
 #[cfg(test)]
 mod tests;

@@ -70,7 +70,7 @@ eg search "read bounded file"
 `eg search` returns **Concise Interface Cards** (signatures, types, and caller counts) ranked by caller frequency (`BM25 + log(1 + callers)`):
 
 ```text
-src/walk.rs:42 fn read_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> [callers=14]
+src/walk.rs:250 fn read_bounded(path: &Path) -> Result<Vec<u8>> [callers=8]
 ```
 
 The `[callers=14]` metric immediately identifies `read_bounded` as the established, canonical helper. Supplying interface cards closes the exploration gap without context window bloat.

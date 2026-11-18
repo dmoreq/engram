@@ -47,7 +47,10 @@ fn walk_levels(conn: &Connection, ctx: &ImpactCtx<'_>, state: &mut TraversalStat
         if next.is_empty() {
             break;
         }
-        if d == ctx.depth {
+        // Only claim a depth cap when files are still missing: reaching the
+        // max depth with the full file set already recorded is exhaustive,
+        // not truncated.
+        if d == ctx.depth && state.records.len() < total_files {
             truncated = true;
         }
         state.frontier = next;

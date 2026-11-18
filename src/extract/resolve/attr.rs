@@ -33,9 +33,12 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
     if let Some(out) = resolve_rust_keyword_path(ctx, chain) {
         return out;
     }
-    // Module-qualified call through the alias map / module tree.
+    // Module-qualified call through the alias map / module tree. An external
+    // origin module arrives as Dropped; the same-file fallback below stays
+    // reachable for both outcomes so untyped Rust receivers keep their
+    // EXTRACTED edges.
     let out = module_chain_outcome(ctx.t, ctx.fi, chain, &ctx.site.scope_func);
-    if !matches!(out, Outcome::Unresolved) {
+    if !matches!(out, Outcome::Unresolved | Outcome::Dropped) {
         return out;
     }
     // Unknown Rust receiver: fall back to a same-file method name only
@@ -43,7 +46,11 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
     // back, and several matches stay unresolved instead of emitting
     // a noisy AMBIGUOUS fan-out across unrelated impls.
     if ctx.fctx.lang == Lang::Rust && chain.len() == 2 {
-        return rust_unknown_receiver_outcome(ctx.t, ctx.fi, &chain[1]);
+        if let extracted @ Outcome::Extracted(_) =
+            rust_unknown_receiver_outcome(ctx.t, ctx.fi, &chain[1])
+        {
+            return extracted;
+        }
     }
     out
 }

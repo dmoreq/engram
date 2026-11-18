@@ -204,7 +204,7 @@ fn path_level_edges(conn: &Connection, ids: &[i64]) -> Result<LevelEdges> {
              JOIN symbols ds ON ds.id = e.dst_id
              WHERE e.kind = '{}' AND e.dst_id IS NOT NULL
                AND e.src_id IN ({placeholders})
-             ORDER BY e.src_id, ds.qualname, ds.file_path, e.site_line",
+             ORDER BY e.src_id, ds.qualname, ds.file_path, ds.line_start, e.site_line",
             EdgeKind::Calls.as_str()
         );
         let mut stmt = conn.prepare(&sql)?;

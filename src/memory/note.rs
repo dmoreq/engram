@@ -205,6 +205,8 @@ pub struct NoteFrontmatter {
     pub tags: Vec<String>,
     pub refs: Vec<String>,
     pub expires_at: i64,
+    /// Exported authorship date (unix seconds); absent in handwritten notes.
+    pub created_at: Option<i64>,
 }
 
 impl NoteFrontmatter {
@@ -245,6 +247,10 @@ impl NoteFrontmatter {
             .get("expires_at")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
+        let created_at = value
+            .get("created_at")
+            .and_then(|v| v.as_i64())
+            .filter(|ts| *ts > 0);
         Ok(Self {
             format: format.to_string(),
             key,
@@ -253,6 +259,7 @@ impl NoteFrontmatter {
             tags: string_list(value.get("tags")),
             refs: string_list(value.get("refs")),
             expires_at,
+            created_at,
         })
     }
 }
@@ -281,6 +288,8 @@ pub struct NormalizedImport {
     pub scope: MemScope,
     pub body: String,
     pub expires_at: i64,
+    /// Authorship date preserved from the export when present.
+    pub created_at: Option<i64>,
     /// The deadline is already past: the caller skips this note and counts it.
     pub expired: bool,
 }
@@ -314,6 +323,7 @@ pub fn normalize_import_note(
         scope: fm.scope,
         body: body.to_string(),
         expires_at,
+        created_at: fm.created_at,
         expired: expires_at != 0 && expires_at <= now,
     })
 }

@@ -5,7 +5,7 @@ use super::*;
 
 /// file count (the build's journaled `shown`).
 pub(super) fn finish_index(
-    prep: &BuildPrep,
+    prep: &mut BuildPrep,
     fe: FreshExtract,
     parse_secs: f64,
 ) -> Result<(String, String, usize)> {
@@ -15,12 +15,16 @@ pub(super) fn finish_index(
         secs: extract_secs,
         ..
     } = fe;
-    let resolution = resolve_index(&prep.old, &prep.cls.carried, extractions)?;
+    // Own the old read connection and close it before any DB write: Windows
+    // refuses the atomic rename in publish_new_index while a handle on
+    // index.db is still open (ERROR_ACCESS_DENIED).
+    let old_conn = prep.old.take();
+    let is_incremental = old_conn.is_some() && !prep.opts.force;
+    let resolution = resolve_index(&old_conn, &prep.cls.carried, extractions)?;
     for (row, unresolved) in rows.iter_mut().zip(&resolution.unresolved_per_file) {
         row.unresolved = *unresolved;
     }
-
-    let is_incremental = prep.old.is_some() && !prep.opts.force;
+    drop(old_conn);
     let (totals, db_secs) = write_index(prep, &rows, &resolution)?;
     let total_files = prep.stats.files.len();
     crate::journal::record_result(

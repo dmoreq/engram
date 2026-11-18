@@ -306,16 +306,18 @@ fn walk_fallback(root: &Path, exts: &[&str]) -> Result<WalkStats> {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let metadata = entry.metadata().ok();
-        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        // An unstat-able entry (deleted mid-walk, permission race) cannot be
+        // read later either; drop it instead of carrying size=0/mtime=0 rows
+        // that make the incremental fast path misclassify the file.
+        let Some(metadata) = entry.metadata().ok().filter(|m| m.is_file()) else {
+            continue;
+        };
+        let size = metadata.len();
         if size > MAX_FILE_SIZE {
             skipped_large += 1;
             continue;
         }
-        let mtime = metadata
-            .as_ref()
-            .and_then(crate::db::metadata_mtime)
-            .unwrap_or(0);
+        let mtime = crate::db::metadata_mtime(&metadata).unwrap_or(0);
         files.push(WalkedFile {
             abs: path.to_path_buf(),
             rel,

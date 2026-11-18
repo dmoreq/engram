@@ -3,7 +3,7 @@
 # Repository Hygiene & Anti-Smell Verification Gate
 # Enforces:
 # 1. Zero personal paths (/Users/, /home/<user>/, /Workspace/) & secret patterns in tracked text files.
-# 2. Zero Unicode emojis & sparkline/bar characters (except deliberate '⚡ eg:' MCP KPI footer token).
+# 2. Zero Unicode emojis & sparkline/bar characters (no exceptions).
 # 3. Rust Code-Smells Gate:
 #    - Hard fail on ANY .rs file > 500 lines (Zero exception / Zero allowlist).
 #    - Forbids 'unsafe { ... }', 'unsafe fn', 'unsafe trait', 'unsafe impl' blocks in src/.
@@ -53,21 +53,23 @@ for f in "${FILES[@]}"; do
   fi
 done
 
-# 2. Zero-Emoji & Sparkline Discipline (allowing deliberate '⚡ eg:' MCP footer token)
+# 2. Zero-Emoji & Sparkline Discipline (no exceptions)
 python3 - "${FILES[@]}" <<'PY' || ERRORS=$((ERRORS + 1))
 import re, sys
-emoji_re = re.compile(r'[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF\U0001F1E6-\U0001F1FF\u2581-\u258F]')
+emoji_re = re.compile(r'[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\U0001F1E6-\U0001F1FF\u2581-\u258F]')
 failed = False
 for arg in sys.argv[1:]:
     p = arg
     if not (p.startswith("src/") or p.startswith("skills/") or p.endswith(".md")):
         continue
+    # Frozen historical review records keep their original wording, like the
+    # leakage scan above.
+    if p.startswith("docs/baselines/") or p.startswith("docs/archive/"):
+        continue
     try:
         with open(p, "r", encoding="utf-8", errors="replace") as fh:
             for i, line in enumerate(fh, 1):
                 if emoji_re.search(line):
-                    if "⚡" in line and "eg:" in line:
-                        continue
                     print(f"HYGIENE ERROR [zero-emoji]: Forbidden emoji or sparkline in {p}:{i}:\n  {line.strip()}", file=sys.stderr)
                     failed = True
     except FileNotFoundError:

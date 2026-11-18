@@ -342,7 +342,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             path: a.req("path")?,
             format: a.s("format"),
             force: a.b("force"),
-            global: false,
+            global: a.b("global"),
         }),
         "mem_reindex" => Ok(CommandRequest::MemReindex {
             global: a.b("global"),

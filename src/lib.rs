@@ -1,5 +1,7 @@
 //! Library surface for integration tests (binary entry lives in main.rs).
 
+#![forbid(unsafe_code)]
+
 pub mod audit;
 pub mod build;
 pub mod cli;
