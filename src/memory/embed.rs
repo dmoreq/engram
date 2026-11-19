@@ -128,12 +128,9 @@ pub fn embedding_from_blob(bytes: &[u8]) -> Option<Vec<f32>> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return None;
     }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect(),
-    )
+    // Constant-size chunks read as fixed arrays (`as_chunks`, Rust 1.88+).
+    let (chunks, _rest) = bytes.as_chunks::<4>();
+    Some(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 /// Cosine of two L2-normalised vectors is a dot product; clamp to [-1, 1].

@@ -16,8 +16,11 @@
       <img src="/logo-light.svg" width="140" height="32" alt="Engram" class="header-logo header-logo-light">
       <img src="/logo.svg" width="140" height="32" alt="Engram" class="header-logo header-logo-dark">
       <h1 id="header-title" class="sr-only">Engram Console</h1>
-      <span class="header-subtitle" aria-hidden="true">Agent Code Intelligence &amp; Impact</span>
-      <span class="impact-badge" aria-hidden="true">Deterministic Graph &middot; Anti-Reinvention &middot; Zero-Token Memory</span>
+      <span id="conn-beacon" class="conn-beacon is-syncing" data-tip="header.conn"><span class="beacon-text">Syncing</span></span>
+      <label class="sr-only" for="scope-filter">Repository scope</label>
+      <select id="scope-filter" class="filter-select scope-select">
+        <option value="ALL">All Workspaces</option>
+      </select>
       <span id="data-age" class="data-age-chip text-muted" data-tip="header.data_age"></span>
     </div>
     <div class="header-right">
@@ -25,28 +28,114 @@
     </div>
   </header>
 
-  <!-- Primary Tab Bar (3 Dedicated Tabs) -->
+  <!-- Primary Tab Bar: 00 Mission Control, then the three pillars -->
   <nav class="nav-tabs" role="tablist">
-    <button class="tab-btn active" id="tab-telemetry-btn" data-tab="telemetry" role="tab" aria-selected="true" aria-controls="tab-telemetry-content" tabindex="0">
-      <span class="tab-num">01</span> Code Graph &amp; Navigation
+    <button class="tab-btn active" id="tab-overview-btn" data-tab="overview" role="tab" aria-selected="true" aria-controls="tab-overview-content" tabindex="0">
+      <span class="tab-num">00</span> Overview
+    </button>
+    <button class="tab-btn" id="tab-telemetry-btn" data-tab="telemetry" role="tab" aria-selected="false" aria-controls="tab-telemetry-content" tabindex="-1">
+      <span class="tab-num">01</span> Code Graph
     </button>
     <button class="tab-btn" id="tab-reuse-btn" data-tab="reuse" role="tab" aria-selected="false" aria-controls="tab-reuse-content" tabindex="-1">
-      <span class="tab-num">02</span> Anti-Reinvention Engine
+      <span class="tab-num">02</span> Anti-Reinvention
     </button>
     <button class="tab-btn" id="tab-memory-btn" data-tab="memory" role="tab" aria-selected="false" aria-controls="tab-memory-content" tabindex="-1">
-      <span class="tab-num">03</span> Persistent Project Memory
+      <span class="tab-num">03</span> Project Memory
     </button>
   </nav>
 
-  <!-- ==================== TAB 01: DETERMINISTIC CODE GRAPH & NAVIGATION ==================== -->
-  <div id="tab-telemetry-content" role="tabpanel" aria-labelledby="tab-telemetry-btn">
+  <!-- ==================== TAB 00: MISSION CONTROL OVERVIEW ==================== -->
+  <div id="tab-overview-content" role="tabpanel" aria-labelledby="tab-overview-btn">
     <div id="data-error-telemetry" class="hidden" role="status"></div>
-    <div class="impact-explainer">
-      <div class="explainer-badge">Pillar 01 &middot; Navigation</div>
-      <div class="explainer-text">
-        <strong>Deterministic Graph Navigation:</strong> Sub-millisecond AST symbol and call graph traversal replacing full-file LLM context stuffing with zero hallucinations.
+    <div class="kpi-strip">
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.graph_queries">Graph Queries</div>
+        <div id="ovkpi-queries" class="kpi-value">&mdash;</div>
+        <div id="ovkpi-queries-sub" class="kpi-sub">&mdash;</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.tokens_saved">Tokens Avoided</div>
+        <div id="ovkpi-tokens" class="kpi-value">&mdash;</div>
+        <div id="ovkpi-dollars" class="kpi-sub">Avoided model context overhead</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.candidates">Duplicate Candidates</div>
+        <div id="ovkpi-candidates" class="kpi-value text-success">&mdash;</div>
+        <div id="ovkpi-candidates-sub" class="kpi-sub">No repositories scanned</div>
+      </div>
+      <div class="kpi-tile">
+        <div class="kpi-label" data-tip="kpi.currency">Anchor Currency</div>
+        <div id="ovkpi-currency" class="kpi-value text-success">&mdash;</div>
+        <div id="ovkpi-currency-sub" class="kpi-sub">No notes with code refs</div>
       </div>
     </div>
+
+    <div id="ov-health" class="health-banner hidden" role="status"></div>
+
+    <div class="panel-grid">
+      <div class="card">
+        <div class="card-title">
+          <span>Top Active Repositories</span>
+          <span class="card-note text-muted">Five most-used workspaces</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Repository / Branch</th>
+              <th class="text-right">Calls</th>
+              <th data-tip="col.reliability">Status</th>
+            </tr>
+          </thead>
+          <tbody id="ov-repos-tbody">
+            <tr><td colspan="3" class="empty-cell">Loading repositories...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Top Agents</span>
+          <span class="card-note text-muted">Five most-active agents, all pillars</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Agent Identity</th>
+              <th class="text-right">Calls</th>
+              <th class="text-right" data-tip="col.tokens_saved">Tokens Saved</th>
+            </tr>
+          </thead>
+          <tbody id="ov-agents-tbody">
+            <tr><td colspan="3" class="empty-cell">Loading agents...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Latest Activity</span>
+        <span class="card-note text-muted">Newest graph queries across all workspaces</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Repository</th>
+            <th>Agent</th>
+            <th>Tool</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="ov-recent-tbody">
+          <tr><td colspan="5" class="empty-cell">No queries recorded</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ==================== TAB 01: DETERMINISTIC CODE GRAPH & NAVIGATION ==================== -->
+  <div id="tab-telemetry-content" class="hidden" role="tabpanel" aria-labelledby="tab-telemetry-btn">
     <div class="kpi-strip">
       <div class="kpi-tile">
         <div class="kpi-label" data-tip="kpi.graph_queries">Deterministic Graph Queries</div>
@@ -70,7 +159,7 @@
       <div class="card">
         <div class="card-title">
           <span>Workspace Graph Distribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Indexed repositories and worktree branches</span>
+          <span class="card-note text-muted">Indexed repositories and worktree branches</span>
         </div>
         <table>
           <thead>
@@ -91,7 +180,7 @@
       <div class="card">
         <div class="card-title">
           <span>Agent Attribution</span>
-          <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Adoption and savings across all three pillars, by agent</span>
+          <span class="card-note text-muted">Adoption and savings across all three pillars, by agent</span>
         </div>
         <table>
           <thead>
@@ -111,10 +200,10 @@
     </div>
 
     <!-- Graph Command Distribution -->
-    <div class="card" style="margin-bottom: 1.75rem;">
+    <div class="card">
       <div class="card-title">
         <span>Graph Command Performance Profile</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Deterministic graph tools (callers, callees, path, context, impact, symbols, imports, build)</span>
+        <span class="card-note text-muted">Deterministic graph tools (callers, callees, path, context, impact, symbols, imports, build)</span>
       </div>
       <table>
         <thead>
@@ -134,21 +223,21 @@
     <div class="card">
       <div class="card-title">
         <span>Real-Time Graph Navigation Invocations</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Live code graph query stream (callers, callees, path, context, impact, symbols, imports, build)</span>
+        <span class="card-note text-muted">Live code graph query stream (callers, callees, path, context, impact, symbols, imports, build)</span>
       </div>
 
       <div class="filter-bar">
-        <label for="repo-filter" class="text-muted" style="font-size: 0.78rem;">Scope:</label>
+        <label for="repo-filter" class="filter-label text-muted">Scope:</label>
         <select id="repo-filter" class="filter-select">
           <option value="ALL">All Repositories</option>
         </select>
 
-        <label for="agent-filter" class="text-muted" style="font-size: 0.78rem;">Agent:</label>
+        <label for="agent-filter" class="filter-label text-muted">Agent:</label>
         <select id="agent-filter" class="filter-select">
           <option value="ALL">All Agents</option>
         </select>
 
-        <label for="status-filter" class="text-muted" style="font-size: 0.78rem;" data-tip="filter.status">Status:</label>
+        <label for="status-filter" class="filter-label text-muted" data-tip="filter.status">Status:</label>
         <select id="status-filter" class="filter-select">
           <option value="ALL">All Statuses</option>
           <option value="0">OK (Exit 0)</option>
@@ -184,12 +273,6 @@
   <!-- ==================== TAB 02: REAL-TIME ANTI-REINVENTION ENGINE ==================== -->
   <div id="tab-reuse-content" class="hidden" role="tabpanel" aria-labelledby="tab-reuse-btn">
     <div id="data-error-reuse" class="hidden" role="status"></div>
-    <div class="impact-explainer">
-      <div class="explainer-badge">Pillar 02 &middot; Anti-Reinvention</div>
-      <div class="explainer-text">
-        <strong>Real-Time Anti-Reinvention:</strong> Active detection of structural duplicate twins across 7 AST detectors (D1&ndash;DT) to prevent code bloat before code is written.
-      </div>
-    </div>
     <!-- Prevention KPI Strip -->
     <div class="kpi-strip">
       <div class="kpi-tile">
@@ -210,10 +293,10 @@
     </div>
 
     <!-- Anti-Reinvention Workspace Distribution -->
-    <div class="card" style="margin-bottom: 1.75rem;">
+    <div class="card">
       <div class="card-title">
         <span>Workspace Distribution</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Search and reuse invocations across repositories</span>
+        <span class="card-note text-muted">Search and reuse invocations across repositories</span>
       </div>
       <table>
         <thead>
@@ -234,12 +317,12 @@
 
     <!-- Filter Bar -->
     <div class="filter-bar">
-      <label for="reuse-repo-filter" class="text-muted" style="font-size: 0.78rem;">Repo:</label>
+      <label for="reuse-repo-filter" class="filter-label text-muted">Repo:</label>
       <select id="reuse-repo-filter" class="filter-select">
         <option value="ALL">All Repositories</option>
       </select>
 
-      <span class="text-muted" style="font-size: 0.78rem;">Detector:</span>
+      <span class="filter-label text-muted">Detector:</span>
       <div class="pill-group" id="reuse-detector-pills">
         <button class="filter-pill active" data-det="ALL" data-tip="det.all" aria-pressed="true">All</button>
         <button class="filter-pill" data-det="D1" data-tip="det.d1" aria-pressed="false">D1 Callee</button>
@@ -253,7 +336,7 @@
 
       <input type="text" id="reuse-search" class="search-input" placeholder="Search candidate, canonical symbol, or path...">
 
-      <label for="reuse-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
+      <label for="reuse-view" class="filter-label text-muted">View:</label>
       <select id="reuse-view" class="filter-select" data-tip="view.reuse">
         <option value="used10" selected>Top 10 by callers</option>
         <option value="all">All</option>
@@ -272,10 +355,10 @@
     </div>
 
     <!-- Pre-Write Helper Discovery & Duplicate Audits Feed -->
-    <div class="card" style="margin-top: 1.5rem;">
+    <div class="card">
       <div class="card-title">
         <span>Pre-Write Discovery &amp; Verification Feed</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;"><span id="reuse-feed-count">0</span> pre-write lookups recorded &middot; agent search and reuse to find canonical helpers</span>
+        <span class="card-note text-muted"><span id="reuse-feed-count">0</span> pre-write lookups recorded &middot; agent search and reuse to find canonical helpers</span>
       </div>
       <div class="list-count text-muted" id="prewrite-list-count"></div>
       <table>
@@ -298,12 +381,6 @@
   <!-- ==================== TAB 03: AGENT MEMORY INSPECTOR ==================== -->
   <div id="tab-memory-content" class="hidden" role="tabpanel" aria-labelledby="tab-memory-btn">
     <div id="data-error-memory" class="hidden" role="status"></div>
-    <div class="impact-explainer">
-      <div class="explainer-badge">Pillar 03 &middot; Memory</div>
-      <div class="explainer-text">
-        <strong>Zero-Token Persistent Memory:</strong> Durable storage for architectural decisions and gotchas, with automated AST anchor currency verification against code drift.
-      </div>
-    </div>
     <!-- Memory KPI Strip (3 Core KPIs) -->
     <div class="kpi-strip">
       <div class="kpi-tile">
@@ -324,10 +401,10 @@
     </div>
 
     <!-- Workspace Memory Distribution -->
-    <div class="card" style="margin-bottom: 1.75rem;">
+    <div class="card">
       <div class="card-title">
         <span>Workspace Memory Distribution</span>
-        <span class="text-muted" style="font-size: 0.75rem; font-weight: normal;">Project memory reads, writes, and reliability by repository</span>
+        <span class="card-note text-muted">Project memory reads, writes, and reliability by repository</span>
       </div>
       <table>
         <thead>
@@ -346,13 +423,13 @@
     </div>
 
     <!-- Action Center for Broken & Modified References -->
-    <div id="mem-action-center" class="card action-center-card hidden" style="margin-bottom: 1.25rem;">
+    <div id="mem-action-center" class="card action-center-card hidden">
       <div class="card-title">
-        <span style="display:flex; align-items:center; gap:0.5rem;">
+        <span class="badge-row">
           <span class="badge status-warn">ACTION REQUIRED</span>
           <span>Anchor Currency Alert &amp; Action Center</span>
         </span>
-        <span class="text-muted" id="action-center-summary" style="font-size: 0.75rem; font-weight: normal;"></span>
+        <span class="card-note text-muted" id="action-center-summary"></span>
       </div>
       <div id="action-center-items" class="action-items-list">
         <!-- Rendered dynamically via JS -->
@@ -361,7 +438,7 @@
 
     <!-- Memory Filter Bar -->
     <div class="filter-bar">
-      <span class="text-muted" style="font-size: 0.78rem;">Store:</span>
+      <span class="filter-label text-muted">Store:</span>
       <div class="pill-group" id="mem-store-pills">
         <button class="filter-pill active" data-store="ALL" aria-pressed="true">All Stores</button>
       </div>
@@ -369,7 +446,7 @@
         <option value="ALL">All Stores</option>
       </select>
 
-      <label for="mem-kind-filter" class="text-muted" style="font-size: 0.78rem;">Kind:</label>
+      <label for="mem-kind-filter" class="filter-label text-muted">Kind:</label>
       <select id="mem-kind-filter" class="filter-select">
         <option value="ALL">All Kinds</option>
         <option value="decision">Decision</option>
@@ -381,12 +458,12 @@
 
       <input type="text" id="mem-search" class="search-input" placeholder="Search key, prose body, #tag or ref...">
 
-      <label style="font-size: 0.78rem; display: flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+      <label class="check-label">
         <input type="checkbox" id="mem-show-superseded">
         <span class="text-muted" data-tip="filter.superseded">Include superseded revisions</span>
       </label>
 
-      <label for="mem-view" class="text-muted" style="font-size: 0.78rem;">View:</label>
+      <label for="mem-view" class="filter-label text-muted">View:</label>
       <select id="mem-view" class="filter-select" data-tip="view.memory">
         <option value="recent10" selected>Top 10 recent</option>
         <option value="used">Most used</option>

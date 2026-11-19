@@ -129,13 +129,16 @@ pub fn admit_connection(
     is_global: bool,
 ) {
     // Reserve a slot atomically: a check-then-increment race could admit two
-    // threads past a full cap.
-    if ACTIVE_CONNS
+    // threads past a full cap. CI's 1.100 deprecates `fetch_update` in favour
+    // of `try_update`, but MSRV 1.90 predates that rename, so the old name
+    // stays and the deprecation is scoped here.
+    #[allow(deprecated)]
+    let slot_refused = ACTIVE_CONNS
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
             cur.checked_add(1).filter(|&c| c < MAX_CONCURRENT_CONNS)
         })
-        .is_err()
-    {
+        .is_err();
+    if slot_refused {
         log_connection_cap_reached(MAX_CONCURRENT_CONNS);
         let mut stream = stream;
         // The refuse path runs on the ACCEPT loop: a 1 s write bound keeps a

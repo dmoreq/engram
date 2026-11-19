@@ -1,44 +1,27 @@
 // eg Native Rust Dashboard Client (Zero External Dependencies)
+//
+// State-first controller: one `state` object owns UI state and the payload
+// data; render functions read state and write DOM. The behavioral contract is
+// pinned in src/dashboard.rs (client_contract_tests, tip_tests) and
+// tests/cli/dashboard/assets.rs — keep those strings and signatures intact.
 
 const GRAPH_TOOLS = ['callers', 'callees', 'path', 'context', 'impact', 'symbols', 'imports', 'build'];
 const FEED_LIMIT = 10; // both live feeds show the newest ten rows only
+const OVERVIEW_FEED_LIMIT = 5; // mission-control activity stream
+const OVERVIEW_TOP_N = 5; // top repositories / agents on the overview tab
 const UNATTRIBUTED = '(unattributed)';
 
-// One builder for every agent tag so the copy cannot drift between tables.
-// `user` is the fallback when no agent marker was detected, so its tag has to
-// say what it does not know instead of claiming a human typed the command.
-// Evidence label for detectors that carry no measured overlap (D3/D4).
-function detectorEvidenceLabel(detector) {
-  if (detector === 'D3') return 'shared guard';
-  if (detector === 'D4') return 'pass-through wrapper';
-  if (detector === 'D5') return 'class shape';
-  if (detector === 'D1L') return 'unresolved call';
-  if (detector === 'DT') return 'test overlap';
-  return 'evidence';
-}
-
-function agentTagHtml(aName) {
-  const title = aName === 'user'
-    ? ' title="No agent marker detected — a human terminal or an unidentified invoker (ENGRAM_AGENT=<name> labels it precisely)"'
-    : '';
-  return '<span class="agent-tag agent-tag-' + escapeHtml(aName) + '"' + title + '>' + escapeHtml(aName) + '</span>';
-}
-
-let allMemories = [];
-let recentQueries = [];
-let reuseCandidates = [];
-let prewriteSearches = [];
-let reusePools = {};    // repo label -> true candidate pool (pre-25-cap)
-let totalCalls = 0;
-let totalErrors = 0;
-let latestSummaryData = null;
-
-let selectedMemoryId = null;   // store_id:key:rev — survives list rebuilds
-let selectedReuseId = null;    // candidate id (repo:symbol->canonical)
-function memorySelectionId(m) { return (m.store_id || m.store) + ':' + m.key + ':' + m.rev; }
-
-// Worktree rows the user expanded, keyed by repo display label, so SSE
-// re-renders rebuild rows without collapsing the open branches.
+const state = {
+  activeTab: 'overview',
+  theme: 'light',
+  connected: false,
+  selectedRepo: 'ALL',
+  summary: null,
+  reuse: { candidates: [], summary: {}, prewrite: [], pools: {}, filterDet: 'ALL', selectedId: null },
+  memories: { notes: [], errors: [], degraded: false, filterStore: 'ALL', filterKind: 'ALL', selectedId: null },
+  recentQueries: [],
+  health: { graphErrors: 0, anchorModified: 0, anchorBroken: 0, reuseDegraded: false, reuseError: '' },
+};
 
 // Collapsed list views. "Recent" means latest activity: created, verified, or
 // recalled. Reuse has no per-candidate timestamp in the payload, so its
@@ -54,6 +37,10 @@ const REUSE_VIEWS = {
 };
 let memView = 'recent10';
 let reuseView = 'used10';
+let recentQueryTotal = 0;
+let isDocumentVisible = true;
+
+function memorySelectionId(m) { return (m.store_id || m.store) + ':' + m.key + ':' + m.rev; }
 
 function memoryActivity(m) {
   return Math.max(m.created_at || 0, m.anchored_at || 0, m.last_recalled_ts || 0);
@@ -106,11 +93,58 @@ function updateListCount(id, shown, total, label) {
   const el = document.getElementById(id);
   if (el) el.textContent = 'Showing ' + shown + ' of ' + total + ' · ' + label;
 }
-let activeReuseDetector = 'ALL';
 
-// Theme Toggle
+// One builder for every agent tag so the copy cannot drift between tables.
+// `user` is the fallback when no agent marker was detected, so its tag has to
+// say what it does not know instead of claiming a human typed the command.
+// Evidence label for detectors that carry no measured overlap (D3/D4).
+function detectorEvidenceLabel(detector) {
+  if (detector === 'D3') return 'shared guard';
+  if (detector === 'D4') return 'pass-through wrapper';
+  if (detector === 'D5') return 'class shape';
+  if (detector === 'D1L') return 'unresolved call';
+  if (detector === 'DT') return 'test overlap';
+  return 'evidence';
+}
+
+function agentTagHtml(aName) {
+  const title = aName === 'user'
+    ? ' title="No agent marker detected — a human terminal or an unidentified invoker (ENGRAM_AGENT=<name> labels it precisely)"'
+    : '';
+  return '<span class="agent-tag agent-tag-' + escapeHtml(aName) + '"' + title + '>' + escapeHtml(aName) + '</span>';
+}
+
+// Exit-code badge shared by both live feeds and the overview stream.
+function statusBadgeHtml(exitCode) {
+  let statusClass = 'status-ok';
+  let statusText = 'ok';
+  if (exitCode === 1) {
+    statusClass = 'status-warn';
+    statusText = 'empty';
+  } else if (exitCode === 2) {
+    statusClass = 'status-ambig';
+    statusText = 'ambiguous';
+  } else if (exitCode >= 3) {
+    statusClass = 'status-err';
+    statusText = 'err ' + exitCode;
+  }
+  return '<span class="badge ' + statusClass + '">' + statusText + '</span>';
+}
+
+// Shared reliability subtitle: zero calls is unmeasured, not a perfect score.
+function reliabilityText(totalCalls, totalErrors, data) {
+  if (totalCalls === 0) return '—';
+  const rel = data.graph_reliability_pct !== undefined ? data.graph_reliability_pct : (data.reliability_pct || 100.0);
+  return totalErrors > 0
+    ? rel.toFixed(1) + '% clean (' + totalErrors + ' errs)'
+    : 'No errors recorded';
+}
+
+// ============================= Theme =============================
 function initTheme() {
-  const saved = localStorage.getItem('eg-theme') || 'light';
+  const saved = localStorage.getItem('eg-theme')
+    || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  state.theme = saved;
   document.documentElement.setAttribute('data-theme', saved);
   updateThemeButtonText(saved);
 }
@@ -118,6 +152,7 @@ function initTheme() {
 function toggleTheme() {
   const current = document.documentElement.getAttribute('data-theme') || 'light';
   const next = current === 'light' ? 'dark' : 'light';
+  state.theme = next;
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('eg-theme', next);
   updateThemeButtonText(next);
@@ -128,19 +163,30 @@ function updateThemeButtonText(theme) {
   if (btn) btn.textContent = 'Theme: ' + (theme === 'dark' ? 'Dark' : 'Light');
 }
 
-let activeTab = 'telemetry';
+// ========================= SSE Transport Beacon =========================
+function setConnState(mode) {
+  // mode: 'live' | 'syncing' | 'offline'
+  state.connected = mode === 'live';
+  const beacon = document.getElementById('conn-beacon');
+  if (!beacon) return;
+  beacon.classList.remove('is-live', 'is-syncing', 'is-offline');
+  beacon.classList.add('is-' + mode);
+  const label = mode === 'live' ? 'Live' : (mode === 'offline' ? 'Offline' : 'Syncing');
+  const text = beacon.querySelector('.beacon-text');
+  if (text) text.textContent = label;
+}
 
+// =========================== Tab Switching ===========================
 // Tab Switching. The allowlist is the guard: an unknown key would otherwise
 // hide every panel and leave the console blank.
-const TAB_KEYS = ['telemetry', 'reuse', 'memory'];
+const TAB_KEYS = ['overview', 'telemetry', 'reuse', 'memory'];
 function switchTab(tab) {
   if (!TAB_KEYS.includes(tab)) {
-    console.warn('switchTab: unknown tab "' + tab + '" — falling back to telemetry');
-    tab = 'telemetry';
+    console.warn('switchTab: unknown tab "' + tab + '" — falling back to overview');
+    tab = 'overview';
   }
-  activeTab = tab;
-  const tabs = TAB_KEYS;
-  tabs.forEach(t => {
+  state.activeTab = tab;
+  TAB_KEYS.forEach(t => {
     const btn = document.getElementById('tab-' + t + '-btn');
     const content = document.getElementById('tab-' + t + '-content');
     const selected = t === tab;
@@ -156,25 +202,32 @@ function switchTab(tab) {
     populateReuseRepoFilter();
     renderReuseList();
     renderPrewriteTable();
-    if (latestSummaryData) {
-      renderReuseReposTable(latestSummaryData.repo_aggs || {});
+    if (state.summary) {
+      renderReuseReposTable(state.summary.repo_aggs || {});
     }
     loadReuseData();
     loadSummaryData();
   } else if (tab === 'memory') {
     populateMemoryStoreFilter();
     renderMemoryList();
-    if (latestSummaryData) {
-      renderMemoryReposTable(latestSummaryData.repo_aggs || {});
+    if (state.summary) {
+      renderMemoryReposTable(state.summary.repo_aggs || {});
     }
     loadMemoriesData();
+    loadSummaryData();
+  } else if (tab === 'overview') {
+    renderOverviewActivity();
+    if (state.summary) {
+      renderOverviewRepos(state.summary.repo_aggs || {});
+      renderOverviewAgents(state.summary.agent_aggs || {});
+    }
     loadSummaryData();
   } else {
     loadSummaryData();
   }
 }
 
-// Data Fetching
+// ============================= Data Fetching =============================
 function loadSummaryData() {
   fetch('/api/summary')
     .then(r => {
@@ -184,26 +237,15 @@ function loadSummaryData() {
     .then(data => {
       clearFetchError('telemetry');
       setDataAge(data.generated_at);
-      latestSummaryData = data;
-      totalCalls = data.graph_calls !== undefined ? data.graph_calls : (data.total_calls || 0);
-      totalErrors = data.graph_errors !== undefined ? data.graph_errors : (data.error_count || 0);
+      state.summary = data;
+      const totalCalls = data.graph_calls !== undefined ? data.graph_calls : (data.total_calls || 0);
+      const totalErrors = data.graph_errors !== undefined ? data.graph_errors : (data.error_count || 0);
 
       const totalCallsEl = document.getElementById('metric-total-calls');
       if (totalCallsEl) totalCallsEl.textContent = totalCalls.toLocaleString();
 
       const relEl = document.getElementById('metric-reliability');
-      if (relEl) {
-        // Zero calls is unmeasured, not a perfect score: render the
-        // unmeasured state instead of the payload's default 100.0.
-        if (totalCalls === 0) {
-          relEl.textContent = '—';
-        } else {
-          const rel = data.graph_reliability_pct !== undefined ? data.graph_reliability_pct : (data.reliability_pct || 100.0);
-          relEl.textContent = totalErrors > 0
-            ? rel.toFixed(1) + '% clean (' + totalErrors + ' errs)'
-            : 'No errors recorded';
-        }
-      }
+      if (relEl) relEl.textContent = reliabilityText(totalCalls, totalErrors, data);
 
       const p50El = document.getElementById('metric-p50');
       if (p50El) {
@@ -237,6 +279,22 @@ function loadSummaryData() {
         dolEl.textContent = '~$' + dollars.toFixed(2) + ' avoided vs full reads';
       }
 
+      // Mission-control KPI tiles mirror the pillar KPIs.
+      const ovQueries = document.getElementById('ovkpi-queries');
+      if (ovQueries) ovQueries.textContent = totalCalls.toLocaleString();
+      const ovQueriesSub = document.getElementById('ovkpi-queries-sub');
+      if (ovQueriesSub) ovQueriesSub.textContent = reliabilityText(totalCalls, totalErrors, data);
+      const ovTokens = document.getElementById('ovkpi-tokens');
+      if (ovTokens) {
+        const tokens = data.graph_saved_tokens !== undefined ? data.graph_saved_tokens : (data.saved_tokens || 0);
+        ovTokens.textContent = '~' + tokens.toLocaleString();
+      }
+      const ovDollars = document.getElementById('ovkpi-dollars');
+      if (ovDollars) {
+        const dollars = data.graph_saved_dollars !== undefined ? data.graph_saved_dollars : (data.saved_dollars || 0.0);
+        ovDollars.textContent = '~$' + dollars.toFixed(2) + ' avoided vs full reads';
+      }
+
       // Render Repositories Table
       renderReposTable(data.repo_aggs || {});
       // Render Agents Table
@@ -252,6 +310,14 @@ function loadSummaryData() {
       renderRecentQueries(data.graph_recent_queries || []);
       applyTelemetryFilters();
 
+      // Mission-control surfaces: top lists, activity stream, health.
+      state.recentQueries = (data.graph_recent_queries || []).slice(0, OVERVIEW_FEED_LIMIT);
+      renderOverviewActivity();
+      renderOverviewRepos(data.repo_aggs || {});
+      renderOverviewAgents(data.agent_aggs || {});
+      state.health.graphErrors = totalErrors;
+      renderOverviewHealth();
+
       // Update Memory KPIs
       updateMemoryKpis();
     })
@@ -266,18 +332,23 @@ function loadReuseData() {
     })
     .then(data => {
       clearFetchError('reuse');
-      reuseCandidates = data.candidates || [];
-      prewriteSearches = data.prewrite_searches || [];
+      state.reuse.candidates = data.candidates || [];
+      state.reuse.prewrite = data.prewrite_searches || [];
 
       const summary = data.summary || {};
+      state.reuse.summary = summary;
       // Gated or unreadable repositories are excluded from the scan: surface
       // them instead of leaving "—" cells unexplained.
       if (summary.degraded) {
         showFetchError('reuse', (summary.errors || [])
           .map(e => (e.repo || 'repo') + ': ' + e.message).join('; '));
       }
-      reusePools = summary.repo_candidate_pools || {};
-      const totalCandidates = summary.total_candidates !== undefined ? summary.total_candidates : reuseCandidates.length;
+      state.health.reuseDegraded = !!summary.degraded;
+      state.health.reuseError = (summary.errors || [])
+        .map(e => (e.repo || 'repo') + ': ' + e.message).join('; ');
+      renderOverviewHealth();
+      state.reuse.pools = summary.repo_candidate_pools || {};
+      const totalCandidates = summary.total_candidates !== undefined ? summary.total_candidates : state.reuse.candidates.length;
 
       const kpiCount = document.getElementById('reuse-kpi-count');
       if (kpiCount) kpiCount.textContent = totalCandidates.toLocaleString();
@@ -296,8 +367,8 @@ function loadReuseData() {
         const locNote = summary.preventable_loc
           ? ' · ~' + summary.preventable_loc.toLocaleString() + ' LOC preventable'
           : '';
-        if (totalCandidates > reuseCandidates.length) {
-          kpiCountSub.textContent = 'Top ' + reuseCandidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + locNote + resolvedNote + cacheNote;
+        if (totalCandidates > state.reuse.candidates.length) {
+          kpiCountSub.textContent = 'Top ' + state.reuse.candidates.length + ' of ' + totalCandidates.toLocaleString() + ' duplicate twins' + locNote + resolvedNote + cacheNote;
         } else {
           kpiCountSub.textContent = 'Syntactic & structural duplicate twins' + locNote + resolvedNote + cacheNote;
         }
@@ -305,12 +376,12 @@ function loadReuseData() {
 
       const feedCount = document.getElementById('reuse-feed-count');
       if (feedCount) {
-        const count = summary.prewrite_count !== undefined ? summary.prewrite_count : prewriteSearches.length;
+        const count = summary.prewrite_count !== undefined ? summary.prewrite_count : state.reuse.prewrite.length;
         feedCount.textContent = count.toLocaleString();
       }
 
       const prewriteKpi = document.getElementById('reuse-kpi-prewrite');
-      const prewriteCount = summary.prewrite_count !== undefined ? summary.prewrite_count : prewriteSearches.length;
+      const prewriteCount = summary.prewrite_count !== undefined ? summary.prewrite_count : state.reuse.prewrite.length;
       if (prewriteKpi) {
         prewriteKpi.textContent = prewriteCount.toLocaleString();
       }
@@ -357,16 +428,32 @@ function loadReuseData() {
             'Gray-band candidates rejected' + locNote +
             ' of ' + judgeStats.reviewed.toLocaleString() + ' reviewed</div>';
         kpiStrip.appendChild(tile);
+        attachTipDescriptions(tile);
+      }
+
+      // Mission-control candidates tile: pools map is the measured-scan set;
+      // an empty map means no repository was scanned, so the count is
+      // unmeasured rather than a fabricated zero.
+      const poolsMeasured = Object.keys(state.reuse.pools).length > 0;
+      const ovCand = document.getElementById('ovkpi-candidates');
+      if (ovCand) ovCand.textContent = poolsMeasured ? totalCandidates.toLocaleString() : '—';
+      const ovCandSub = document.getElementById('ovkpi-candidates-sub');
+      if (ovCandSub) {
+        ovCandSub.textContent = !poolsMeasured
+          ? 'No repositories scanned'
+          : (totalCandidates > state.reuse.candidates.length
+            ? 'Sampled ' + state.reuse.candidates.length + ' of pool ' + totalCandidates.toLocaleString()
+            : 'Pool ' + totalCandidates.toLocaleString() + ' (complete sample)');
       }
 
       const counts = summary.detector_counts || {};
-      updateDetectorPills(counts, reuseCandidates.length);
+      updateDetectorPills(counts, state.reuse.candidates.length);
       populateReuseRepoFilter();
       renderReuseList();
       renderPrewriteTable();
       // Pools arrived with the reuse payload: re-render the repos table so
       // the sampled/pool column is not stuck at the pre-fetch zeros.
-      renderReuseReposTable(latestSummaryData ? (latestSummaryData.repo_aggs || {}) : {});
+      renderReuseReposTable(state.summary ? (state.summary.repo_aggs || {}) : {});
     })
     .catch(err => showFetchError('reuse', err.message));
 }
@@ -393,10 +480,12 @@ function loadMemoriesData() {
     })
     .then(data => {
       clearFetchError('memory');
+      state.memories.degraded = !!data.degraded;
+      state.memories.errors = data.errors || [];
       if (data.degraded) {
         showFetchError('memory', (data.errors || []).map(e => e.store + ': ' + e.message).join('; '));
       }
-      allMemories = data.notes || [];
+      state.memories.notes = data.notes || [];
       updateMemoryKpis();
       populateMemoryStoreFilter();
       renderMemoryList();
@@ -405,7 +494,7 @@ function loadMemoriesData() {
 }
 
 function updateMemoryKpis() {
-  const currentNotes = allMemories.filter(m => m.is_current);
+  const currentNotes = state.memories.notes.filter(m => m.is_current);
 
   // KPI: Anchor Currency Rate
   const notesWithRefs = currentNotes.filter(m => m.refs && m.refs.length > 0);
@@ -423,15 +512,19 @@ function updateMemoryKpis() {
   const currencyRate = notesWithRefs.length > 0
     ? (100.0 * validCount / notesWithRefs.length).toFixed(1) + '%'
     : '—';
+  const currencySubText = notesWithRefs.length === 0
+    ? 'No notes with code refs'
+    : validCount + ' valid · ' + modifiedCount + ' modified · ' + brokenCount + ' broken'
+      + (unverifiedCount > 0 ? ' · ' + unverifiedCount + ' unverified' : '');
   const currencyEl = document.getElementById('mem-kpi-currency');
   if (currencyEl) currencyEl.textContent = currencyRate;
   const currencySubEl = document.getElementById('mem-kpi-currency-sub');
-  if (currencySubEl) {
-    currencySubEl.textContent = notesWithRefs.length === 0
-      ? 'No notes with code refs'
-      : validCount + ' valid · ' + modifiedCount + ' modified · ' + brokenCount + ' broken'
-        + (unverifiedCount > 0 ? ' · ' + unverifiedCount + ' unverified' : '');
-  }
+  if (currencySubEl) currencySubEl.textContent = currencySubText;
+  // Mission-control currency tile mirrors the pillar KPI.
+  const ovCurrency = document.getElementById('ovkpi-currency');
+  if (ovCurrency) ovCurrency.textContent = currencyRate;
+  const ovCurrencySub = document.getElementById('ovkpi-currency-sub');
+  if (ovCurrencySub) ovCurrencySub.textContent = currencySubText;
 
   // Active Notes KPI
   const activeCountEl = document.getElementById('mem-kpi-active-count');
@@ -474,6 +567,9 @@ function updateMemoryKpis() {
       : (totalRecalls > 0 ? 'Exact-key memories leveraged by agents' : 'No recalls recorded in retained journal');
   }
 
+  state.health.anchorModified = modifiedCount;
+  state.health.anchorBroken = brokenCount;
+  renderOverviewHealth();
   updateActionCenter(currentNotes, modifiedCount, brokenCount);
 }
 
@@ -493,7 +589,7 @@ function updateActionCenter(currentNotes, modifiedCount, brokenCount) {
   centerEl.classList.remove('hidden');
   if (summaryEl) {
     const verifyAll = modifiedCount > 0
-      ? '<button class="btn-touch" id="verify-all-btn" style="margin-left:0.5rem;">Verify all ' + modifiedCount + '</button>'
+      ? '<button class="btn-touch" id="verify-all-btn">Verify all ' + modifiedCount + '</button>'
       : '';
     summaryEl.innerHTML = modifiedCount + ' modified · ' + brokenCount + ' broken requiring attention' + verifyAll;
   }
@@ -521,10 +617,10 @@ function updateActionCenter(currentNotes, modifiedCount, brokenCount) {
       '    ' + badge +
       '    <strong>' + escapeHtml(m.key) + '</strong>' +
       '    <span class="badge badge-repo">' + escapeHtml(m.store) + '</span>' +
-      '    <span class="text-muted" style="font-size:0.75rem;">r' + m.rev + '</span>' +
+      '    <span class="text-muted">r' + m.rev + '</span>' +
       '  </div>' +
       '  <div class="action-item-desc text-muted">' + explanation + '</div>' +
-      '  <div class="action-item-refs text-muted" style="font-size:0.75rem;">Refs: ' + refsList + '</div>' +
+      '  <div class="action-item-refs text-muted">Refs: ' + refsList + '</div>' +
       '</div>' +
       touchBtn;
 
@@ -560,15 +656,13 @@ function showTouchError(btn, message) {
   if (!el) {
     el = document.createElement('span');
     el.className = 'touch-error text-muted';
-    el.style.fontSize = '0.72rem';
-    el.style.marginLeft = '0.5rem';
     if (btn.parentElement) btn.parentElement.appendChild(el);
   }
   el.textContent = message;
 }
 
 function verifyAllModified() {
-  const currentNotes = allMemories.filter(m => m.is_current && m.ref_status === 'modified');
+  const currentNotes = state.memories.notes.filter(m => m.is_current && m.ref_status === 'modified');
   if (currentNotes.length === 0) return;
   if (!confirm('Verify all ' + currentNotes.length + ' modified note(s)? This refreshes their anchor timestamps.')) return;
   let pending = currentNotes.length;
@@ -592,7 +686,164 @@ function verifyAllModified() {
   });
 }
 
-// Telemetry Views Rendering
+// ========================= Mission Control Surfaces =========================
+// Top repositories across all pillars: the five heaviest graph workspaces.
+function renderOverviewRepos(repoAggs) {
+  const tbody = document.getElementById('ov-repos-tbody');
+  if (!tbody) return;
+
+  const entries = Object.entries(repoAggs)
+    .map(([rName, rData]) => [rName, {
+      ...rData,
+      calls: rData.graph_calls !== undefined ? rData.graph_calls : rData.calls,
+      errors: rData.graph_errors !== undefined ? rData.graph_errors : (rData.errors || 0),
+    }])
+    .filter(([_, rData]) => rData.calls > 0)
+    .sort((a, b) => b[1].calls - a[1].calls)
+    .slice(0, OVERVIEW_TOP_N);
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">No graph workspace activity recorded</td></tr>';
+    return;
+  }
+
+  const maxCalls = entries[0][1].calls || 1;
+  tbody.innerHTML = '';
+  entries.forEach(([rName, rData]) => {
+    const label = rData.display || rName;
+    const errs = rData.errors || 0;
+    const rel = rData.graph_reliability_pct !== undefined ? rData.graph_reliability_pct : (rData.reliability_pct || (rData.calls ? 100.0 * (rData.calls - errs) / rData.calls : 100.0));
+    const pct = (rData.calls / maxCalls) * 100.0;
+    const wtBadge = rData.worktree ? '<span class="badge badge-wt">worktree</span>' : '';
+    // Quiet healthy rows: a failing row is the signal, a perfect one is noise.
+    const statusCell = errs === 0
+      ? ''
+      : '<span class="badge status-err">' + rel.toFixed(1) + '% (' + errs + ' err)</span>';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' +
+      '  <div class="repo-name-wrap"><strong>' + escapeHtml(label) + '</strong> ' + wtBadge + '</div>' +
+      '  <div class="row-track"><div class="row-track-fill" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
+      '</td>' +
+      '<td class="text-right num-col">' + rData.calls.toLocaleString() + '</td>' +
+      '<td>' + statusCell + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+// Top agents across all pillars: the five most-active identities.
+function renderOverviewAgents(agentAggs) {
+  const tbody = document.getElementById('ov-agents-tbody');
+  if (!tbody) return;
+
+  const entries = Object.entries(agentAggs)
+    .map(([aName, aData]) => [aName, {
+      calls: aData.calls || 0,
+      saved: aData.saved_tokens || 0,
+    }])
+    .filter(([_, aData]) => aData.calls > 0)
+    .sort((a, b) => b[1].calls - a[1].calls)
+    .slice(0, OVERVIEW_TOP_N);
+
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">No agent activity recorded</td></tr>';
+    return;
+  }
+
+  const total = entries.reduce((acc, [_, aData]) => acc + (aData.calls || 0), 0);
+  tbody.innerHTML = '';
+  entries.forEach(([aName, aData]) => {
+    const share = total ? (aData.calls / total * 100.0) : 0.0;
+    const shareStr = (share > 0 && share < 0.1) ? '<0.1%' : share.toFixed(1) + '%';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><div class="repo-name-wrap">' + agentTagHtml(aName) +
+      ' <span class="text-muted">(' + shareStr + ')</span></div></td>' +
+      '<td class="text-right num-col">' + aData.calls.toLocaleString() + '</td>' +
+      '<td class="text-right num-col text-muted">~' + aData.saved.toLocaleString() + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+function createOverviewRow(q) {
+  const tr = document.createElement('tr');
+  tr.className = 'query-row';
+  const rName = q.repo_name || UNATTRIBUTED;
+  const mainName = q.repo_main_name || '';
+  const aName = q.agent || 'user';
+  const exitCode = parseInt(q.exit_code || 0, 10);
+  const ts = q.ts ? new Date(q.ts * 1000).toLocaleTimeString() : '—';
+  const fromMain = mainName
+    ? ' <span class="text-muted wt-from">from ' + escapeHtml(mainName) + '</span>'
+    : '';
+  tr.innerHTML =
+    '<td class="num-col text-muted">' + ts + '</td>' +
+    '<td><span class="repo-tag">' + escapeHtml(rName) + '</span>' + fromMain + '</td>' +
+    '<td>' + agentTagHtml(aName) + '</td>' +
+    '<td><code>' + escapeHtml(q.tool || '—') + '</code></td>' +
+    '<td>' + statusBadgeHtml(exitCode) + '</td>';
+  return tr;
+}
+
+function renderOverviewActivity() {
+  const tbody = document.getElementById('ov-recent-tbody');
+  if (!tbody) return;
+  const rows = state.recentQueries;
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No queries recorded</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  rows.forEach(q => tbody.appendChild(createOverviewRow(q)));
+}
+
+// System health: the alert rows only. A healthy system renders no banner —
+// quiet until an anomaly occurs.
+function renderOverviewHealth() {
+  const el = document.getElementById('ov-health');
+  if (!el) return;
+  const h = state.health;
+  const rows = [];
+
+  if (h.anchorBroken > 0 || h.anchorModified > 0) {
+    rows.push(
+      '<div class="health-row">' +
+      (h.anchorBroken > 0 ? '<span class="badge status-err">' + h.anchorBroken + ' broken</span>' : '') +
+      (h.anchorModified > 0 ? '<span class="badge status-warn">' + h.anchorModified + ' modified</span>' : '') +
+      '<span class="health-text">memory anchors need attention</span>' +
+      '<button class="btn-touch" data-health-action="memory">Review</button>' +
+      '</div>'
+    );
+  }
+  if (h.reuseDegraded) {
+    rows.push(
+      '<div class="health-row">' +
+      '<span class="badge status-warn">DEGRADED</span>' +
+      '<span class="health-text">reuse scan: ' + escapeHtml(h.reuseError) + '</span>' +
+      '</div>'
+    );
+  }
+  if (h.graphErrors > 0) {
+    rows.push(
+      '<div class="health-row">' +
+      '<span class="badge status-err">' + h.graphErrors + ' errors</span>' +
+      '<span class="health-text">graph invocations exited non-zero in the retained window</span>' +
+      '</div>'
+    );
+  }
+
+  if (rows.length === 0) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML = rows.join('');
+}
+
+// ===================== Telemetry Views Rendering =====================
 function renderReposTable(repoAggs) {
   const tbody = document.getElementById('repos-tbody');
   const select = document.getElementById('repo-filter');
@@ -619,6 +870,12 @@ function renderReposTable(repoAggs) {
     select.innerHTML = '<option value="ALL">All Repositories</option>';
   }
 
+  // The header scope select mirrors the same graph-active repository set.
+  const scopeSel = document.getElementById('scope-filter');
+  if (scopeSel) {
+    scopeSel.innerHTML = '<option value="ALL">All Workspaces</option>';
+  }
+
   entries.forEach(([rName, rData]) => {
     // The dropdown matches recent-row `data-repo` labels (the repo name), so
     // value and text must both be the display label, never the path key.
@@ -628,6 +885,12 @@ function renderReposTable(repoAggs) {
       opt.value = label;
       opt.textContent = label;
       select.appendChild(opt);
+    }
+    if (scopeSel) {
+      const opt = document.createElement('option');
+      opt.value = label;
+      opt.textContent = label;
+      scopeSel.appendChild(opt);
     }
 
     const worktrees = Object.entries(rData.worktrees || {});
@@ -685,6 +948,13 @@ function renderReposTable(repoAggs) {
     } else {
       select.value = 'ALL';
       if (curRepoVal && curRepoVal !== 'ALL') announce('Filter "' + curRepoVal + '" reset: repository no longer active');
+    }
+  }
+  if (scopeSel) {
+    if (state.selectedRepo !== 'ALL' && Array.from(scopeSel.options).some(o => o.value === state.selectedRepo)) {
+      scopeSel.value = state.selectedRepo;
+    } else {
+      scopeSel.value = 'ALL';
     }
   }
 }
@@ -745,7 +1015,7 @@ function renderAgentsTable(agentAggs) {
 
     tr.innerHTML =
       '<td>' +
-      '  <div class="repo-name-wrap">' + agentTagHtml(aName) + ' <span class="text-muted" style="font-size: 0.75rem;">(' + shareStr + ')</span></div>' +
+      '  <div class="repo-name-wrap">' + agentTagHtml(aName) + ' <span class="text-muted">(' + shareStr + ')</span></div>' +
       '  <div class="row-track"><div class="row-track-fill row-track-fill-agent" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + aData.graphCalls.toLocaleString() + '</td>' +
@@ -779,7 +1049,7 @@ function filterByAgent(agentName) {
 // floor, never a corpus total.
 function reuseCandidateCountsByRepo() {
   const counts = {};
-  reuseCandidates.forEach(c => {
+  state.reuse.candidates.forEach(c => {
     // repo_path is the scanned root — collision-proof where the display
     // label is not (two same-basename checkouts escalate their labels).
     const repo = c.repo_path || c.repo || '(unattributed)';
@@ -794,7 +1064,7 @@ function searchHitRateCell(rData) {
   const pct = rData.search_hit_rate_pct;
   if (pct === null || pct === undefined) return '<span class="text-muted">—</span>';
   return '<span class="text-right">' + pct.toFixed(1) + '%</span>'
-    + ' <span class="text-muted" style="font-size: 0.72rem;">(' + calls + ' searches)</span>';
+    + ' <span class="text-muted">(' + calls + ' searches)</span>';
 }
 
 function lastScanCell(rData) {
@@ -802,7 +1072,7 @@ function lastScanCell(rData) {
   if (!scan) return '<span class="text-muted">—</span>';
   const when = new Date(scan.ts * 1000).toLocaleDateString();
   const size = scan.result_count.toLocaleString() + ' candidates'
-    + (scan.limit_capped ? ' <span class="text-muted" style="font-size: 0.72rem;">(truncated)</span>' : '');
+    + (scan.limit_capped ? ' <span class="text-muted">(truncated)</span>' : '');
   // Pool delta vs the previous scan: the consolidation-loop trend. A drop
   // means twins were merged away; a rise means new duplication accreted.
   // The badge titles the baseline date — a stale baseline is not a trend.
@@ -815,10 +1085,10 @@ function lastScanCell(rData) {
       const baseline = scan.prev_ts
         ? ' vs previous scan ' + new Date(scan.prev_ts * 1000).toLocaleDateString()
         : '';
-      delta = ' <span class="badge ' + cls + '" style="font-size:0.7rem;" title="Pool change' + baseline + '">Δ ' + sign + Math.abs(d).toLocaleString() + '</span>';
+      delta = ' <span class="badge ' + cls + '" title="Pool change' + baseline + '">Δ ' + sign + Math.abs(d).toLocaleString() + '</span>';
     }
   }
-  return '<span class="text-muted" style="font-size: 0.72rem;">' + when + ' ·</span> ' + size + delta;
+  return '<span class="text-muted">' + when + ' ·</span> ' + size + delta;
 }
 
 function renderReuseReposTable(repoAggs) {
@@ -856,7 +1126,7 @@ function renderReuseReposTable(repoAggs) {
     // Sample/pool maps are keyed by the repository PATH (the repo_aggs key),
     // collision-proof where display labels escalate. Absent pool = unmeasured.
     const sampled = candidateCounts[rName];
-    const pool = reusePools[rName];
+    const pool = state.reuse.pools[rName];
     // Sampled / pool: the top-overlap count actually shown next to the
     // repository's full candidate pool. Absent pool = unmeasured scan.
     const candCell = pool === undefined
@@ -901,6 +1171,7 @@ function filterReuseByRepo(repoName) {
       announce('Filter reset: all repositories');
     } else {
       announce('Filtered by repository ' + repoName);
+      syncRepoScope(select.value);
     }
     renderReuseList();
   }
@@ -1015,7 +1286,7 @@ function renderToolsTable(toolAggs, totalCalls) {
 
     tr.innerHTML =
       '<td>' +
-      '  <div class="tool-name-wrap"><code>' + escapeHtml(tName) + '</code> <span class="text-muted" style="font-size: 0.75rem;">(' + shareStr + ')</span></div>' +
+      '  <div class="tool-name-wrap"><code>' + escapeHtml(tName) + '</code> <span class="text-muted">(' + shareStr + ')</span></div>' +
       '  <div class="row-track"><div class="row-track-fill" style="width: ' + pct.toFixed(1) + '%;"></div></div>' +
       '</td>' +
       '<td class="text-right num-col">' + calls.toLocaleString() + '</td>' +
@@ -1024,8 +1295,6 @@ function renderToolsTable(toolAggs, totalCalls) {
     tbody.appendChild(tr);
   });
 }
-
-let recentQueryTotal = 0;
 
 function renderRecentQueries(queries) {
   const tbody = document.getElementById('recent-tbody');
@@ -1118,19 +1387,6 @@ function createRecentRow(q) {
   const ts = q.ts ? new Date(q.ts * 1000).toLocaleTimeString() : '—';
   const latStr = q.latency_us ? (q.latency_us / 1000.0).toFixed(1) + 'ms' : '—';
 
-  let statusClass = 'status-ok';
-  let statusText = 'ok';
-  if (exitCode === 1) {
-    statusClass = 'status-warn';
-    statusText = 'empty';
-  } else if (exitCode === 2) {
-    statusClass = 'status-ambig';
-    statusText = 'ambiguous';
-  } else if (exitCode >= 3) {
-    statusClass = 'status-err';
-    statusText = 'err ' + exitCode;
-  }
-
   const argsRaw = JSON.stringify(q.args || {});
   const argsShort = argsRaw.length > 85 ? argsRaw.substring(0, 82) + '...' : argsRaw;
   const argsHuman = explainToolArgs(q.tool, q.args) || argsShort;
@@ -1146,18 +1402,21 @@ function createRecentRow(q) {
     '<td><code>' + escapeHtml(q.tool || '—') + '</code></td>' +
     '<td class="text-right num-col">' + (q.shown || q.result_count || 0) + '</td>' +
     '<td class="text-right num-col">' + latStr + '</td>' +
-    '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
+    '<td>' + statusBadgeHtml(exitCode) + '</td>' +
     '<td class="args-cell" title="' + escapeHtml(argsRaw) + '"><code>' + escapeHtml(argsHuman) + '</code></td>';
 
   return tr;
 }
 
 function applyTelemetryFilters() {
-  const selectedRepo = document.getElementById('repo-filter').value;
+  const repoFilterEl = document.getElementById('repo-filter');
+  const selectedRepo = repoFilterEl ? repoFilterEl.value : 'ALL';
   const agentFilterEl = document.getElementById('agent-filter');
   const selectedAgent = agentFilterEl ? agentFilterEl.value : 'ALL';
-  const selectedStatus = document.getElementById('status-filter').value;
-  const search = document.getElementById('query-search').value.toLowerCase().trim();
+  const statusFilterEl = document.getElementById('status-filter');
+  const selectedStatus = statusFilterEl ? statusFilterEl.value : 'ALL';
+  const searchEl = document.getElementById('query-search');
+  const search = searchEl ? searchEl.value.toLowerCase().trim() : '';
 
   const rows = document.querySelectorAll('#recent-tbody tr.query-row');
   rows.forEach(row => {
@@ -1179,22 +1438,45 @@ function applyTelemetryFilters() {
   });
 }
 
-function filterByRepo(repoName) {
-  const select = document.getElementById('repo-filter');
-  if (select) {
-    select.value = repoName;
-    announce('Filtered by repository ' + repoName);
-    applyTelemetryFilters();
-  }
+// Shared repo scope: the header select mirrors the most recent scope action
+// across the telemetry and reuse filters. Option sets differ per tab (graph
+// rows vs sampled candidates), so each mirror is best-effort: a value absent
+// from a select's options leaves that view untouched, never a ghost option.
+function syncRepoScope(value) {
+  state.selectedRepo = value;
+  const scopeSel = document.getElementById('scope-filter');
+  if (scopeSel && Array.from(scopeSel.options).some(o => o.value === value)) scopeSel.value = value;
+  const telSel = document.getElementById('repo-filter');
+  if (telSel && Array.from(telSel.options).some(o => o.value === value)) telSel.value = value;
+  const reuseSel = document.getElementById('reuse-repo-filter');
+  if (reuseSel && Array.from(reuseSel.options).some(o => o.value === value)) reuseSel.value = value;
+  applyTelemetryFilters();
+  renderReuseList();
 }
 
-// Anti-Reinvention UI
+function filterByRepo(repoName) {
+  const select = document.getElementById('repo-filter');
+  if (!select) return;
+  // The scope carries graph-active repositories only: an option-less label
+  // would silently blank the feed, so it is ignored instead.
+  if (repoName !== 'ALL' && !Array.from(select.options).some(o => o.value === repoName)) return;
+  select.value = repoName;
+  syncRepoScope(repoName);
+  if (repoName === 'ALL') {
+    announce('Filter reset: all repositories');
+  } else {
+    announce('Filtered by repository ' + repoName);
+  }
+  applyTelemetryFilters();
+}
+
+// ========================= Anti-Reinvention UI =========================
 function populateReuseRepoFilter() {
   const select = document.getElementById('reuse-repo-filter');
   if (!select) return;
   const keep = select.value || 'ALL';
   const repos = new Set();
-  reuseCandidates.forEach(c => repos.add(c.repo));
+  state.reuse.candidates.forEach(c => repos.add(c.repo));
 
   select.innerHTML = '<option value="ALL">All Repositories</option>';
   Array.from(repos).sort().forEach(r => {
@@ -1212,23 +1494,24 @@ function populateReuseRepoFilter() {
 }
 
 function setReuseDetectorFilter(det) {
-  activeReuseDetector = det;
+  state.reuse.filterDet = det;
   document.querySelectorAll('.filter-pill[data-det]').forEach(btn => {
     const isAct = btn.getAttribute('data-det') === det;
     btn.classList.toggle('active', isAct);
     btn.setAttribute('aria-pressed', isAct ? 'true' : 'false');
   });
-  selectedReuseId = null;
+  state.reuse.selectedId = null;
   renderReuseList();
 }
 
 function getFilteredReuseCandidates() {
-  const repo = document.getElementById('reuse-repo-filter') ? document.getElementById('reuse-repo-filter').value : 'ALL';
+  const repoSelect = document.getElementById('reuse-repo-filter');
+  const repo = repoSelect ? repoSelect.value : 'ALL';
   const searchInput = document.getElementById('reuse-search');
   const search = searchInput ? searchInput.value.toLowerCase().trim() : '';
-  return reuseCandidates.filter(c => {
+  return state.reuse.candidates.filter(c => {
     if (repo !== 'ALL' && c.repo !== repo) return false;
-    if (activeReuseDetector !== 'ALL' && c.detector !== activeReuseDetector) return false;
+    if (state.reuse.filterDet !== 'ALL' && c.detector !== state.reuse.filterDet) return false;
     if (search) {
       const matchSymbol = (c.symbol || '').toLowerCase().includes(search);
       const matchCanonical = (c.canonical || '').toLowerCase().includes(search);
@@ -1249,7 +1532,7 @@ function renderReuseList() {
   updateListCount('reuse-list-count', filtered.length, view.total, view.label);
 
   if (filtered.length === 0) {
-    const trulyEmpty = reuseCandidates.length === 0 && activeReuseDetector === 'ALL';
+    const trulyEmpty = state.reuse.candidates.length === 0 && state.reuse.filterDet === 'ALL';
     container.innerHTML = trulyEmpty
       ? '<div class="empty-cell">No duplicate candidates found in the indexed corpus.</div>'
       : '<div class="empty-cell">No candidates match the current filters.</div>';
@@ -1257,16 +1540,16 @@ function renderReuseList() {
     return;
   }
 
-  let selIdx = filtered.findIndex(c => c.id === selectedReuseId);
+  let selIdx = filtered.findIndex(c => c.id === state.reuse.selectedId);
   if (selIdx < 0) {
-    const stillVisible = filteredAll.some(c => c.id === selectedReuseId);
+    const stillVisible = filteredAll.some(c => c.id === state.reuse.selectedId);
     selIdx = 0;
-    selectedReuseId = filtered[0] ? filtered[0].id : null;
+    state.reuse.selectedId = filtered[0] ? filtered[0].id : null;
     if (stillVisible) announce('Selection moved: the previous candidate is outside the current view');
   }
   container.innerHTML = '';
   filtered.forEach((c, idx) => {
-    const isSelected = c.id === selectedReuseId;
+    const isSelected = c.id === state.reuse.selectedId;
     const card = document.createElement('div');
     card.className = 'select-item-card' + (isSelected ? ' selected' : '');
     card.tabIndex = 0;
@@ -1274,11 +1557,11 @@ function renderReuseList() {
     card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     card.setAttribute('aria-label', 'Candidate ' + c.symbol + ' to ' + c.canonical);
     card.onclick = () => {
-      selectedReuseId = c.id;
+      state.reuse.selectedId = c.id;
       renderReuseList();
     };
     card.onkeydown = (ev) => {
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectedReuseId = c.id; renderReuseList(); }
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); state.reuse.selectedId = c.id; renderReuseList(); }
     };
 
     const detBadgeClass = 'badge badge-' + c.detector.toLowerCase();
@@ -1298,9 +1581,9 @@ function renderReuseList() {
 
     card.innerHTML =
       '<div class="item-card-head">' +
-      '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
+      '  <div class="badge-row">' +
       '    <span class="' + detBadgeClass + '" data-tip="det.' + c.detector.toLowerCase() + '">' + c.detector + '</span>' +
-          (c.overlap_applicable ? '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + c.overlap_pct + '% overlap</span>' : '<span class="badge" data-tip="card.overlap" style="background:var(--bg-subtle);">' + escapeHtml(detectorEvidenceLabel(c.detector)) + '</span>') +
+          (c.overlap_applicable ? '<span class="badge" data-tip="card.overlap">' + c.overlap_pct + '% overlap</span>' : '<span class="badge" data-tip="card.overlap">' + escapeHtml(detectorEvidenceLabel(c.detector)) + '</span>') +
       '    ' + confBadge + locBadge +
       '  </div>' +
       '  ' + repoBadge +
@@ -1325,7 +1608,7 @@ function renderReuseDossier(c) {
   if (!container) return;
   container.scrollTop = 0;
   if (!c) {
-    container.innerHTML = '<div class="empty-cell" style="padding-top: 5rem;">Select a duplication candidate to inspect side-by-side source code.</div>';
+    container.innerHTML = '<div class="empty-cell dossier-empty">Select a duplication candidate to inspect side-by-side source code.</div>';
     return;
   }
 
@@ -1343,8 +1626,8 @@ function renderReuseDossier(c) {
 
   container.innerHTML =
     '<div class="dossier-head">' +
-    '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">' +
-    '    <div style="display:flex; gap:0.45rem; align-items:center;">' +
+    '  <div class="dossier-head-row">' +
+    '    <div class="badge-row">' +
     '      <span class="' + detBadgeClass + '" data-tip="det.' + c.detector.toLowerCase() + '">' + c.detector + '</span>' +
           (c.overlap_applicable ? '<span class="badge status-ok" data-tip="card.overlap">' + c.overlap_pct + '% overlap</span>' : '<span class="badge status-ok" data-tip="card.overlap">' + escapeHtml(detectorEvidenceLabel(c.detector)) + '</span>') +
     '      <span class="badge badge-repo">' + escapeHtml(c.repo) + '</span>' +
@@ -1352,7 +1635,7 @@ function renderReuseDossier(c) {
     '    <span class="badge status-warn" data-tip="card.loc_saving">Save ~' + c.loc_saving + ' LOC</span>' +
     '  </div>' +
     '  <div class="dossier-title">' + escapeHtml(c.symbol) + '</div>' +
-    '  <div class="text-muted" style="font-size:0.82rem;">Authoritative Target: <strong>' + escapeHtml(c.canonical) + '</strong> <span class="badge status-ok">[callers=' + c.canonical_callers + ']</span></div>' +
+    '  <div class="dossier-sub">Authoritative Target: <strong>' + escapeHtml(c.canonical) + '</strong> <span class="badge status-ok">[callers=' + c.canonical_callers + ']</span></div>' +
     '</div>' +
     '<div class="prevention-banner">' +
     '  <strong>What This Prevents:</strong> ' + escapeHtml(c.prevention_narrative) +
@@ -1385,6 +1668,7 @@ function renderReuseDossier(c) {
 function renderPrewriteTable() {
   const tbody = document.getElementById('prewrite-tbody');
   if (!tbody) return;
+  const prewriteSearches = state.reuse.prewrite;
   if (!prewriteSearches || prewriteSearches.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No pre-write helper searches recorded yet</td></tr>';
     updateListCount('prewrite-list-count', 0, 0, 'newest first');
@@ -1396,7 +1680,7 @@ function renderPrewriteTable() {
   visible.forEach(s => {
     const tr = document.createElement('tr');
     const ts = s.ts ? new Date(s.ts * 1000).toLocaleTimeString() : '—';
-      const rName = s.repo_name || UNATTRIBUTED;
+    const rName = s.repo_name || UNATTRIBUTED;
     tr.innerHTML =
       '<td class="num-col text-muted">' + ts + '</td>' +
       '<td><span class="repo-tag">' + escapeHtml(rName) + '</span></td>' +
@@ -1411,13 +1695,13 @@ function renderPrewriteTable() {
   updateListCount('prewrite-list-count', visible.length, prewriteSearches.length, 'newest first');
 }
 
-// Agent Memory UI
+// ========================== Agent Memory UI ==========================
 function populateMemoryStoreFilter() {
   const select = document.getElementById('mem-store-filter');
   if (!select) return;
   const keep = select.value || 'ALL';
   const stores = new Map();
-  allMemories.forEach(m => {
+  state.memories.notes.forEach(m => {
     const id = m.store_id || m.store;
     if (!stores.has(id)) stores.set(id, m.store);
   });
@@ -1435,6 +1719,7 @@ function populateMemoryStoreFilter() {
     select.value = 'ALL';
     if (keep !== 'ALL') announce('Filter "' + keep + '" reset: store no longer active');
   }
+  state.memories.filterStore = select.value;
 
   // Populate store filter pills
   const pillGroup = document.getElementById('mem-store-pills');
@@ -1445,7 +1730,7 @@ function populateMemoryStoreFilter() {
     allBtn.className = 'filter-pill' + (isAll ? ' active' : '');
     allBtn.setAttribute('data-store', 'ALL');
     allBtn.setAttribute('aria-pressed', isAll ? 'true' : 'false');
-    allBtn.textContent = 'All (' + allMemories.length + ')';
+    allBtn.textContent = 'All (' + state.memories.notes.length + ')';
     pillGroup.appendChild(allBtn);
 
     Array.from(stores.keys()).sort().forEach(id => {
@@ -1454,7 +1739,7 @@ function populateMemoryStoreFilter() {
       btn.className = 'filter-pill' + (isAct ? ' active' : '');
       btn.setAttribute('data-store', id);
       btn.setAttribute('aria-pressed', isAct ? 'true' : 'false');
-      const count = allMemories.filter(m => (m.store_id || m.store) === id).length;
+      const count = state.memories.notes.filter(m => (m.store_id || m.store) === id).length;
       btn.textContent = stores.get(id) + ' (' + count + ')';
       pillGroup.appendChild(btn);
     });
@@ -1462,6 +1747,7 @@ function populateMemoryStoreFilter() {
 }
 
 function syncMemoryStorePills(currentStore) {
+  state.memories.filterStore = currentStore;
   const pills = document.querySelectorAll('#mem-store-pills .filter-pill');
   pills.forEach(pill => {
     const isAct = pill.getAttribute('data-store') === currentStore;
@@ -1475,7 +1761,7 @@ function setMemoryStoreFilter(storeId) {
   const targetStore = (select && select.value === storeId && storeId !== 'ALL') ? 'ALL' : storeId;
   if (select) select.value = targetStore;
   syncMemoryStorePills(targetStore);
-  selectedMemoryId = null;
+  state.memories.selectedId = null;
   if (targetStore === 'ALL') {
     announce('Filter reset: all stores');
   } else {
@@ -1485,12 +1771,16 @@ function setMemoryStoreFilter(storeId) {
 }
 
 function getFilteredMemories() {
-  const store = document.getElementById('mem-store-filter') ? document.getElementById('mem-store-filter').value : 'ALL';
-  const kind = document.getElementById('mem-kind-filter') ? document.getElementById('mem-kind-filter').value : 'ALL';
-  const search = document.getElementById('mem-search') ? document.getElementById('mem-search').value.toLowerCase().trim() : '';
-  const showSuperseded = document.getElementById('mem-show-superseded') ? document.getElementById('mem-show-superseded').checked : false;
+  const storeSelect = document.getElementById('mem-store-filter');
+  const store = storeSelect ? storeSelect.value : 'ALL';
+  const kindSelect = document.getElementById('mem-kind-filter');
+  const kind = kindSelect ? kindSelect.value : 'ALL';
+  const searchEl = document.getElementById('mem-search');
+  const search = searchEl ? searchEl.value.toLowerCase().trim() : '';
+  const supersededEl = document.getElementById('mem-show-superseded');
+  const showSuperseded = supersededEl ? supersededEl.checked : false;
 
-  return allMemories.filter(m => {
+  return state.memories.notes.filter(m => {
     if (!showSuperseded && !m.is_current) return false;
     if (store !== 'ALL' && (m.store_id || m.store) !== store) return false;
     if (kind !== 'ALL' && m.kind !== kind) return false;
@@ -1514,23 +1804,23 @@ function renderMemoryList() {
   updateListCount('mem-list-count', filtered.length, view.total, view.label);
 
   if (filtered.length === 0) {
-    container.innerHTML = allMemories.length === 0
+    container.innerHTML = state.memories.notes.length === 0
       ? '<div class="empty-cell">No memory notes recorded yet. Agents write them with <code>eg mem write --body "..." --kind gotcha &lt;key&gt;</code></div>'
       : '<div class="empty-cell">No memory notes match the current filters.</div>';
     renderMemoryDossier(null);
     return;
   }
 
-  let selIdx = filtered.findIndex(m => memorySelectionId(m) === selectedMemoryId);
+  let selIdx = filtered.findIndex(m => memorySelectionId(m) === state.memories.selectedId);
   if (selIdx < 0) {
-    const stillVisible = filteredAll.some(m => memorySelectionId(m) === selectedMemoryId);
+    const stillVisible = filteredAll.some(m => memorySelectionId(m) === state.memories.selectedId);
     selIdx = 0;
-    selectedMemoryId = filtered[0] ? memorySelectionId(filtered[0]) : null;
+    state.memories.selectedId = filtered[0] ? memorySelectionId(filtered[0]) : null;
     if (stillVisible) announce('Selection moved: the previous note is outside the current view');
   }
   container.innerHTML = '';
   filtered.forEach((m) => {
-    const isSelected = memorySelectionId(m) === selectedMemoryId;
+    const isSelected = memorySelectionId(m) === state.memories.selectedId;
     const card = document.createElement('div');
     card.className = 'select-item-card' + (isSelected ? ' selected' : '');
     card.tabIndex = 0;
@@ -1538,11 +1828,11 @@ function renderMemoryList() {
     card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     card.setAttribute('aria-label', 'Memory note ' + m.key);
     card.onclick = () => {
-      selectedMemoryId = memorySelectionId(m);
+      state.memories.selectedId = memorySelectionId(m);
       renderMemoryList();
     };
     card.onkeydown = (ev) => {
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectedMemoryId = memorySelectionId(m); renderMemoryList(); }
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); state.memories.selectedId = memorySelectionId(m); renderMemoryList(); }
     };
 
     const kindClass = 'badge status-' + (m.kind === 'decision' ? 'ambig' : m.kind === 'gotcha' ? 'warn' : m.kind === 'fact' ? 'ok' : m.kind === 'procedure' ? 'neutral' : 'err');
@@ -1554,7 +1844,7 @@ function renderMemoryList() {
       ? new Date(m.anchored_at * 1000).toLocaleDateString()
       : '';
     const storeBadge = '<span class="badge badge-repo">' + escapeHtml(m.store) + '</span>';
-    const revPill = '<span class="badge" style="background: var(--bg-subtle);">r' + m.rev + '</span>';
+    const revPill = '<span class="badge status-neutral">r' + m.rev + '</span>';
     const refBadge = m.ref_status === 'broken'
       ? '<span class="badge status-err">[broken-ref]</span>'
       : m.ref_status === 'modified'
@@ -1563,7 +1853,7 @@ function renderMemoryList() {
 
     card.innerHTML =
       '<div class="item-card-head">' +
-      '  <div style="display:flex; align-items:center; gap:0.4rem;">' +
+      '  <div class="badge-row">' +
       '    <span class="' + kindClass + '">' + escapeHtml(m.kind.toUpperCase()) + '</span>' +
       '    ' + revPill +
       '    ' + refBadge +
@@ -1596,7 +1886,7 @@ function renderMemoryDossier(m) {
   if (!container) return;
   container.scrollTop = 0;
   if (!m) {
-    container.innerHTML = '<div class="empty-cell" style="padding-top: 5rem;">Select a memory note from the list to view full dossier.</div>';
+    container.innerHTML = '<div class="empty-cell dossier-empty">Select a memory note from the list to view full dossier.</div>';
     return;
   }
 
@@ -1635,16 +1925,16 @@ function renderMemoryDossier(m) {
   }
 
   const touchBtn = m.ref_status === 'modified' && m.is_current
-    ? '<button class="btn-touch" style="padding: 0.15rem 0.5rem; font-size: 0.72rem; margin-left: 0.5rem;" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
+    ? '<button class="btn-touch btn-touch-sm" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
     : '';
 
   const isGlobal = (m.store_id || m.store) === 'global';
   const globalFlag = isGlobal ? ' --global' : '';
   const refsArg = m.refs && m.refs.length ? ' --refs "' + escapeHtml(m.refs.join(' ')) + '"' : '';
   const cliHtml =
-    '<div class="action-recommendation" style="margin-top: 1.25rem;">' +
-    '  <div style="font-weight: 600; margin-bottom: 0.35rem;">Agent Workflow &amp; CLI Invocations</div>' +
-    '  <div style="font-family: var(--font-mono); font-size: 0.76rem; display: flex; flex-direction: column; gap: 0.25rem;">' +
+    '<div class="action-recommendation">' +
+    '  <div class="action-item-title">Agent Workflow &amp; CLI Invocations</div>' +
+    '  <div class="cli-lines">' +
     '    <div><span class="text-muted">Read: </span><code>eg mem get "' + escapeHtml(m.key) + '"' + globalFlag + '</code></div>' +
     '    <div><span class="text-muted">Save: </span><code>eg mem write "' + escapeHtml(m.key) + '" --kind ' + escapeHtml(m.kind) + refsArg + globalFlag + ' --body "..."</code></div>' +
     '  </div>' +
@@ -1652,20 +1942,20 @@ function renderMemoryDossier(m) {
 
   container.innerHTML =
     '<div class="dossier-head">' +
-    '  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">' +
-    '    <div style="display:flex; gap:0.45rem; align-items:center;">' +
+    '  <div class="dossier-head-row">' +
+    '    <div class="badge-row">' +
     '      <span class="' + kindClass + '">' + escapeHtml(m.kind.toUpperCase()) + '</span>' +
-    '      <span class="badge" style="background:var(--bg-subtle);">Rev ' + m.rev + '</span>' +
+    '      <span class="badge status-neutral">Rev ' + m.rev + '</span>' +
     '      <span class="badge badge-repo">' + escapeHtml(m.store) + '</span>' +
     '      ' + touchBtn +
     '    </div>' +
-    '    <span class="text-muted" style="font-size:0.78rem;">' + dateStr + '</span>' +
+    '    <span class="dossier-sub">' + dateStr + '</span>' +
     '  </div>' +
     '  <div class="dossier-title">' + escapeHtml(m.key) + '</div>' +
-    '  <div class="text-muted" style="font-size:0.8rem;">Scope: <strong>' + escapeHtml(m.scope) + '</strong> &middot; Source: <code>' + escapeHtml(m.source) + '</code></div>' +
+    '  <div class="dossier-sub">Scope: <strong>' + escapeHtml(m.scope) + '</strong> &middot; Source: <code>' + escapeHtml(m.source) + '</code></div>' +
     '</div>' +
     '<div class="recall-banner">' +
-    '  <div style="font-family:var(--font-mono); font-size:0.78rem;">Recalls: <strong>' + m.recall_count + '</strong> &middot; Last: ' + lastRecalledStr + '</div>' +
+    '  <div class="cli-lines"><span>Recalls: <strong>' + m.recall_count + '</strong> &middot; Last: ' + lastRecalledStr + '</span></div>' +
     '</div>' +
     '<div class="dossier-section-title">Memory Content</div>' +
     '<div class="dossier-body">' + escapeHtml(m.body) + '</div>' +
@@ -1674,13 +1964,7 @@ function renderMemoryDossier(m) {
     cliHtml;
 }
 
-let isDocumentVisible = true;
-
-// Selective Invalidation Debounce Timers
-let summaryDebounceTimer = null;
-let reuseDebounceTimer = null;
-let memoriesDebounceTimer = null;
-
+// ========================= Errors & Announcements =========================
 // Screen-reader announcements: state transitions only, never ordinary rows.
 let lastAnnounce = 0;
 function announce(text) {
@@ -1700,7 +1984,6 @@ function showFetchError(tab, message) {
   if (!el.querySelector('button')) {
     const btn = document.createElement('button');
     btn.className = 'btn-touch';
-    btn.style.marginLeft = '0.5rem';
     btn.textContent = 'Retry';
     btn.addEventListener('click', () => {
       if (tab === 'telemetry') loadSummaryData();
@@ -1729,9 +2012,14 @@ function setDataAge(generatedAt) {
   el.textContent = 'Data as of ' + new Date(generatedAt * 1000).toLocaleTimeString();
 }
 
+// ======================= Selective Invalidation =======================
+// Debounce timers. No reset on later events: the timer fires once per window.
+// A trailing debounce that resets on every event starves under a steady stream.
+let summaryDebounceTimer = null;
+let reuseDebounceTimer = null;
+let memoriesDebounceTimer = null;
+
 function triggerSummaryRefresh() {
-  // No reset on later events: the timer fires once per window. A trailing
-  // debounce that resets on every event starves under a steady stream.
   if (summaryDebounceTimer) return;
   summaryDebounceTimer = setTimeout(() => {
     summaryDebounceTimer = null;
@@ -1740,7 +2028,7 @@ function triggerSummaryRefresh() {
 }
 
 function triggerReuseRefresh() {
-  if (activeTab !== 'reuse') return;
+  if (state.activeTab !== 'reuse') return;
   if (reuseDebounceTimer) return;
   reuseDebounceTimer = setTimeout(() => {
     reuseDebounceTimer = null;
@@ -1785,10 +2073,22 @@ function handleLiveEvent(q) {
       applyTelemetryFilters();
     }
     flashElement(document.getElementById('metric-total-calls'));
+    // Mission-control stream: newest five graph queries.
+    state.recentQueries.unshift({
+      ts: q.ts,
+      repo_name: q.repo_name,
+      repo_main_name: q.repo_main_name,
+      agent: q.agent,
+      tool: q.tool,
+      exit_code: q.exit_code,
+    });
+    state.recentQueries = state.recentQueries.slice(0, OVERVIEW_FEED_LIMIT);
+    if (state.activeTab === 'overview') renderOverviewActivity();
+    flashElement(document.getElementById('ovkpi-queries'));
   } else if (tool === 'search' || tool === 'reuse') {
     const args = q.args || {};
     const terms = args.terms || args.paths || '';
-    prewriteSearches.unshift({
+    state.reuse.prewrite.unshift({
       ts: q.ts,
       repo_name: q.repo_name,
       tool: tool,
@@ -1796,7 +2096,7 @@ function handleLiveEvent(q) {
       shown: q.shown || q.result_count || 0,
       latency_us: q.latency_us || 0,
     });
-    if (prewriteSearches.length > 40) prewriteSearches.pop();
+    if (state.reuse.prewrite.length > 40) state.reuse.prewrite.pop();
     renderPrewriteTable();
     const feedCountEl = document.getElementById('reuse-feed-count');
     if (feedCountEl) {
@@ -1807,6 +2107,7 @@ function handleLiveEvent(q) {
   } else if (tool.startsWith('mem_')) {
     updateMemoryKpis();
     flashElement(document.getElementById('mem-kpi-currency'));
+    flashElement(document.getElementById('ovkpi-currency'));
   }
 
   // Bounded reconciliation: debounce without reset, so a steady event stream
@@ -1864,6 +2165,7 @@ const TIP = {
   'card.loc_saving': 'Lines removed if the duplicate is merged away.',
   'det.all': 'Show every detection rule. Pill counts are sample floors from the per-repo scan (at most 25 candidates each), not corpus totals.',
   'header.data_age': 'Timestamp the payload was built. All counts cover the retained journal: the current log plus one rotated generation (about 10 MiB of history).',
+  'header.conn': 'Live event stream state: Live (connected), Syncing (connecting), Offline (reconnecting). Events missed while offline are recovered by a full refetch.',
   'det.d1': 'Both functions call the same downstream functions.',
   'det.d2': 'Same parameter types and name tokens.',
   'det.d3': 'Calls a raw client the project already wraps.',
@@ -1962,11 +2264,13 @@ function initTips() {
 window.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initTips();
-  loadSummaryData();
-  loadMemoriesData();
-  initEventSource();
+  setConnState('syncing');
   initDelegation();
   initTabKeyboard();
+  initEventSource();
+  loadSummaryData();
+  loadReuseData();
+  loadMemoriesData();
 });
 
 // One delegated listener replaces every inline handler (CSP: no unsafe-inline).
@@ -1976,6 +2280,8 @@ function initDelegation() {
     if (themeBtn) { toggleTheme(); return; }
     const tabBtn = e.target.closest('[data-tab]');
     if (tabBtn) { switchTab(tabBtn.dataset.tab); return; }
+    const healthBtn = e.target.closest('[data-health-action]');
+    if (healthBtn) { switchTab(healthBtn.dataset.healthAction); return; }
     const pill = e.target.closest('[data-det]');
     if (pill) { setReuseDetectorFilter(pill.dataset.det); return; }
     const storePill = e.target.closest('[data-store]');
@@ -1988,17 +2294,28 @@ function initDelegation() {
   document.addEventListener('input', (e) => {
     const id = e.target.id;
     if (id === 'query-search') applyTelemetryFilters();
-    else if (id === 'reuse-search') { selectedReuseId = null; renderReuseList(); }
+    else if (id === 'reuse-search') { state.reuse.selectedId = null; renderReuseList(); }
     else if (id === 'mem-search') renderMemoryList();
   });
   document.addEventListener('change', (e) => {
     const id = e.target.id;
-    if (id === 'repo-filter' || id === 'agent-filter' || id === 'status-filter') applyTelemetryFilters();
-    else if (id === 'reuse-repo-filter') renderReuseList();
+    if (id === 'scope-filter') filterByRepo(e.target.value);
+    else if (id === 'repo-filter') { syncRepoScope(e.target.value); applyTelemetryFilters(); }
+    else if (id === 'agent-filter' || id === 'status-filter') applyTelemetryFilters();
+    else if (id === 'reuse-repo-filter') syncRepoScope(e.target.value);
     else if (id === 'mem-store-filter') { syncMemoryStorePills(e.target.value); renderMemoryList(); }
-    else if (id === 'mem-kind-filter' || id === 'mem-show-superseded') renderMemoryList();
+    else if (id === 'mem-kind-filter') { state.memories.filterKind = e.target.value; renderMemoryList(); }
+    else if (id === 'mem-show-superseded') renderMemoryList();
     else if (id === 'mem-view' && MEMORY_VIEWS[e.target.value]) { memView = e.target.value; renderMemoryList(); }
     else if (id === 'reuse-view' && REUSE_VIEWS[e.target.value]) { reuseView = e.target.value; renderReuseList(); }
+  });
+  // `T` flips the theme from anywhere outside a text control.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 't' && e.key !== 'T') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    toggleTheme();
   });
 }
 
@@ -2007,7 +2324,7 @@ function initTabKeyboard() {
   if (!nav) return;
   nav.addEventListener('keydown', (e) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
-    const idx = TAB_KEYS.indexOf(activeTab);
+    const idx = TAB_KEYS.indexOf(state.activeTab);
     let next = idx;
     if (e.key === 'ArrowLeft') next = (idx + TAB_KEYS.length - 1) % TAB_KEYS.length;
     else if (e.key === 'ArrowRight') next = (idx + 1) % TAB_KEYS.length;
@@ -2015,30 +2332,31 @@ function initTabKeyboard() {
     else if (e.key === 'End') next = TAB_KEYS.length - 1;
     e.preventDefault();
     switchTab(TAB_KEYS[next]);
-    const btn = document.getElementById('tab-' + activeTab + '-btn');
+    const btn = document.getElementById('tab-' + state.activeTab + '-btn');
     if (btn) btn.focus();
   });
 }
 
 function refreshVisibleData() {
   loadSummaryData();
-  if (activeTab === 'reuse') loadReuseData();
-  if (activeTab === 'memory') loadMemoriesData();
+  if (state.activeTab === 'reuse') loadReuseData();
+  if (state.activeTab === 'memory') loadMemoriesData();
 }
 
 function initEventSource() {
-  let isDocumentVisible = !document.hidden;
+  isDocumentVisible = !document.hidden;
 
   const source = new EventSource('/events');
 
   source.onopen = function () {
+    setConnState('live');
     // Events missed while disconnected are covered by a full refetch.
     refreshVisibleData();
   };
 
   source.onerror = function () {
-    // The fallback poll keeps every panel fresh while SSE reconnects; the
-    // removed transport badge carried no data-state information.
+    setConnState('offline');
+    // The fallback poll keeps every panel fresh while SSE reconnects.
   };
 
   source.addEventListener('reset', function () {

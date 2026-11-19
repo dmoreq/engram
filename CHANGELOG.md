@@ -16,7 +16,20 @@ changes bump the minor while 0.x is unstable.
 
 ## [Unreleased]
 
+### Added
+- `eg dashboard` opens on a new Overview tab (mission control): four KPI
+  tiles (graph queries, avoided tokens, duplicate candidates, anchor
+  currency), an alerts banner that appears only when memory anchors or a
+  reuse scan needs attention, top repository and agent tables, and a live
+  five-row activity stream fed by the SSE connection.
+
 ### Changed
+- The dashboard is rebuilt on the Shibumi token set: the header collapses
+  to an SSE transport beacon (Live/Syncing/Offline), a global repository
+  scope select, the data-age chip, and the theme switch; the per-tab
+  explainer banners are gone; selection uses inset rings and share bars sit
+  as 3px tracks under each row. The client controller runs on one state
+  object, and `T` toggles the theme outside text inputs.
 - The MCP KPI footer drops its decorative prefix and reads `eg: {latency}ms |
   {N} items[ | ~{T} tokens saved]`; the hygiene gate no longer carries an
   emoji exception and now also rejects Unicode 13+ symbol blocks.
