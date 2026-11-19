@@ -14,7 +14,7 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
-## [Unreleased]
+## [1.1.1] - 2026-11-19
 
 ### Added
 - `eg dashboard` opens on a new Overview tab (mission control): four KPI
