@@ -379,12 +379,55 @@ pub(crate) enum RefStatus {
     Broken,
 }
 
+/// Check whether `r` is a safe repo-relative regular file under `root` (not
+/// a symlink, contained in `root`), returning `(size_bytes, mtime_secs)`.
+pub(crate) fn check_disk_ref(root: &Path, r: &str) -> Option<(u64, i64)> {
+    let rel = Path::new(r);
+    if r.is_empty()
+        || r.contains('\\')
+        || rel.is_absolute()
+        || !rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let abs = root.join(rel);
+    let meta = std::fs::symlink_metadata(&abs).ok()?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return None;
+    }
+    let canon_root = std::fs::canonicalize(root).ok()?;
+    let canon_abs = std::fs::canonicalize(&abs).ok()?;
+    if !canon_abs.starts_with(&canon_root) {
+        return None;
+    }
+    let mtime_secs = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some((meta.len(), mtime_secs))
+}
+
 /// Resolve one `--refs` token against the index and compare its newest
 /// indexed mtime against the note's `anchor`. File-shaped tokens match the
 /// exact path first, then a same-suffix path (a moved `a/b.rs` still resolves
 /// through `x/a/b.rs`); anything else resolves as a symbol qualname or name.
 pub(crate) fn check_ref_status(
     index_conn: &rusqlite::Connection,
+    r: &str,
+    anchor: i64,
+) -> RefStatus {
+    check_ref_status_with_root(index_conn, None, r, anchor)
+}
+
+/// Like [`check_ref_status`], but falls back to an on-disk regular-file check
+/// under `root` when `index.db` `files` and `symbols` lookups miss.
+pub(crate) fn check_ref_status_with_root(
+    index_conn: &rusqlite::Connection,
+    root: Option<&Path>,
     r: &str,
     anchor: i64,
 ) -> RefStatus {
@@ -424,6 +467,16 @@ pub(crate) fn check_ref_status(
         } else {
             RefStatus::Valid
         };
+    }
+
+    if let Some(repo_root) = root {
+        if let Some((_size, mtime_secs)) = check_disk_ref(repo_root, r) {
+            return if mtime_secs > anchor {
+                RefStatus::Modified
+            } else {
+                RefStatus::Valid
+            };
+        }
     }
 
     RefStatus::Broken

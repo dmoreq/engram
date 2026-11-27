@@ -161,8 +161,25 @@ fn aggregate_recalls(entries: &[Value]) -> HashMap<String, (usize, f64)> {
     recalls_map
 }
 
-pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, anchor: i64) -> Value {
+pub(crate) fn resolve_single_ref(
+    r: &str,
+    index_conn: Option<&Connection>,
+    root: Option<&Path>,
+    anchor: i64,
+) -> Value {
     let Some(iconn) = index_conn else {
+        if let Some(repo_root) = root {
+            if let Some((size, mtime_secs)) = crate::db::check_disk_ref(repo_root, r) {
+                let is_modified = mtime_secs > anchor;
+                return json!({
+                    "ref": r,
+                    "verified": true,
+                    "status": if is_modified { "modified" } else { "valid" },
+                    "type": "file",
+                    "location": format!("{r} ({size} bytes)")
+                });
+            }
+        }
         // No index for this store (global, or a repo that was never built):
         // verification is impossible, not failed.
         return json!({
@@ -216,6 +233,19 @@ pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, ancho
         }
     }
 
+    if let Some(repo_root) = root {
+        if let Some((size, mtime_secs)) = crate::db::check_disk_ref(repo_root, r) {
+            let is_modified = mtime_secs > anchor;
+            return json!({
+                "ref": r,
+                "verified": true,
+                "status": if is_modified { "modified" } else { "valid" },
+                "type": "file",
+                "location": format!("{r} ({size} bytes)")
+            });
+        }
+    }
+
     json!({
         "ref": r, "verified": false, "status": "broken", "type": "path", "location": ""
     })
@@ -224,11 +254,12 @@ pub(crate) fn resolve_single_ref(r: &str, index_conn: Option<&Connection>, ancho
 fn resolve_note_refs(
     refs_list: &[String],
     index_conn: Option<&Connection>,
+    root: Option<&Path>,
     anchor: i64,
 ) -> Vec<Value> {
     refs_list
         .iter()
-        .map(|r| resolve_single_ref(r, index_conn, anchor))
+        .map(|r| resolve_single_ref(r, index_conn, root, anchor))
         .collect()
 }
 
@@ -273,7 +304,8 @@ fn format_note_json(
     } else {
         row.created_at
     };
-    let resolved_refs = resolve_note_refs(&refs_list, index_conn, anchor);
+    let resolved_refs =
+        resolve_note_refs(&refs_list, index_conn, store.guard_root.as_deref(), anchor);
     let ref_status = if resolved_refs
         .iter()
         .any(|r| r.get("status").and_then(Value::as_str) == Some("broken"))
@@ -406,3 +438,37 @@ fn collect_store_notes(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod disk_ref_tests {
+    use super::*;
+    use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+
+    #[test]
+    fn resolve_single_ref_checks_non_indexed_disk_files() {
+        let root = temp_root("dashboard-disk-ref");
+        make_dir_all(root.join("docs")).unwrap();
+        write_file(root.join("docs/spec.md"), b"# Spec\n").unwrap();
+        write_file(root.join("page.html"), b"<html/>").unwrap();
+
+        let iconn = Connection::open_in_memory().unwrap();
+        iconn
+            .execute_batch(include_str!("../../../schema/index.sql"))
+            .unwrap();
+        let mtime = crate::db::check_disk_ref(&root, "docs/spec.md").unwrap().1;
+
+        let valid = resolve_single_ref("docs/spec.md", Some(&iconn), Some(&root), mtime);
+        assert_eq!(valid["status"], "valid");
+        assert_eq!(valid["verified"], true);
+
+        let modified = resolve_single_ref("page.html", Some(&iconn), Some(&root), mtime - 10);
+        assert_eq!(modified["status"], "modified");
+        assert_eq!(modified["verified"], true);
+
+        let broken = resolve_single_ref("docs/missing.md", Some(&iconn), Some(&root), mtime);
+        assert_eq!(broken["status"], "broken");
+        assert_eq!(broken["verified"], false);
+
+        remove_tree(&root);
+    }
+}

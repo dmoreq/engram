@@ -121,9 +121,18 @@ fn normalize_token_set(
     max_len: usize,
     label: &str,
     lowercase: bool,
+    strip_dot_slash: bool,
 ) -> Result<String> {
     let mut tokens: Vec<String> = Vec::new();
-    for tok in raw.split_whitespace() {
+    for mut tok in raw.split_whitespace() {
+        if strip_dot_slash {
+            while let Some(rest) = tok.strip_prefix("./") {
+                tok = rest;
+            }
+            if tok.is_empty() {
+                continue;
+            }
+        }
         if tokens.len() >= max {
             return Err(EgError::Usage(format!(
                 "mem write: more than {max} {label}"
@@ -141,18 +150,19 @@ fn normalize_token_set(
         });
     }
     tokens.sort();
+    tokens.dedup();
     Ok(tokens.join(" "))
 }
 
 /// Canonical set form: tags are lowercased and sorted so the stored bytes —
 /// and therefore the content hash — are order-insensitive.
 fn normalize_tags(raw: &str) -> Result<String> {
-    normalize_token_set(raw, MAX_TAGS, MAX_TAG_BYTES, "tags", true)
+    normalize_token_set(raw, MAX_TAGS, MAX_TAG_BYTES, "tags", true, false)
 }
 
 /// Refs use the same canonical set rule (a set of qualnames/paths).
 fn normalize_refs(raw: &str) -> Result<String> {
-    normalize_token_set(raw, MAX_REFS, MAX_REF_BYTES, "refs", false)
+    normalize_token_set(raw, MAX_REFS, MAX_REF_BYTES, "refs", false, true)
 }
 
 /// Validate the raw scope flag and resolve the relative lifetime together:
@@ -357,6 +367,20 @@ pub fn mem_content_hash(kind: &str, body: &str, tags: &str, refs: &str, scope: &
     crate::hash::fnv1a64(
         format!("{kind}\u{1f}{body}\u{1f}{tags}\u{1f}{refs}\u{1f}{scope}").as_bytes(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_refs_strips_dot_slash_and_deduplicates() {
+        assert_eq!(
+            normalize_refs("./src/main.rs src/main.rs ././docs/a.md ./").unwrap(),
+            "docs/a.md src/main.rs"
+        );
+        assert_eq!(normalize_refs("./").unwrap(), "");
+    }
 }
 
 // ---------------------------------------------------------------------------

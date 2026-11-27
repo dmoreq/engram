@@ -85,7 +85,27 @@ pub(super) fn run_mem_write(
         stdout.push_str(&hint);
         stdout.push('\n');
     }
-    Ok(ArmOut::plain(stdout, String::new()))
+    let mut stderr = String::new();
+    if !*global && !note.refs.is_empty() {
+        let root = crate::walk::discover_root(root_arg).ok();
+        let index_conn = root
+            .as_ref()
+            .and_then(|r| crate::db::open_for_query(r).ok());
+        for r in note.refs.split_whitespace() {
+            let on_disk = root
+                .as_deref()
+                .is_some_and(|repo_root| crate::db::check_disk_ref(repo_root, r).is_some());
+            let in_index = index_conn.as_ref().is_some_and(|conn| {
+                crate::db::check_ref_status(conn, r, i64::MAX) != crate::db::RefStatus::Broken
+            });
+            if !on_disk && !in_index {
+                stderr.push_str(&format!(
+                    "eg: warning: unverified ref '{r}' (not found on disk or in index)\n"
+                ));
+            }
+        }
+    }
+    Ok(ArmOut::plain(stdout, stderr))
 }
 
 fn write_note(
@@ -156,6 +176,7 @@ pub(super) struct MemQueryArgs<'a> {
     pub(super) limit: usize,
     pub(super) filter: crate::db::MemFilter,
     pub(super) index_conn: Option<&'a rusqlite::Connection>,
+    pub(super) root: Option<&'a Path>,
     pub(super) reference: Option<&'a str>,
     pub(super) explain: bool,
     pub(super) legacy: bool,

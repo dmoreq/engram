@@ -44,7 +44,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             "mem query: --explain requires terms".to_string(),
         ));
     }
-    let index_conn = stale_ref_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
     let args = MemQueryArgs {
         terms: &clean_terms,
         all: effective_all,
@@ -57,6 +57,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             window,
         },
         index_conn: index_conn.as_ref(),
+        root: root.as_deref(),
         reference: reference.as_deref(),
         explain: *explain,
         legacy: *legacy,
@@ -86,10 +87,13 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
 
 // The ref-status helper lives in the db layer (`crate::db::query_state`)
 // so the reuse allowlist can consume it without a query->service edge.
-use crate::db::{check_ref_status, RefStatus};
+#[cfg(test)]
+use crate::db::check_ref_status;
+use crate::db::{check_ref_status_with_root, RefStatus};
 
 pub(super) fn check_note_ref_status(
     index_conn: Option<&rusqlite::Connection>,
+    root: Option<&Path>,
     row: &crate::db::MemRow,
 ) -> RefStatus {
     let Some(conn) = index_conn else {
@@ -100,7 +104,7 @@ pub(super) fn check_note_ref_status(
     }
     let mut has_modified = false;
     for r in row.refs.split_whitespace() {
-        match check_ref_status(conn, r, row.anchor()) {
+        match check_ref_status_with_root(conn, root, r, row.anchor()) {
             RefStatus::Broken => return RefStatus::Broken,
             RefStatus::Modified => has_modified = true,
             RefStatus::Valid => {}
@@ -177,7 +181,7 @@ fn render_mem_rows(
         .iter()
         .take(shown)
         .map(|(row, is_global)| {
-            let status = check_note_ref_status(args.index_conn, row);
+            let status = check_note_ref_status(args.index_conn, args.root, row);
             let mut line =
                 crate::memory::render_row_tagged(row, &mem_row_tag(row, *is_global, status));
             if let Some(map) = explain {
@@ -240,6 +244,7 @@ fn query_single_store(
         return render_all_rows(rows.into_iter().map(|row| (row, is_global)).collect(), args);
     }
     let joined = args.terms.join(" ");
+    let query_vec = crate::memory::embed::embed_text(&joined);
     let candidates = mem_ranked(
         conn,
         &joined,
@@ -247,6 +252,7 @@ fn query_single_store(
         is_global,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     render_ranked(candidates, args)
 }
@@ -290,6 +296,7 @@ fn query_merged_stores(
         return render_all_rows(combined, args);
     }
     let joined = args.terms.join(" ");
+    let query_vec = crate::memory::embed::embed_text(&joined);
     let mut combined = mem_ranked(
         local_conn,
         &joined,
@@ -297,6 +304,7 @@ fn query_merged_stores(
         false,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     let seen_keys: std::collections::HashSet<String> =
         combined.iter().map(|c| c.row.key.clone()).collect();
@@ -307,6 +315,7 @@ fn query_merged_stores(
         true,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     // One batched existence probe replaces the per-candidate `memory_get`
     // (N+1 with a revision COUNT per key): only keys the local ranking has
@@ -386,3 +395,95 @@ pub(super) fn render_mem_hit(row: &crate::db::MemRow, tag: &str, revs: i64) -> A
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod embed_tests {
+    use super::*;
+    use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn query_merged_stores_embeds_query_once() {
+        let root = temp_root("merged-single-embed");
+        let model_dir = root.join("model");
+        make_dir_all(&model_dir).unwrap();
+        write_file(model_dir.join("lazy.json"), b"{}").unwrap();
+
+        let count_file = root.join("embed_calls.log");
+        let bin = root.join("eg-judge");
+        let script = format!(
+            "#!/bin/sh\necho call >> '{}'\nprintf '{{\"dim\":2,\"embedding\":[1.0,0.0]}}\\n'\n",
+            count_file.display()
+        );
+        write_file(&bin, script.as_bytes()).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let prev_model = std::env::var("EG_JUDGE_TEXT_MODEL").ok();
+        let prev_bin = std::env::var("EG_JUDGE_BIN").ok();
+        std::env::set_var("EG_JUDGE_TEXT_MODEL", &model_dir);
+        std::env::set_var("EG_JUDGE_BIN", &bin);
+
+        let local_root = root.join("local");
+        let global_root = root.join("global");
+        make_dir_all(&local_root).unwrap();
+        make_dir_all(&global_root).unwrap();
+        let mut local_conn = crate::db::open_memory_store(&local_root).unwrap();
+        let mut global_conn = crate::db::open_memory_store(&global_root).unwrap();
+
+        let now = 1_000_000;
+        let note = |key: &'static str, body: &'static str| crate::db::MemNoteInput {
+            key,
+            kind: "fact",
+            tags: "",
+            refs: "",
+            scope: "durable",
+            session: "",
+            body,
+            source: "cli",
+            expires_at: 0,
+            created_at: None,
+            embedding: None,
+            supersedes: None,
+            touch: false,
+        };
+        crate::db::memory_write(&mut local_conn, &note("l1", "alpha local note"), now).unwrap();
+        crate::db::memory_write(&mut global_conn, &note("g1", "alpha global note"), now).unwrap();
+
+        let terms = vec!["alpha".to_string()];
+        let args = MemQueryArgs {
+            terms: &terms,
+            all: false,
+            limit: 10,
+            filter: crate::db::MemFilter {
+                kind: None,
+                scope: None,
+                now: now + 1,
+                include_superseded: false,
+                window: crate::memory::TimeWindow::default(),
+            },
+            index_conn: None,
+            root: None,
+            reference: None,
+            explain: false,
+            legacy: false,
+        };
+        let _ = query_merged_stores(&local_conn, &global_conn, &args).unwrap();
+
+        match prev_model {
+            Some(v) => std::env::set_var("EG_JUDGE_TEXT_MODEL", v),
+            None => std::env::remove_var("EG_JUDGE_TEXT_MODEL"),
+        }
+        match prev_bin {
+            Some(v) => std::env::set_var("EG_JUDGE_BIN", v),
+            None => std::env::remove_var("EG_JUDGE_BIN"),
+        }
+
+        let calls = std::fs::read_to_string(&count_file).unwrap_or_default();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "expected 1 embed call, got: {calls}"
+        );
+        remove_tree(&root);
+    }
+}
