@@ -20,6 +20,7 @@ pub(super) fn note<'a>(key: &'a str, body: &'a str, kind: &'a str) -> MemNoteInp
         embedding: None,
         supersedes: None,
         touch: false,
+        expected_rev: None,
     }
 }
 
@@ -372,6 +373,7 @@ fn memory_touch_migrates_v1_store_and_keeps_created_at() {
             embedding: None,
             supersedes: None,
             touch: false,
+            expected_rev: None,
         },
         500,
     )

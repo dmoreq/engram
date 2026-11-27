@@ -161,9 +161,11 @@ mod explain;
 mod from_cli;
 mod mem_export;
 mod mem_import;
+mod mem_mut;
 mod mem_ops;
 mod mem_query;
 mod mem_reindex;
+mod mem_triage;
 mod mem_write;
 mod request;
 mod run;
@@ -172,9 +174,11 @@ mod tools;
 
 use mem_export::*;
 use mem_import::*;
+use mem_mut::*;
 use mem_ops::*;
 use mem_query::*;
 use mem_reindex::*;
+use mem_triage::*;
 use mem_write::*;
 use run::*;
 
@@ -274,6 +278,7 @@ mod tests {
                 global: false,
                 touch: false,
                 confirm: false,
+                expected_rev: None,
             },
             CommandRequest::MemQuery {
                 terms: vec!["x".into()],
@@ -293,14 +298,34 @@ mod tests {
             CommandRequest::MemTouch {
                 key: "k".into(),
                 global: false,
+                expected_rev: None,
             },
             CommandRequest::MemGet {
                 key: "k".into(),
                 global: false,
+                include_superseded: false,
             },
             CommandRequest::MemDelete {
                 key: "k".into(),
                 global: false,
+                expected_rev: None,
+            },
+            CommandRequest::MemRetire {
+                key: "k".into(),
+                global: false,
+                expected_rev: None,
+            },
+            CommandRequest::MemRestore {
+                key: "k".into(),
+                global: false,
+            },
+            CommandRequest::MemTriage {
+                key: None,
+                after_key: None,
+                limit: 10,
+                no_git: false,
+                global: false,
+                json: false,
             },
             CommandRequest::MemGc { global: false },
             CommandRequest::MemExport {

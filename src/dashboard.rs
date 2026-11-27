@@ -354,10 +354,6 @@ mod client_contract_tests {
             // because these two tables were outside the guard.
             ("recent-tbody", 8),
             ("tools-tbody", 3),
-            // Mission-control overview tables (Tab 00).
-            ("ov-repos-tbody", 3),
-            ("ov-agents-tbody", 3),
-            ("ov-recent-tbody", 5),
         ];
         for (tbody_id, expected) in tables {
             // Slice from the containing <table> so the thead precedes the id.

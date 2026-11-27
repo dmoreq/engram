@@ -22,6 +22,7 @@ pub(super) fn run_mem_write(
         global,
         touch,
         confirm,
+        expected_rev,
     } = req
     else {
         unreachable!("run_mem_write called with a non-write request")
@@ -44,11 +45,29 @@ pub(super) fn run_mem_write(
             ));
         }
     }
+    let parsed_scope = crate::memory::MemScope::parse(scope).ok_or_else(|| {
+        EgError::Usage(format!(
+            "mem write: scope must be 'durable' or 'session' (got '{scope}')"
+        ))
+    })?;
+    let (root, index_conn) = if !*global {
+        stale_ref_root_and_conn(root_arg, surface)
+    } else {
+        (None, None)
+    };
+    let hygiene_out = crate::memory::hygiene::validate_and_normalize_refs(
+        refs.as_deref(),
+        root.as_deref(),
+        index_conn.as_deref(),
+        parsed_scope,
+        *global,
+        *confirm,
+    )?;
     let note = crate::memory::normalize_note(crate::memory::NoteInput {
         key,
         kind,
         tags: tags.as_deref(),
-        refs: refs.as_deref(),
+        refs: hygiene_out.refs.as_deref(),
         scope,
         body,
         ttl: *ttl,
@@ -61,10 +80,20 @@ pub(super) fn run_mem_write(
     } else {
         None
     };
-    let outcome = write_note(&mut conn, &note, surface, supersedes.as_deref(), *touch)?;
+    let outcome = write_note(
+        &mut conn,
+        &note,
+        surface,
+        supersedes.as_deref(),
+        *touch,
+        *expected_rev,
+    )?;
     crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
     let line = outcome_line(&outcome, &note.key);
     let mut stdout = format!("{}\n{line}\n", crate::memory::MEMORY_CAVEAT);
+    if hygiene_out.changed {
+        stdout.push_str(&format!("normalized refs: {}\n", note.refs));
+    }
     if let Some(m) = consolidation {
         let mut hint = m.hint_line(&note.key);
         if let Some(pct) = m.semantic_similarity_pct(&conn, &note) {
@@ -74,8 +103,11 @@ pub(super) fn run_mem_write(
         stdout.push('\n');
     }
     let mut stderr = String::new();
+    for w in hygiene_out.warnings {
+        stderr.push_str(&w);
+        stderr.push('\n');
+    }
     if !*global && !note.refs.is_empty() {
-        let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
         for r in note.refs.split_whitespace() {
             let resolved =
                 crate::db::resolve_ref_detail(index_conn.as_deref(), root.as_deref(), r, i64::MAX);
@@ -95,6 +127,7 @@ fn write_note(
     surface: Surface,
     supersedes: Option<&str>,
     touch: bool,
+    expected_rev: Option<i64>,
 ) -> Result<crate::db::MemWriteOutcome> {
     let session = crate::journal::session_tag();
     let now = crate::db::unix_now();
@@ -146,6 +179,7 @@ fn write_note(
             embedding: embedding.as_deref(),
             supersedes,
             touch,
+            expected_rev,
         },
         now,
     )

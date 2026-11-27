@@ -99,6 +99,7 @@ pub enum CommandRequest {
         global: bool,
         touch: bool,
         confirm: bool,
+        expected_rev: Option<i64>,
     },
     MemQuery {
         terms: Vec<String>,
@@ -118,14 +119,34 @@ pub enum CommandRequest {
     MemTouch {
         key: String,
         global: bool,
+        expected_rev: Option<i64>,
     },
     MemGet {
         key: String,
         global: bool,
+        include_superseded: bool,
     },
     MemDelete {
         key: String,
         global: bool,
+        expected_rev: Option<i64>,
+    },
+    MemRetire {
+        key: String,
+        global: bool,
+        expected_rev: Option<i64>,
+    },
+    MemRestore {
+        key: String,
+        global: bool,
+    },
+    MemTriage {
+        key: Option<String>,
+        after_key: Option<String>,
+        limit: usize,
+        no_git: bool,
+        global: bool,
+        json: bool,
     },
     MemGc {
         global: bool,

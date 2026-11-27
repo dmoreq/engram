@@ -265,7 +265,38 @@ fn parse_reuse_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
     })
 }
 
+fn reject_unknown_mem_keys(tool: &str, args: &serde_json::Value) -> Result<()> {
+    let Some(obj) = args.as_object() else {
+        return Ok(());
+    };
+    let Some(spec) = TOOL_SPECS.iter().find(|t| t.name == tool) else {
+        return Ok(());
+    };
+    for key in obj.keys() {
+        if key == "root" || (tool == "mem_query" && key == "reference") {
+            continue;
+        }
+        if !spec.params.iter().any(|p| p.name == key) {
+            return Err(EgError::Usage(format!("{tool}: unknown argument '{key}'")));
+        }
+    }
+    Ok(())
+}
+
+fn read_expected_rev(a: &ArgReader<'_>, tool: &str) -> Result<Option<i64>> {
+    match a.n_opt_spec(tool, "expected_rev")? {
+        None => Ok(None),
+        Some(0) => Err(EgError::Usage(format!(
+            "{tool}: 'expected_rev' must be >= 1"
+        ))),
+        Some(v) => i64::try_from(v)
+            .map(Some)
+            .map_err(|_| EgError::Usage(format!("{tool}: 'expected_rev' out of range"))),
+    }
+}
+
 fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
+    reject_unknown_mem_keys(tool, a.0)?;
     match tool {
         "mem_write" => Ok(CommandRequest::MemWrite {
             key: a.req("key")?,
@@ -281,10 +312,12 @@ fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
             global: a.b_spec(tool, "global")?,
             touch: a.b_spec(tool, "touch")?,
             confirm: a.b_spec(tool, "confirm")?,
+            expected_rev: read_expected_rev(a, tool)?,
         }),
         "mem_touch" => Ok(CommandRequest::MemTouch {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
+            expected_rev: read_expected_rev(a, tool)?,
         }),
         "mem_query" => {
             let local = a.b_spec(tool, "local")?;
@@ -335,8 +368,33 @@ fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
         "mem_get" => Ok(CommandRequest::MemGet {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
+            include_superseded: a.b_spec(tool, "include_superseded")?,
         }),
-        "mem_delete" => Ok(CommandRequest::MemDelete {
+        "mem_delete" => {
+            if !a.b_spec(tool, "confirm")? {
+                return Err(EgError::Usage(
+                    "mem_delete: hard-delete requires confirm=true (use mem_retire for reversible retirement)".to_string(),
+                ));
+            }
+            Ok(CommandRequest::MemDelete {
+                key: a.req("key")?,
+                global: a.b_spec(tool, "global")?,
+                expected_rev: read_expected_rev(a, tool)?,
+            })
+        }
+        "mem_retire" => {
+            if !a.b_spec(tool, "confirm")? {
+                return Err(EgError::Usage(
+                    "mem_retire: requires confirm=true".to_string(),
+                ));
+            }
+            Ok(CommandRequest::MemRetire {
+                key: a.req("key")?,
+                global: a.b_spec(tool, "global")?,
+                expected_rev: read_expected_rev(a, tool)?,
+            })
+        }
+        "mem_restore" => Ok(CommandRequest::MemRestore {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
         }),
@@ -369,6 +427,14 @@ fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
         "mem_reindex" => Ok(CommandRequest::MemReindex {
             global: a.b_spec(tool, "global")?,
             embed: a.b_spec(tool, "embed")?,
+        }),
+        "mem_triage" => Ok(CommandRequest::MemTriage {
+            key: a.s_opt_spec(tool, "key")?,
+            after_key: a.s_opt_spec(tool, "after_key")?,
+            limit: a.n_spec(tool, "limit", crate::memory::triage::TRIAGE_DEFAULT_LIMIT)?,
+            no_git: a.b_spec(tool, "no_git")?,
+            global: a.b_spec(tool, "global")?,
+            json: true,
         }),
         _ => Err(unknown_tool(tool)),
     }

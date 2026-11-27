@@ -16,6 +16,7 @@ pub struct MemoryFacts {
     pub failure: Option<MemoryFailure>,
     pub stores_checked: usize,
     pub stores_truncated: bool,
+    pub notes_truncated: bool,
     pub broken: usize,
     pub modified: usize,
     pub valid: usize,
@@ -125,7 +126,7 @@ fn inspect_store(store: &Store, now: i64, facts: &mut MemoryFacts) -> Result<(),
     let sql = format!(
         "SELECT refs, {anchor_expr}, created_at FROM memories \
          WHERE superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1) \
-         ORDER BY key ASC, id ASC LIMIT 500"
+         ORDER BY key ASC, id ASC LIMIT 501"
     );
     let mut stmt = conn.prepare(&sql).map_err(|_| MemoryFailure::Corrupt)?;
     let rows = stmt
@@ -139,8 +140,12 @@ fn inspect_store(store: &Store, now: i64, facts: &mut MemoryFacts) -> Result<(),
         .map_err(|_| MemoryFailure::Corrupt)?;
     let mut ref_cache: std::collections::HashMap<String, db::ResolvedRef> =
         std::collections::HashMap::new();
-    for row in rows {
+    for (idx, row) in rows.enumerate() {
         let (refs, anchored_at, created_at) = row.map_err(|_| MemoryFailure::Corrupt)?;
+        if idx >= 500 {
+            facts.notes_truncated = true;
+            break;
+        }
         let anchor = anchored_at.max(created_at);
         for r in refs.split_whitespace().take(20) {
             let resolved = ref_cache
@@ -212,6 +217,7 @@ mod tests {
                 embedding: None,
                 supersedes: None,
                 touch: false,
+                expected_rev: None,
             },
             mtime + 10,
         )

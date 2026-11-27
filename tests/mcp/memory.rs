@@ -141,6 +141,9 @@ fn mem_all_tools_exposes_full_family_with_parity() {
         "mem_query",
         "mem_get",
         "mem_delete",
+        "mem_retire",
+        "mem_restore",
+        "mem_triage",
         "mem_gc",
         "mem_export",
     ] {
@@ -277,7 +280,7 @@ fn mem_all_tools_exposes_full_family_with_parity() {
         &mut srv,
         11,
         "tools/call",
-        json!({"name": "mem_delete", "arguments": {"key": "doomed"}}),
+        json!({"name": "mem_delete", "arguments": {"key": "doomed", "confirm": true}}),
     );
     assert_eq!(delete["result"]["isError"], false);
     // Recreate via CLI so the CLI delete sees the same input shape.
@@ -430,7 +433,8 @@ fn global_memory_mcp_protocol_parity() {
             "name": "mem_delete",
             "arguments": {
                 "key": "user_pref",
-                "global": true
+                "global": true,
+                "confirm": true
             }
         }),
     );

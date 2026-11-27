@@ -299,18 +299,34 @@ pub fn memory_current_keys(
 /// revision wins: since inactive-revision gating, an expired row can be
 /// re-written without being marked superseded, so two rows of one key may
 /// both carry `superseded_by IS NULL` and the pick must be deterministic.
+#[cfg(test)]
 pub fn memory_get(conn: &Connection, key: &str) -> Result<Option<(MemRow, i64)>> {
+    memory_get_with_options(conn, key, false)
+}
+
+/// Fetch the latest revision for `key` (optionally including superseded or
+/// retired revisions) plus its total revision count.
+pub fn memory_get_with_options(
+    conn: &Connection,
+    key: &str,
+    include_superseded: bool,
+) -> Result<Option<(MemRow, i64)>> {
     let cols = mem_row_sql(conn);
-    let row = conn
-        .query_row(
-            &format!(
-                "SELECT {cols} FROM memories
-                 WHERE key = ?1 AND superseded_by IS NULL
-                 ORDER BY rev DESC LIMIT 1"
-            ),
-            rusqlite::params![key],
-            mem_row,
+    let sql = if include_superseded {
+        format!(
+            "SELECT {cols} FROM memories
+             WHERE key = ?1
+             ORDER BY rev DESC LIMIT 1"
         )
+    } else {
+        format!(
+            "SELECT {cols} FROM memories
+             WHERE key = ?1 AND superseded_by IS NULL
+             ORDER BY rev DESC LIMIT 1"
+        )
+    };
+    let row = conn
+        .query_row(&sql, rusqlite::params![key], mem_row)
         .optional()
         .map_err(map_memory_err)?;
     let Some(row) = row else {
@@ -331,6 +347,7 @@ pub fn memory_get(conn: &Connection, key: &str) -> Result<Option<(MemRow, i64)>>
 
 /// Hard-delete every revision of one key plus their FTS rows, one
 /// transaction. Returns None for an unknown key (nothing deleted).
+#[cfg(test)]
 pub fn memory_delete(conn: &mut Connection, key: &str) -> Result<Option<i64>> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

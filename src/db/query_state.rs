@@ -317,12 +317,36 @@ impl RefStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefFailureKind {
+    MissingCodePath,
+    MissingDocOrReport,
+    EphemeralTmpPath,
+    ExternalAbsPath,
+    MissingSymbol,
+    SymlinkOrEscape,
+}
+
+impl RefFailureKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingCodePath => "missing_code_path",
+            Self::MissingDocOrReport => "missing_doc_or_report",
+            Self::EphemeralTmpPath => "ephemeral_tmp_path",
+            Self::ExternalAbsPath => "external_abs_path",
+            Self::MissingSymbol => "missing_symbol",
+            Self::SymlinkOrEscape => "symlink_or_escape",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRef {
     pub status: RefStatus,
     pub kind: &'static str,
     pub detail: String,
     pub mtime_secs: Option<i64>,
+    pub failure_kind: Option<RefFailureKind>,
 }
 
 impl ResolvedRef {
@@ -343,13 +367,17 @@ impl ResolvedRef {
             kind: self.kind,
             detail: self.detail.clone(),
             mtime_secs: self.mtime_secs,
+            failure_kind: self.failure_kind,
         }
     }
 }
 
 mod refs;
 #[allow(unused_imports)]
-pub(crate) use refs::{check_disk_ref, check_ref_status, check_ref_status_with_root};
+pub(crate) use refs::{
+    check_disk_ref, check_ref_status, check_ref_status_with_root, lookup_symbol_ref,
+    split_line_suffix,
+};
 pub use refs::{resolve_ref_detail, resolve_ref_detail_with_canon};
 
 #[cfg(test)]

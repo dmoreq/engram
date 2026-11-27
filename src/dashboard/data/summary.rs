@@ -42,10 +42,17 @@ pub(crate) fn classify(tool: &str) -> ToolClass {
         ),
         reuse: matches!(tool, "search" | "reuse"),
         memory: tool.starts_with("mem_"),
-        mem_read: matches!(tool, "mem_query" | "mem_get" | "mem_export"),
+        mem_read: matches!(tool, "mem_query" | "mem_get" | "mem_export" | "mem_triage"),
         mem_write: matches!(
             tool,
-            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" | "mem_reindex"
+            "mem_write"
+                | "mem_touch"
+                | "mem_delete"
+                | "mem_retire"
+                | "mem_restore"
+                | "mem_gc"
+                | "mem_import"
+                | "mem_reindex"
         ),
     }
 }

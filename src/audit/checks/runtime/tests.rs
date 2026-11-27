@@ -82,3 +82,31 @@ fn performance_baseline_regression_escalates_pass_to_warn() {
     assert_eq!(c.status, Status::Warn, "{:?}", c.message);
     remove_tree(&root);
 }
+
+#[test]
+fn ops_errors_warns_on_high_mem_rejection_rate() {
+    let now = 1_800_000_000;
+    let root = temp_root("audit-ops-mut-reject");
+    let mut lines = Vec::new();
+    for i in 0..5 {
+        let code = if i == 0 { 2 } else { 0 };
+        lines.push(
+            serde_json::json!({
+                "ts": now - 60 - i,
+                "tool": "mem_write",
+                "exit_code": code,
+                "result_count": 1,
+                "shown": 1,
+                "latency_us": 1_000,
+                "repo": root.to_string_lossy(),
+            })
+            .to_string(),
+        );
+    }
+    let root = seed("audit-ops-mut-reject", &lines);
+    let data = collect(&Mode::Local(root.clone()), now, 30, 30).unwrap();
+    let c = super::ops_errors(&data);
+    assert_eq!(c.status, Status::Warn, "{:?}", c.message);
+    assert!(c.message.contains("1 mem rejections"), "{}", c.message);
+    remove_tree(&root);
+}

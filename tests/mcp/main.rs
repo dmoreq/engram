@@ -6,6 +6,7 @@
 mod build_telemetry;
 mod common;
 mod memory;
+mod memory_healing;
 mod memory_import;
 mod memory_touch;
 mod memory_window;

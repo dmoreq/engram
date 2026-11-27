@@ -53,10 +53,13 @@ fn g10_initialize_tools_list_and_parity() {
             "mem_touch",
             "mem_get",
             "mem_delete",
+            "mem_retire",
+            "mem_restore",
             "mem_gc",
             "mem_export",
             "mem_import",
             "mem_reindex",
+            "mem_triage",
             "unresolved",
             "stats"
         ]

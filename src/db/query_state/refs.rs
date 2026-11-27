@@ -2,7 +2,7 @@ use super::*;
 
 /// Strip an optional `:line` or `:start-end` suffix (verifying numeric range).
 /// Leaves Rust `::` paths untouched.
-fn split_line_suffix(r: &str) -> &str {
+pub(crate) fn split_line_suffix(r: &str) -> &str {
     let Some((prefix, suffix)) = r.rsplit_once(':') else {
         return r;
     };
@@ -143,6 +143,7 @@ pub fn resolve_ref_detail_with_canon(
         kind,
         detail,
         mtime_secs: Some(mtime_secs),
+        failure_kind: None,
     };
     let r_path = split_line_suffix(r);
     let Some(iconn) = index_conn else {
@@ -161,6 +162,7 @@ pub fn resolve_ref_detail_with_canon(
             kind: "path",
             detail: String::new(),
             mtime_secs: None,
+            failure_kind: None,
         };
     };
     let query_file = |sql: &str, param: &str| -> Option<(String, i64, i64)> {
@@ -215,10 +217,55 @@ pub fn resolve_ref_detail_with_canon(
         kind: "path",
         detail: String::new(),
         mtime_secs: None,
+        failure_kind: Some(classify_broken_ref(r_path, root)),
     }
 }
 
-fn lookup_symbol_ref(iconn: &Connection, r: &str) -> Option<(String, i64, i64, i64)> {
+fn classify_broken_ref(clean: &str, root: Option<&Path>) -> RefFailureKind {
+    if clean.is_empty() || clean.contains('\0') || clean.contains('\\') {
+        return RefFailureKind::SymlinkOrEscape;
+    }
+    let p = Path::new(clean);
+    if p.is_absolute() {
+        return RefFailureKind::ExternalAbsPath;
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return RefFailureKind::SymlinkOrEscape;
+    }
+    if let Some(repo) = root {
+        let mut cur = repo.to_path_buf();
+        for comp in p.components() {
+            cur.push(comp);
+            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+                if meta.file_type().is_symlink() {
+                    return RefFailureKind::SymlinkOrEscape;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    if let Some(std::path::Component::Normal(first)) = p.components().next() {
+        if first == ".tmp" || first == "tmp" {
+            return RefFailureKind::EphemeralTmpPath;
+        }
+    }
+    if clean.starts_with("docs/")
+        || clean.ends_with(".md")
+        || clean.ends_with(".txt")
+        || clean.ends_with(".rst")
+    {
+        return RefFailureKind::MissingDocOrReport;
+    }
+    if clean.contains("::") || (!clean.contains('/') && !has_known_file_ext(clean)) {
+        return RefFailureKind::MissingSymbol;
+    }
+    RefFailureKind::MissingCodePath
+}
+
+pub(crate) fn lookup_symbol_ref(iconn: &Connection, r: &str) -> Option<(String, i64, i64, i64)> {
     let query_sym = |sql: &str, param: &str| -> Option<(String, i64, i64, i64)> {
         iconn
             .prepare_cached(sql)

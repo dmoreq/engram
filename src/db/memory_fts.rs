@@ -296,6 +296,7 @@ mod tests {
             embedding: None,
             supersedes: None,
             touch: false,
+            expected_rev: None,
         }
     }
 

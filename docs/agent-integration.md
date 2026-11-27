@@ -113,13 +113,13 @@ By default, `eg mcp` exposes 15 high-ROI tools focused on navigation, anti-reinv
 | `search` | `terms`, `limit?` | Discover symbols with interface cards & `[callers=N]` |
 | `reuse` | `paths?`, `limit?`, `deep_callee?`, `min_confidence?`, `propose?`, `callees?`, `explain?`, `show_suppressed?`, `coverage?`, `judge?` | Anti-reinvention scan, pre-write proposal, allowlist visibility, opt-in coverage, and optional judge |
 | `usage` | `quality?` (default `false`), `global?` | Session telemetry, latency percentiles, and token savings |
-| `mem_write` | `key`, `body`, `kind`, `tags?`, `refs?`, `scope?`, `ttl?`, `supersedes?`, `touch?`, `global?`, `confirm?` | Persist architectural decisions and gotchas; `touch=true` re-asserts the invocation's TTL (`expires_at`) instead of the verify anchor; `confirm=true` is required for `reuse-allow/` over MCP |
+| `mem_write` | `key`, `body`, `kind`, `tags?`, `refs?`, `scope?`, `ttl?`, `supersedes?`, `touch?`, `global?`, `confirm?`, `expected_rev?` | Persist architectural decisions and gotchas; durable `--refs` enforce write-time path hygiene unless `confirm=true`; `touch=true` re-asserts the invocation's TTL (`expires_at`) instead of the verify anchor; `confirm=true` is required for `reuse-allow/` over MCP |
 | `mem_query` | `terms?`, `all?`, `kind?`, `scope?`, `limit?`, `include_superseded?`, `global?`, `ref?`, `since?`, `until?`, `local?`, `explain?`, `legacy?` | Zero-token layered memory search; uses the code index for call-graph expansion when available; Unicode-aware with a legacy fallback |
-| `mem_touch` | `key`, `global?` | Refresh `anchored_at` (last verified) without revision churn |
-| `mem_get` | `key`, `global?` | Show current note for one exact key plus revision count |
+| `mem_touch` | `key`, `global?`, `expected_rev?` | Refresh `anchored_at` (last verified) without revision churn |
+| `mem_get` | `key`, `global?`, `include_superseded?` | Show current note (or latest superseded/retired revision with `include_superseded=true`) for one exact key plus revision count |
 
 ### Extended Surface (`--all-tools`)
-Passing `--all-tools` exposes 7 additional tools (22 total): `mem_delete`, `mem_gc`, `mem_export` (JSONL or Markdown, optional `since`/`until` and `scan` for suspected-secret notices), `mem_import` (reject-on-conflict restore; project store by default, `global: true` targets the global store), `mem_reindex` (rebuild the derived Unicode index, optional `embed`), `unresolved` (`names?`, `path?`, `limit?`), and `stats` (`path?`).
+Passing `--all-tools` exposes 10 additional tools (25 total): `mem_delete` (hard-delete; requires `confirm: true`), `mem_retire` (reversible soft-retire; requires `confirm: true`), `mem_restore` (restore a soft-retired note), `mem_triage` (classify broken/modified anchors with bounded git and index evidence), `mem_gc`, `mem_export` (JSONL or Markdown, optional `since`/`until` and `scan` for suspected-secret notices), `mem_import` (reject-on-conflict restore; project store by default, `global: true` targets the global store), `mem_reindex` (rebuild the derived Unicode index, optional `embed`), `unresolved` (`names?`, `path?`, `limit?`), and `stats` (`path?`).
 
 *Note*: `doctor` and `audit` are intentionally reserved for human CLI inspection and omitted from MCP stdio dispatch. `eg audit --json` is the machine-readable health surface; it is read-only and redacted by default.
 

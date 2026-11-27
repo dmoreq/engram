@@ -126,16 +126,6 @@ pub(super) fn check_note_ref_status_cached(
     }
 }
 
-pub(super) fn check_note_ref_status(
-    index_conn: Option<&rusqlite::Connection>,
-    root: Option<&Path>,
-    row: &crate::db::MemRow,
-) -> RefStatus {
-    let mut cache = std::collections::HashMap::new();
-    let canon = root.and_then(|r| std::fs::canonicalize(r).ok());
-    check_note_ref_status_cached(index_conn, root, canon.as_deref(), row, &mut cache)
-}
-
 /// The `[global] [stale-ref]` store markers shared by `mem get` output and
 /// the listing tag builder, so the suffix order cannot drift.
 pub(super) fn store_tags(is_global: bool, status: RefStatus, source: &str) -> String {
@@ -158,8 +148,10 @@ pub(super) fn store_tags(is_global: bool, status: RefStatus, source: &str) -> St
 /// by the single-store and merged listings so the markers cannot drift.
 fn mem_row_tag(row: &crate::db::MemRow, is_global: bool, status: RefStatus) -> String {
     let mut tag = String::new();
-    if row.superseded_by.is_some() {
-        tag.push_str(" [superseded]");
+    match row.superseded_by {
+        Some(crate::db::RETIRED_SENTINEL) => tag.push_str(" [retired]"),
+        Some(_) => tag.push_str(" [superseded]"),
+        None => {}
     }
     tag.push_str(&store_tags(is_global, status, &row.source));
     tag
@@ -439,15 +431,34 @@ fn render_mem_list(rendered: &[String], total: usize, shown: usize) -> ArmOut {
     ArmOut::plain(stdout, crate::query::cap_stderr(shown, total))
 }
 
-/// One mem get hit: journal, the caveat, the tagged row, and the revision
-/// count (`tag` is the store marker, "" for local and " [global]" for global).
-pub(super) fn render_mem_hit(row: &crate::db::MemRow, tag: &str, revs: i64) -> ArmOut {
+/// One mem get hit: journal, the caveat, the tagged row, optional per-ref
+/// status markers, and the revision count (`tag` is the store marker).
+pub(super) fn render_mem_hit(
+    row: &crate::db::MemRow,
+    tag: &str,
+    revs: i64,
+    ref_statuses: &[(String, crate::db::RefStatus)],
+) -> ArmOut {
     crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
+    let mut refs_line = String::new();
+    if !ref_statuses.is_empty() {
+        let formatted: Vec<String> = ref_statuses
+            .iter()
+            .map(|(r, st)| match st {
+                crate::db::RefStatus::Valid => r.clone(),
+                crate::db::RefStatus::Modified => format!("{r} [modified]"),
+                crate::db::RefStatus::Broken => format!("{r} [broken]"),
+                crate::db::RefStatus::Unverified => format!("{r} [unverified]"),
+            })
+            .collect();
+        refs_line = format!("refs: {}\n", formatted.join(" "));
+    }
     ArmOut::plain(
         format!(
-            "{}\n{}\nrevs: {}\n",
+            "{}\n{}\n{}revs: {}\n",
             crate::memory::MEMORY_CAVEAT,
             crate::memory::render_row_tagged(row, tag),
+            refs_line,
             revs
         ),
         String::new(),

@@ -167,6 +167,9 @@ impl CommandRequest {
             CommandRequest::MemQuery { .. } => "mem_query",
             CommandRequest::MemGet { .. } => "mem_get",
             CommandRequest::MemDelete { .. } => "mem_delete",
+            CommandRequest::MemRetire { .. } => "mem_retire",
+            CommandRequest::MemRestore { .. } => "mem_restore",
+            CommandRequest::MemTriage { .. } => "mem_triage",
             CommandRequest::MemGc { .. } => "mem_gc",
             CommandRequest::MemExport { .. } => "mem_export",
             CommandRequest::MemImport { .. } => "mem_import",
@@ -274,6 +277,9 @@ impl CommandRequest {
             | CommandRequest::MemQuery { .. }
             | CommandRequest::MemGet { .. }
             | CommandRequest::MemDelete { .. }
+            | CommandRequest::MemRetire { .. }
+            | CommandRequest::MemRestore { .. }
+            | CommandRequest::MemTriage { .. }
             | CommandRequest::MemGc { .. }
             | CommandRequest::MemReindex { .. }
             | CommandRequest::MemExport { .. }

@@ -91,6 +91,8 @@ pub struct Metrics {
     pub successes: usize,
     pub ops_critical: usize,
     pub lock_errors: usize,
+    pub mut_attempts: usize,
+    pub mut_rejections: usize,
     pub nav_successes: usize,
     pub prewrite_successes: usize,
     pub mem_reads: usize,
@@ -126,6 +128,12 @@ impl Metrics {
         self.repos.insert(e.repo.clone());
         let tool = self.tools.entry(e.tool.clone()).or_default();
         tool.calls += 1;
+        if matches!(
+            e.tool.as_str(),
+            "mem_write" | "mem_touch" | "mem_delete" | "mem_retire" | "mem_restore" | "mem_import"
+        ) {
+            self.mut_attempts += 1;
+        }
         match ExitClass::of(e.exit_code) {
             ExitClass::Error => {
                 match e.exit_code {
@@ -135,11 +143,27 @@ impl Metrics {
                 }
                 return;
             }
-            ExitClass::Ambiguous => return,
+            ExitClass::Ambiguous => {
+                if matches!(
+                    e.tool.as_str(),
+                    "mem_write"
+                        | "mem_touch"
+                        | "mem_delete"
+                        | "mem_retire"
+                        | "mem_restore"
+                        | "mem_import"
+                ) {
+                    self.mut_rejections += 1;
+                }
+                return;
+            }
             ExitClass::Empty => {
                 tool.empty += 1;
                 self.record_empty(&e.tool);
-                if matches!(e.tool.as_str(), "mem_query" | "mem_get" | "mem_export") {
+                if matches!(
+                    e.tool.as_str(),
+                    "mem_query" | "mem_get" | "mem_export" | "mem_triage"
+                ) {
                     self.mem_reads += 1;
                 }
                 return;
@@ -166,8 +190,9 @@ impl Metrics {
                 self.mem_query_successes += 1;
                 self.mem_reads += 1;
             }
-            "mem_get" | "mem_export" => self.mem_reads += 1,
-            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" | "mem_reindex" => {
+            "mem_get" | "mem_export" | "mem_triage" => self.mem_reads += 1,
+            "mem_write" | "mem_touch" | "mem_delete" | "mem_retire" | "mem_restore" | "mem_gc"
+            | "mem_import" | "mem_reindex" => {
                 self.mem_writes += 1;
             }
             _ => {}

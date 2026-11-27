@@ -33,7 +33,7 @@ pub fn collect_memories(root: Option<&Path>, entries: &[Value]) -> Result<Value>
     let mut errors = Vec::new();
 
     for store in &stores {
-        if let Err(err) = collect_store_notes(store, &recalls_map, &mut notes_json) {
+        if let Err(err) = collect_store_notes(store, &recalls_map, &mut notes_json, &mut errors) {
             errors.push(err);
         }
     }
@@ -184,13 +184,13 @@ pub(crate) fn resolve_single_ref(
     )
 }
 
-fn resolve_note_refs(
+fn resolve_note_refs_pairs(
     refs_list: &[String],
     index_conn: Option<&Connection>,
     root: Option<&Path>,
     anchor: i64,
     cache: &mut HashMap<String, crate::db::ResolvedRef>,
-) -> Vec<Value> {
+) -> Vec<(String, crate::db::ResolvedRef)> {
     refs_list
         .iter()
         .map(|r| {
@@ -198,7 +198,7 @@ fn resolve_note_refs(
                 .entry(r.clone())
                 .or_insert_with(|| crate::db::resolve_ref_detail(index_conn, root, r, anchor))
                 .with_anchor(anchor);
-            resolved_ref_to_json(r, &resolved)
+            (r.clone(), resolved)
         })
         .collect()
 }
@@ -252,13 +252,17 @@ fn format_note_json_cached(
     // Staleness is measured against the last verify, falling back to the
     // creation date for notes that were never anchored.
     let anchor = row.anchored_at.max(row.created_at);
-    let resolved_refs = resolve_note_refs(
+    let pairs = resolve_note_refs_pairs(
         &refs_list,
         index_conn,
         store.guard_root.as_deref(),
         anchor,
         ref_cache,
     );
+    let resolved_refs: Vec<Value> = pairs
+        .iter()
+        .map(|(r, res)| resolved_ref_to_json(r, res))
+        .collect();
     let ref_status = if resolved_refs
         .iter()
         .any(|r| r.get("status").and_then(Value::as_str) == Some("broken"))
@@ -280,6 +284,42 @@ fn format_note_json_cached(
         "none"
     };
 
+    let triage = if row.is_current {
+        crate::memory::triage::classify_note_pure(&row.kind, &row.scope, ref_status, &pairs)
+    } else {
+        None
+    };
+    let (triage_reason, triage_label, suggested_cli) = match triage {
+        Some(reason) => {
+            let valid_refs: Vec<String> = pairs
+                .iter()
+                .filter(|(_, res)| res.status != crate::db::RefStatus::Broken)
+                .map(|(r, _)| r.clone())
+                .collect();
+            let scope_flag = if store.guard_root.is_none() {
+                " --global".to_string()
+            } else {
+                format!(
+                    " --root {}",
+                    crate::memory::triage::posix_single_quote(&store.repo_root.to_string_lossy())
+                )
+            };
+            let cli = crate::memory::triage::suggested_cli_command(
+                reason,
+                &row.key,
+                row.rev,
+                &valid_refs,
+                &scope_flag,
+            );
+            (
+                Value::String(reason.as_str().to_string()),
+                Value::String(reason.label().to_string()),
+                Value::String(cli),
+            )
+        }
+        None => (Value::Null, Value::Null, Value::Null),
+    };
+
     json!({
         "id": row.id,
         "store": store.name,
@@ -293,6 +333,9 @@ fn format_note_json_cached(
         "refs": refs_list,
         "resolved_refs": resolved_refs,
         "ref_status": ref_status,
+        "triage_reason": triage_reason,
+        "triage_label": triage_label,
+        "suggested_cli": suggested_cli,
         "source": row.source,
         "created_at": row.created_at,
         "anchored_at": row.anchored_at,
@@ -306,6 +349,7 @@ fn collect_store_notes(
     store: &Store,
     recalls_map: &HashMap<String, (usize, f64)>,
     out: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
 ) -> std::result::Result<(), Value> {
     let err = |stage: &str, message: String| json!({ "store": store.name, "store_id": store.store_id, "stage": stage, "message": message });
     if let Some(root) = &store.guard_root {
@@ -318,10 +362,17 @@ fn collect_store_notes(
     let conn =
         Connection::open_with_flags(&store.db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| err("open", e.to_string()))?;
-    let index_conn = store
-        .guard_root
-        .as_deref()
-        .and_then(|root| crate::db::try_open_index(root).ok());
+    let index_conn = match store.guard_root.as_deref() {
+        Some(root) => match crate::db::try_open_index(root) {
+            Ok(c) => Some(c),
+            Err(crate::db::IndexOpenError::Missing) => None,
+            Err(e) => {
+                errors.push(err("index", format!("{e:?}")));
+                None
+            }
+        },
+        None => None,
+    };
 
     // v1 stores predate anchored_at; fall back to created_at at read time
     // instead of migrating a read-only connection.

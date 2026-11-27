@@ -9,22 +9,25 @@ pub(super) fn run_mem_get(
     root_arg: Option<&Path>,
     surface: Surface,
 ) -> Result<ArmOut> {
-    let CommandRequest::MemGet { key, global } = req else {
+    let CommandRequest::MemGet {
+        key,
+        global,
+        include_superseded,
+    } = req
+    else {
         unreachable!("run_mem_get called with a non-get request")
     };
     let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
 
     if *global {
         let conn = open_mem_query_conn(None, true, surface)?;
-        return match crate::db::memory_get(&conn, key)? {
+        return match crate::db::memory_get_with_options(&conn, key, *include_superseded)? {
             None => Err(mem_unknown_key(key)),
             Some((row, revs)) => {
-                let status = check_note_ref_status(index_conn.as_deref(), root.as_deref(), &row);
-                Ok(render_mem_hit(
-                    &row,
-                    &store_tags(true, status, &row.source),
-                    revs,
-                ))
+                let ref_statuses = collect_ref_statuses(None, None, &row);
+                let status = aggregate_ref_status(&ref_statuses);
+                let tag = mem_get_tag(&row, true, status);
+                Ok(render_mem_hit(&row, &tag, revs, &ref_statuses))
             }
         };
     }
@@ -35,13 +38,18 @@ pub(super) fn run_mem_get(
         (true, stores.global.as_deref()),
     ] {
         let Some(conn) = conn else { continue };
-        if let Some((row, revs)) = crate::db::memory_get(conn, key)? {
-            let status = check_note_ref_status(index_conn.as_deref(), root.as_deref(), &row);
-            return Ok(render_mem_hit(
-                &row,
-                &store_tags(is_global, status, &row.source),
-                revs,
-            ));
+        if let Some((row, revs)) =
+            crate::db::memory_get_with_options(conn, key, *include_superseded)?
+        {
+            let (ic, r) = if is_global {
+                (None, None)
+            } else {
+                (index_conn.as_deref(), root.as_deref())
+            };
+            let ref_statuses = collect_ref_statuses(ic, r, &row);
+            let status = aggregate_ref_status(&ref_statuses);
+            let tag = mem_get_tag(&row, is_global, status);
+            return Ok(render_mem_hit(&row, &tag, revs, &ref_statuses));
         }
     }
 
@@ -51,51 +59,42 @@ pub(super) fn run_mem_get(
     Err(mem_unknown_key(key))
 }
 
-/// Hard-delete every revision of one key.
-pub(super) fn run_mem_delete(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let CommandRequest::MemDelete { key, global } = req else {
-        unreachable!("run_mem_delete called with a non-delete request")
-    };
-    let mut conn = open_mem_conn(root_arg, *global, crate::db::StoreMode::Mutation)?;
-    match crate::db::memory_delete(&mut conn, key)? {
-        None => Err(mem_unknown_key(key)),
-        Some(revs) => {
-            crate::journal::record_result(
-                crate::journal::OutcomeCounts::uniform(revs.max(0) as usize),
-                false,
-                0,
-            );
-            Ok(ArmOut::plain(
-                format!(
-                    "{}\ndeleted '{key}' revs={revs}\n",
-                    crate::memory::MEMORY_CAVEAT
-                ),
-                String::new(),
-            ))
-        }
+fn mem_get_tag(row: &crate::db::MemRow, is_global: bool, status: crate::db::RefStatus) -> String {
+    let mut tag = String::new();
+    match row.superseded_by {
+        Some(crate::db::RETIRED_SENTINEL) => tag.push_str(" [retired]"),
+        Some(_) => tag.push_str(" [superseded]"),
+        None => {}
     }
+    tag.push_str(&store_tags(is_global, status, &row.source));
+    tag
 }
 
-/// Refresh anchored_at (last verified) on the active revision, leaving
-/// created_at (the last assertion date) untouched.
-pub(super) fn run_mem_touch(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let CommandRequest::MemTouch { key, global } = req else {
-        unreachable!("run_mem_touch called with a non-touch request")
-    };
-    let now = crate::db::unix_now();
-    let mut conn = open_mem_conn(root_arg, *global, crate::db::StoreMode::Mutation)?;
-    match crate::db::memory_touch(&mut conn, key, now)? {
-        None => Err(mem_unknown_key(key)),
-        Some(rev) => {
-            crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
-            Ok(ArmOut::plain(
-                format!(
-                    "{}\nok: '{key}' rev {rev} touched\n",
-                    crate::memory::MEMORY_CAVEAT
-                ),
-                String::new(),
-            ))
-        }
+fn collect_ref_statuses(
+    index_conn: Option<&rusqlite::Connection>,
+    root: Option<&Path>,
+    row: &crate::db::MemRow,
+) -> Vec<(String, crate::db::RefStatus)> {
+    let anchor = row.anchored_at.max(row.created_at);
+    row.refs
+        .split_whitespace()
+        .map(|r| {
+            let st = crate::db::resolve_ref_detail(index_conn, root, r, anchor).status;
+            (r.to_string(), st)
+        })
+        .collect()
+}
+
+fn aggregate_ref_status(statuses: &[(String, crate::db::RefStatus)]) -> crate::db::RefStatus {
+    use crate::db::RefStatus;
+    if statuses.iter().any(|(_, s)| *s == RefStatus::Broken) {
+        RefStatus::Broken
+    } else if statuses.iter().any(|(_, s)| *s == RefStatus::Modified) {
+        RefStatus::Modified
+    } else if statuses.iter().any(|(_, s)| *s == RefStatus::Unverified) {
+        RefStatus::Unverified
+    } else {
+        RefStatus::Valid
     }
 }
 
@@ -129,7 +128,7 @@ pub(super) fn mem_empty(detail: &str) -> EgError {
 
 /// The mem_empty error for a key with no current row: shared by mem get and
 /// mem delete so the message cannot drift.
-fn mem_unknown_key(key: &str) -> EgError {
+pub(super) fn mem_unknown_key(key: &str) -> EgError {
     mem_empty(&format!("unknown memory key '{key}'"))
 }
 

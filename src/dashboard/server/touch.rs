@@ -140,7 +140,7 @@ pub(super) fn handle_memory_touch(
     }
 
     match crate::db::memory_touch_if_rev(&mut conn, key, expected_rev, now) {
-        Ok(Some(rev)) => {
+        Ok(crate::db::CasOutcome::Ok(rev)) => {
             eprintln!(
                 "eg dashboard: touch ok key={key} store={store_name} rev={rev} store_id={store_id}"
             );
@@ -150,7 +150,12 @@ pub(super) fn handle_memory_touch(
                 &serde_json::json!({ "ok": true, "key": key, "store": store_name, "store_id": store_id, "rev": rev, "anchored_at": now }),
             )
         }
-        Ok(None) => touch_reply(
+        Ok(crate::db::CasOutcome::NotFound) => touch_reply(
+            stream,
+            404,
+            &serde_json::json!({ "ok": false, "error": format!("unknown key '{key}'"), "store": store_name, "store_id": store_id }),
+        ),
+        Ok(crate::db::CasOutcome::Conflict { .. }) => touch_reply(
             stream,
             409,
             &serde_json::json!({ "ok": false, "error": "revision moved during verify — reload", "store": store_name, "store_id": store_id }),

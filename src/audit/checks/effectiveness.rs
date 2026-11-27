@@ -47,8 +47,15 @@ pub(super) fn memory_refs(data: &AuditData) -> CheckResult {
         lower(0.05, Some(0.20), Some(1.5)),
         "memory",
         format!(
-            "{} broken and {} modified of {} checkable refs",
-            m.broken, m.modified, checkable
+            "{} broken and {} modified of {} checkable refs{}",
+            m.broken,
+            m.modified,
+            checkable,
+            if m.notes_truncated {
+                " (truncated at 500 notes/store)"
+            } else {
+                ""
+            }
         ),
     )
 }

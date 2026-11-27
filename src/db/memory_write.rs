@@ -84,6 +84,8 @@ pub struct MemNoteInput<'a> {
     pub embedding: Option<&'a [u8]>,
     pub supersedes: Option<&'a str>,
     pub touch: bool,
+    /// Optional optimistic concurrency precondition (`--expected-rev`).
+    pub expected_rev: Option<i64>,
 }
 
 /// Write outcome: a new revision, an idempotent duplicate, or a refreshed timestamp.
@@ -132,13 +134,17 @@ pub fn memory_write(
     note: &MemNoteInput<'_>,
     now: i64,
 ) -> Result<MemWriteOutcome> {
-    opportunistic_gc(conn, now)?;
     // One in-transaction retry on a UNIQUE(key, rev) failure (a defect by
     // construction — rev is computed inside the lock — but never exit 2/5).
     let mut last_error = None;
     for _ in 0..2 {
         match try_write_revision(conn, note, now)? {
-            WriteAttempt::Written(outcome) => return Ok(outcome),
+            WriteAttempt::Written(outcome) => {
+                if matches!(outcome, MemWriteOutcome::Written { .. }) {
+                    let _ = opportunistic_gc(conn, now);
+                }
+                return Ok(outcome);
+            }
             WriteAttempt::Retry(e) => last_error = Some(e),
         }
     }
@@ -150,14 +156,15 @@ pub fn memory_write(
     }
 }
 
-/// Expired-session notes above this count trigger an opportunistic gc on the
-/// next write: the notes are already invisible to reads, and 50+ rows mean
-/// the store is silently growing between manual gc runs.
+/// Expired-session or stale superseded/retired notes above this count trigger
+/// an opportunistic gc after a committed write.
 const OPPORTUNISTIC_GC_THRESHOLD: i64 = 50;
+const GC_RETENTION_SECS: i64 = 30 * 24 * 3600;
 
-/// Best-effort prune when the expired backlog grows past the threshold. A
-/// failure never fails the write: gc remains the manual, authoritative path.
+/// Best-effort prune when the expired or stale superseded/retired backlog grows
+/// past the threshold. Runs post-commit and never fails the write.
 fn opportunistic_gc(conn: &mut Connection, now: i64) -> Result<()> {
+    let cutoff = now - GC_RETENTION_SECS;
     let expired: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memories WHERE expires_at > 0 AND expires_at <= ?1",
@@ -165,7 +172,14 @@ fn opportunistic_gc(conn: &mut Connection, now: i64) -> Result<()> {
             |r| r.get(0),
         )
         .map_err(map_memory_err)?;
-    if expired <= OPPORTUNISTIC_GC_THRESHOLD {
+    let stale_superseded: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE superseded_by IS NOT NULL AND superseded_at > 0 AND superseded_at <= ?1",
+            rusqlite::params![cutoff],
+            |r| r.get(0),
+        )
+        .map_err(map_memory_err)?;
+    if expired <= OPPORTUNISTIC_GC_THRESHOLD && stale_superseded <= OPPORTUNISTIC_GC_THRESHOLD {
         return Ok(());
     }
     let _ = crate::db::memory_gc(conn, now)?;
@@ -252,6 +266,19 @@ fn try_write_revision(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(map_memory_err)?;
     let current = current_revision(&tx, note.key)?;
+    if let Some(exp) = note.expected_rev {
+        let active_rev = current
+            .as_ref()
+            .filter(|row| row.is_active(now))
+            .map(|row| row.rev);
+        if active_rev != Some(exp) {
+            return Err(EgError::Conflict {
+                key: note.key.to_string(),
+                expected_rev: exp,
+                current_rev: active_rev,
+            });
+        }
+    }
     if let Some(row) = &current {
         // An inactive (superseded or expired) row is live only for revision
         // numbering: identical content must fall through to `insert_revision`
@@ -317,22 +344,32 @@ pub fn memory_touch_if_rev(
     key: &str,
     expected_rev: i64,
     now: i64,
-) -> Result<Option<i64>> {
+) -> Result<CasOutcome> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(map_memory_err)?;
-    let updated = tx
-        .execute(
-            "UPDATE memories SET anchored_at = ?1 WHERE key = ?2 AND rev = ?3
-             AND superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?4)",
-            rusqlite::params![now, key, expected_rev, now],
-        )
-        .map_err(map_memory_err)?;
-    if updated == 0 {
-        return Ok(None);
+    let Some(current) = current_revision(&tx, key)? else {
+        return Ok(CasOutcome::NotFound);
+    };
+    if !current.is_active(now) {
+        return Ok(CasOutcome::Conflict {
+            expected_rev,
+            current_rev: None,
+        });
     }
+    if current.rev != expected_rev {
+        return Ok(CasOutcome::Conflict {
+            expected_rev,
+            current_rev: Some(current.rev),
+        });
+    }
+    tx.execute(
+        "UPDATE memories SET anchored_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, current.id],
+    )
+    .map_err(map_memory_err)?;
     tx.commit().map_err(map_memory_err)?;
-    Ok(Some(expected_rev))
+    Ok(CasOutcome::Ok(expected_rev))
 }
 
 /// Refresh `anchored_at = now` on the current active revision of `key`,

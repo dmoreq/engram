@@ -408,6 +408,7 @@ mod memory_fts;
 #[cfg(test)]
 mod memory_gc_tests;
 mod memory_query;
+mod memory_retire;
 mod memory_store;
 #[cfg(test)]
 mod memory_tests;
@@ -431,6 +432,7 @@ pub use open::{
 pub(crate) use inserts::*;
 pub(crate) use memory_fts::*;
 pub(crate) use memory_query::*;
+pub(crate) use memory_retire::*;
 pub(crate) use memory_store::map_memory_err;
 pub(crate) use memory_store::*;
 pub(crate) use memory_write::*;

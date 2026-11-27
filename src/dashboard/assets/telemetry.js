@@ -35,7 +35,6 @@ function loadSummaryData() {
       const totalErrors = data.graph_errors !== undefined ? data.graph_errors : (data.error_count || 0);
 
       renderGraphKpis(data, totalCalls, totalErrors);
-      renderOverviewKpis(data, totalCalls, totalErrors);
       renderReposTable(data.repo_aggs || {});
       renderAgentsTable(data.agent_aggs || {});
       renderReuseReposTable(data.repo_aggs || {});
@@ -44,10 +43,6 @@ function loadSummaryData() {
       renderRecentQueries(data.graph_recent_queries || []);
       applyTelemetryFilters();
 
-      state.recentQueries = (data.graph_recent_queries || []).slice(0, OVERVIEW_FEED_LIMIT);
-      renderOverviewActivity();
-      renderOverviewRepos(data.repo_aggs || {});
-      renderOverviewAgents(data.agent_aggs || {});
       state.health.graphErrors = totalErrors;
       renderOverviewHealth();
       updateMemoryKpis();

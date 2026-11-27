@@ -7,13 +7,11 @@
 
 const GRAPH_TOOLS = ['callers', 'callees', 'path', 'context', 'impact', 'symbols', 'imports', 'build'];
 const FEED_LIMIT = 10; // both live feeds show the newest ten rows only
-const OVERVIEW_FEED_LIMIT = 5; // mission-control activity stream
-const OVERVIEW_TOP_N = 5; // top repositories / agents on the overview tab
 const UNATTRIBUTED = '(unattributed)';
-const TAB_KEYS = ['overview', 'telemetry', 'reuse', 'memory'];
+const TAB_KEYS = ['telemetry', 'reuse', 'memory'];
 
 const state = {
-  activeTab: 'overview',
+  activeTab: 'telemetry',
   theme: 'light',
   connected: false,
   selectedRepo: 'ALL',
@@ -191,8 +189,8 @@ function setConnState(mode) {
 // The allowlist is the guard: an unknown key would otherwise hide every panel.
 function switchTab(tab) {
   if (!TAB_KEYS.includes(tab)) {
-    console.warn('switchTab: unknown tab "' + tab + '" — falling back to overview');
-    tab = 'overview';
+    console.warn('switchTab: unknown tab "' + tab + '" — falling back to telemetry');
+    tab = 'telemetry';
   }
   state.activeTab = tab;
   TAB_KEYS.forEach(t => {
@@ -218,12 +216,6 @@ function switchTab(tab) {
     renderMemoryList();
     if (state.summary) renderMemoryReposTable(state.summary.repo_aggs || {});
     loadMemoriesData();
-  } else if (tab === 'overview') {
-    renderOverviewActivity();
-    if (state.summary) {
-      renderOverviewRepos(state.summary.repo_aggs || {});
-      renderOverviewAgents(state.summary.agent_aggs || {});
-    }
   }
   loadSummaryData();
 }
@@ -314,13 +306,6 @@ function handleLiveGraphEvent(q) {
     applyTelemetryFilters();
   }
   flashElement(document.getElementById('metric-total-calls'));
-  state.recentQueries.unshift({
-    ts: q.ts, repo_name: q.repo_name, repo_main_name: q.repo_main_name,
-    agent: q.agent, tool: q.tool, exit_code: q.exit_code,
-  });
-  state.recentQueries = state.recentQueries.slice(0, OVERVIEW_FEED_LIMIT);
-  if (state.activeTab === 'overview') renderOverviewActivity();
-  flashElement(document.getElementById('ovkpi-queries'));
 }
 
 function handleLiveEvent(q) {
@@ -345,12 +330,11 @@ function handleLiveEvent(q) {
   } else if (tool.startsWith('mem_')) {
     updateMemoryKpis();
     flashElement(document.getElementById('mem-kpi-currency'));
-    flashElement(document.getElementById('ovkpi-currency'));
   }
 
   triggerSummaryRefresh();
   if (tool === 'build') triggerReuseRefresh();
-  else if (tool === 'mem_write' || tool === 'mem_delete' || tool === 'mem_touch') triggerMemoriesRefresh();
+  else if (tool === 'mem_write' || tool === 'mem_delete' || tool === 'mem_retire' || tool === 'mem_restore' || tool === 'mem_touch') triggerMemoriesRefresh();
 }
 
 // Hover help. One copy table, one shared node, delegated listeners.
@@ -492,6 +476,16 @@ function initDelegation() {
     if (storePill) { setMemoryStoreFilter(storePill.dataset.store); return; }
     const touchBtn = e.target.closest('.btn-touch[data-key]');
     if (touchBtn) { touchMemory(touchBtn); return; }
+    const copyBtn = e.target.closest('.btn-copy-cli[data-cli]');
+    if (copyBtn) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(copyBtn.dataset.cli).then(() => {
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
+        }).catch(() => { copyBtn.textContent = 'Copy'; });
+      }
+      return;
+    }
     const verifyAll = e.target.closest('#verify-all-btn');
     if (verifyAll) { verifyAllModified(); return; }
   });

@@ -83,8 +83,6 @@ function updateMemoryKpis() {
       + (unverifiedCount > 0 ? ' · ' + unverifiedCount + ' unverified' : '');
   setText('mem-kpi-currency', currencyRate);
   setText('mem-kpi-currency-sub', currencySubText);
-  setText('ovkpi-currency', currencyRate);
-  setText('ovkpi-currency-sub', currencySubText);
 
   setText('mem-kpi-active-count', currentNotes.length > 0 ? currentNotes.length.toLocaleString() : '—');
   setText('mem-kpi-active-sub', summarizeMemoryKinds(currentNotes));
@@ -104,11 +102,17 @@ function updateMemoryKpis() {
 function buildActionItem(m) {
   const isModified = m.ref_status === 'modified';
   const badge = isModified ? '<span class="badge status-warn">[MODIFIED REF]</span>' : '<span class="badge status-err">[BROKEN REF]</span>';
+  const triageBadge = m.triage_label
+    ? '<span class="badge status-neutral">' + escapeHtml(m.triage_label) + '</span>'
+    : '';
   const explanation = isModified
     ? 'Target file was modified after the last verify. Review the note, then Verify to refresh its anchor.'
     : 'Referenced symbol or file path is missing from the current code index. Re-run <code>eg build</code> in that repository, or edit the note refs.';
   const touchBtn = isModified
     ? '<button class="btn-touch" data-key="' + escapeHtml(m.key) + '" data-store-id="' + escapeHtml(m.store_id || m.store) + '" data-rev="' + Number(m.rev) + '">Verify</button>'
+    : '';
+  const cliLine = m.suggested_cli
+    ? '<div class="action-item-refs"><code>' + escapeHtml(m.suggested_cli) + '</code> <button class="btn-touch btn-touch-sm btn-copy-cli" data-cli="' + escapeHtml(m.suggested_cli) + '">Copy</button></div>'
     : '';
   const refsList = (m.refs || []).map(r => '<code>' + escapeHtml(r) + '</code>').join(', ');
 
@@ -116,11 +120,12 @@ function buildActionItem(m) {
   item.className = 'action-item';
   item.innerHTML =
     '<div class="action-item-info">' +
-    '  <div class="action-item-title">' + badge + ' <strong>' + escapeHtml(m.key) + '</strong>' +
+    '  <div class="action-item-title">' + badge + ' ' + triageBadge + ' <strong>' + escapeHtml(m.key) + '</strong>' +
     '    <span class="badge badge-repo">' + escapeHtml(m.store) + '</span>' +
     '    <span class="text-muted">r' + m.rev + '</span></div>' +
     '  <div class="action-item-desc text-muted">' + explanation + '</div>' +
     '  <div class="action-item-refs text-muted">Refs: ' + refsList + '</div>' +
+    cliLine +
     '</div>' + touchBtn;
   return item;
 }

@@ -279,9 +279,11 @@ Time bounds accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SSZ`, or `@<unix-seconds>`. B
 
 | Subcommand | Syntax | Description |
 |---|---|---|
-| `touch` | `eg mem touch <KEY> [--global]` | Refresh `anchored_at` (last verified) on the active revision without creating a new revision. |
-| `get` | `eg mem get <KEY> [--global]` | Fetch current revision and total revision count for an exact key. |
-| `delete` | `eg mem delete <KEY> [--global]` | Hard-delete all revisions and FTS rows for a key. |
+| `touch` | `eg mem touch <KEY> [--global] [--expected-rev <N>]` | Refresh `anchored_at` (last verified) on the active revision without creating a new revision. |
+| `get` | `eg mem get <KEY> [--global] [--include-superseded]` | Fetch current revision (or latest superseded/retired revision with `--include-superseded`) and total revision count for an exact key. |
+| `delete` | `eg mem delete <KEY> [--global] [--retire] [--expected-rev <N>]` | Hard-delete all revisions and FTS rows for a key, or soft-retire the active revision with `--retire`. |
+| `restore` | `eg mem restore <KEY> [--global]` | Restore a soft-retired note back into the active search index. |
+| `triage` | `eg mem triage [--key <KEY>] [--after-key <KEY>] [--limit <N>] [--no-git] [--global] [--json]` | Classify broken and modified memory anchors with bounded git and code-index evidence. |
 | `export` | `eg mem export [--format jsonl\|markdown] [--limit <N>] [--global] [--since <TIME>] [--until <TIME>] [--scan]` | Export active notes as JSONL (default) or fenced Markdown to stdout. `--scan` reports suspected secrets on stderr without changing stdout or the exit code. |
 | `import` | `eg mem import <PATH> [--format jsonl\|markdown] [--force] [--global]` | Restore a JSONL/Markdown export (use `-` for stdin). Conflicting keys are skipped unless `--force` overwrites; imported rows carry `[imported]`. MCP import targets the project store unless `global: true`. |
 | `gc` | `eg mem gc [--global]` | Purge expired session notes and superseded revisions older than 30 days. |
@@ -392,8 +394,8 @@ Serve `eg` as an MCP stdio server over newline-delimited JSON-RPC 2.0.
 eg mcp [--all-tools]
 ```
 
-- **Default (Core Surface)**: Exposes 13 high-ROI tools: `build`, `callers`, `callees`, `path`, `context`, `imports`, `impact`, `symbols`, `reuse`, `search`, `usage`, `mem_write`, and `mem_query`.
-- `--all-tools`: Exposes all 22 tools, adding the 7 extended tools (`mem_delete`, `mem_gc`, `mem_export`, `mem_import`, `mem_reindex`, `unresolved`, `stats`) alongside the 15 core tools (which include `mem_touch` and `mem_get`).
+- **Default (Core Surface)**: Exposes 15 core tools (`build`, `callers`, `callees`, `path`, `context`, `imports`, `impact`, `symbols`, `reuse`, `search`, `usage`, `mem_write`, `mem_query`, `mem_touch`, and `mem_get`).
+- `--all-tools`: Exposes all 25 tools, adding the 10 extended tools (`mem_delete`, `mem_retire`, `mem_restore`, `mem_triage`, `mem_gc`, `mem_export`, `mem_import`, `mem_reindex`, `unresolved`, `stats`) alongside the 15 core tools.
 
 ---
 

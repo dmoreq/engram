@@ -84,6 +84,17 @@ pub enum EgError {
     /// repository could ship attacker-authored memories or index rows. Exit 2
     /// (`eg: security: ...`), never a silent read.
     Security(String),
+    /// Write-time ref hygiene rejection on a durable memory note (exit 2).
+    Hygiene {
+        reason: &'static str,
+        detail: String,
+    },
+    /// Optimistic concurrency precondition (`--expected-rev`) failed (exit 2).
+    Conflict {
+        key: String,
+        expected_rev: i64,
+        current_rev: Option<i64>,
+    },
     Internal(String),
 }
 
@@ -125,6 +136,8 @@ impl EgError {
             EgError::Locked(_) => (4, "locked"),
             EgError::SchemaMismatch { .. } => (5, "schema-mismatch"),
             EgError::Security(_) => (2, "security"),
+            EgError::Hygiene { .. } => (2, "hygiene"),
+            EgError::Conflict { .. } => (2, "conflict"),
             EgError::Internal(_) => (6, "internal"),
             EgError::ParseQuality { .. } => (7, "parse-quality"),
         }
@@ -159,6 +172,23 @@ impl fmt::Display for EgError {
             | EgError::MemorySchema { detail }
             | EgError::Security(detail)
             | EgError::Internal(detail) => write!(f, "eg: {}: {}", self.class(), detail),
+            EgError::Hygiene { reason, detail } => {
+                write!(f, "eg: hygiene ({reason}): {detail}")
+            }
+            EgError::Conflict {
+                key,
+                expected_rev,
+                current_rev,
+            } => match current_rev {
+                Some(rev) => write!(
+                    f,
+                    "eg: conflict: revision conflict for '{key}' (expected r{expected_rev}, current r{rev})"
+                ),
+                None => write!(
+                    f,
+                    "eg: conflict: revision conflict for '{key}' (expected r{expected_rev}, no active revision)"
+                ),
+            },
             EgError::Ambiguous { name, total, role, .. } => write!(
                 f,
                 "eg: {}: ambiguous name '{name}' — {total} candidates{}; use the Class.method qualname form",

@@ -14,6 +14,17 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [1.2.1] - 2026-11-28
+
+### Added
+- Memory self-healing lifecycle:
+  - Write-time `--refs` hygiene in `eg mem write` / MCP `mem_write`: normalizes repo-internal absolute paths and rejects `.tmp/`, `.engram/`, `..`, `.gitignore`-matched paths, symlink escapes, and external absolute paths on `durable` notes unless `--scope session`, `--confirm` (`confirm=true`), or `ENGRAM_MEM_HYGIENE=0`.
+  - `eg mem triage` / MCP `mem_triage`: deterministic classification of broken and modified memory anchors with bounded read-only git rename/split evidence and code-index symbol candidates, plus read-only triage badges and suggested CLI actions in `eg dashboard`.
+  - Soft-retire and restore (`eg mem delete --retire`, `eg mem restore`, MCP `mem_retire` / `mem_restore`, `eg mem get --include-superseded`) and optimistic concurrency (`--expected-rev` / `expected_rev`) across `mem_write`, `mem_touch`, `mem_delete`, and `mem_retire`.
+
+### Changed
+- Redesigned `eg dashboard` into a 3-tab minimalist layout (`Telemetry`, `Anti-Reinvention`, `Memory`).
+
 ## [1.2.0] - 2026-11-27
 
 ### Added

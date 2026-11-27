@@ -61,14 +61,6 @@ function renderReuseKpis(summary, totalCandidates) {
   const hasAvg = avg !== null && avg !== undefined && avg > 0;
   setText('reuse-kpi-callers', hasAvg ? avg.toFixed(1) + 'x' : '—');
   setText('reuse-kpi-callers-sub', hasAvg ? 'Avg callers per authoritative helper' : 'No canonical callers recorded');
-
-  const poolsMeasured = Object.keys(state.reuse.pools).length > 0;
-  setText('ovkpi-candidates', poolsMeasured ? totalCandidates.toLocaleString() : '—');
-  setText('ovkpi-candidates-sub', !poolsMeasured
-    ? 'No repositories scanned'
-    : (totalCandidates > state.reuse.candidates.length
-      ? 'Sampled ' + state.reuse.candidates.length + ' of pool ' + totalCandidates.toLocaleString()
-      : 'Pool ' + totalCandidates.toLocaleString() + ' (complete sample)'));
 }
 
 // Judge tile: rendered ONLY with real judged data from the journal.
