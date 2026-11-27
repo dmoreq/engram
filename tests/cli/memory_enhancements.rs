@@ -460,6 +460,8 @@ fn mem_embed_plumbing_round_trip() {
     let stdout = String::from_utf8_lossy(&query.stdout);
     assert!(stdout.contains("embed_note"), "{stdout}");
 
+    let (code, _, stderr) = mem_write(&repo, "unembedded_note", "needs backfill", "fact");
+    assert_eq!(code, 0, "{stderr}");
     // Reindex --embed backfills: the report counts embedded notes.
     let reindex = eg(&repo)
         .env("EG_JUDGE_BIN", &bin)
@@ -470,8 +472,7 @@ fn mem_embed_plumbing_round_trip() {
     assert_eq!(
         reindex.status.code(),
         Some(0),
-        "{}{}",
-        String::from_utf8_lossy(&reindex.stdout),
+        "{}",
         String::from_utf8_lossy(&reindex.stderr)
     );
     let out = format!(

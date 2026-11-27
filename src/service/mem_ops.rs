@@ -163,7 +163,10 @@ pub(super) fn mem_ranked(
         query_tokens_vec.iter().cloned().collect();
 
     let fts_ids: std::collections::HashSet<i64> = hits.iter().map(|(id, _)| *id).collect();
-    let mut hit_map: std::collections::HashMap<i64, f64> = hits.into_iter().collect();
+    let mut hit_map: std::collections::HashMap<i64, Option<f64>> = hits
+        .into_iter()
+        .map(|(id, bm25)| (id, Some(bm25)))
+        .collect();
     let ref_rows = if !query_tokens_vec.is_empty() {
         crate::db::memory_ref_candidate_rows(
             conn,
@@ -179,12 +182,9 @@ pub(super) fn mem_ranked(
     let mut by_id: std::collections::HashMap<i64, crate::db::MemRow> =
         std::collections::HashMap::new();
     for row in ref_rows {
-        // Ref hits carry no lexical score of their own; seeding with the
-        // graph-lex raw ceiling (not 0.0) keeps min-max normalization from
-        // inflating them above every FTS-matched note.
-        hit_map
-            .entry(row.id)
-            .or_insert(crate::memory::GRAPH_LEX_RAW);
+        // Ref-only hits carry `None` for `lex_raw` so they receive `lex = 0.0`
+        // without distorting FTS min-max bounds.
+        hit_map.entry(row.id).or_insert(None);
         by_id.insert(row.id, row);
     }
 
@@ -239,15 +239,9 @@ pub(super) fn mem_ranked(
                 .unwrap_or(0.0);
         }
         for (row, decay) in expansion.extra {
-            let Some(mut candidate) = mem_candidate(
-                &row,
-                crate::memory::GRAPH_LEX_RAW,
-                &query_tokens,
-                filter,
-                is_global,
-                legacy,
-                false,
-            ) else {
+            let Some(mut candidate) =
+                mem_candidate(&row, None, &query_tokens, filter, is_global, legacy, false)
+            else {
                 continue;
             };
             candidate.graph_raw = decay;
@@ -255,21 +249,17 @@ pub(super) fn mem_ranked(
         }
     }
 
-    // Semantic feature (best-effort): only when the text model is configured,
-    // the query embeds, and EVERY candidate carries an embedding. Partial
-    // coverage would grade embedded notes against unembedded ones on a shared
-    // constant offset, so it is skipped outright.
+    // Semantic feature (best-effort): populates `sem_raw` for every embedded
+    // candidate; `fuse()` assigns neutral 0.5 to unembedded ones.
     if let Some(query_vector) = query_vec {
         let ids: Vec<i64> = candidates.iter().map(|c| c.row.id).collect();
         let embeddings = crate::db::memory_embeddings(conn, &ids)?;
-        if !candidates.is_empty() && embeddings.len() == candidates.len() {
-            for candidate in &mut candidates {
-                if let Some(vector) = embeddings.get(&candidate.row.id) {
-                    candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
-                        query_vector,
-                        vector,
-                    )));
-                }
+        for candidate in &mut candidates {
+            if let Some(vector) = embeddings.get(&candidate.row.id) {
+                candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
+                    query_vector,
+                    vector,
+                )));
             }
         }
     }
@@ -282,7 +272,7 @@ pub(super) fn mem_ranked(
 /// outlived the row.
 fn mem_candidate(
     row: &crate::db::MemRow,
-    lex_raw: f64,
+    lex_raw: Option<f64>,
     query_tokens: &std::collections::BTreeSet<String>,
     filter: &crate::db::MemFilter,
     is_global: bool,

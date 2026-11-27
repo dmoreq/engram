@@ -153,6 +153,7 @@ fn render_markdown_document(row: &crate::db::MemRow) -> String {
         "scope": row.scope,
         "tags": tags,
         "refs": refs,
+        "created_at": row.created_at,
         "expires_at": row.expires_at,
     });
     format!(
@@ -176,4 +177,33 @@ fn note_slug(key: &str) -> String {
     let prefix = if prefix.is_empty() { "note" } else { prefix };
     let hash = crate::hash::fnv1a64(key.as_bytes());
     format!("{prefix}-{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_front_matter_preserves_created_at() {
+        let row = crate::db::MemRow {
+            id: 1,
+            key: "k1".into(),
+            rev: 1,
+            kind: "fact".into(),
+            scope: "durable".into(),
+            session: String::new(),
+            body: "hello".into(),
+            tags: "a b".into(),
+            refs: "src/main.rs".into(),
+            source: "cli".into(),
+            created_at: 1_700_000_123,
+            anchored_at: 0,
+            expires_at: 0,
+            superseded_by: None,
+        };
+        let doc = render_markdown_document(&row);
+        let front_line = doc.lines().nth(1).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(front_line).unwrap();
+        assert_eq!(parsed["created_at"], 1_700_000_123);
+    }
 }

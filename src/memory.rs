@@ -311,7 +311,7 @@ mod tests {
                 expires_at: 0,
                 superseded_by: None,
             },
-            lex_raw: lex,
+            lex_raw: Some(lex),
             ref_raw: r#ref,
             graph_raw: 0.0,
             sem_raw: None,

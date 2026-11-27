@@ -92,16 +92,23 @@ pub fn find_consolidation_match(
 ) -> Option<ConsolidationMatch> {
     let ok_v2 = crate::db::memory_fts_v2_usable(conn).ok().unwrap_or(false);
     let legacy = !ok_v2;
-    let mut terms = if legacy {
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let raw_body = if legacy {
         crate::memory::mem_tokens_legacy(&note.body)
     } else {
         crate::memory::mem_tokens(&note.body)
     };
-    terms.extend(if legacy {
+    let raw_tags = if legacy {
         crate::memory::mem_tokens_legacy(&note.tags)
     } else {
         crate::memory::mem_tokens(&note.tags)
-    });
+    };
+    for token in raw_body.into_iter().chain(raw_tags) {
+        if !CONSOLIDATION_STOPWORDS.contains(&token.as_str()) && seen.insert(token.clone()) {
+            terms.push(token);
+        }
+    }
     if terms.is_empty() {
         return None;
     }
@@ -158,7 +165,11 @@ pub struct GuardedNote {
 
 fn ends_with_delim(haystack: &str, needle: &str) -> bool {
     haystack.strip_suffix(needle).is_some_and(|prefix| {
-        prefix.ends_with('/') || prefix.ends_with("::") || prefix.ends_with('.')
+        if haystack.contains('/') {
+            prefix.ends_with('/')
+        } else {
+            prefix.ends_with("::") || prefix.ends_with('.')
+        }
     })
 }
 
@@ -174,10 +185,6 @@ pub fn ref_matches_target(refs: &str, target: &str) -> bool {
         r_norm == target_norm
             || ends_with_delim(r_norm, target_norm)
             || ends_with_delim(target_norm, r_norm)
-            || target_norm.split("::").any(|seg| seg == r_norm)
-            || target_norm.split('.').any(|seg| seg == r_norm)
-            || r_norm.split("::").any(|seg| seg == target_norm)
-            || r_norm.split('.').any(|seg| seg == target_norm)
     })
 }
 
@@ -210,8 +217,7 @@ pub fn find_guarding_notes_filtered(
         return Vec::new();
     }
     let q = GuardQuery(crate::db::unix_now(), paths, symbols, kinds, limit);
-    let mut results = Vec::new();
-    let mut seen_keys = HashSet::new();
+    let (mut results, mut seen_keys) = (Vec::new(), HashSet::new());
     if let Ok(local_conn) = crate::db::open_memory_query(root) {
         collect_guards(&local_conn, &q, &mut seen_keys, &mut results);
     }
@@ -238,7 +244,7 @@ fn collect_guards(
     let placeholders = crate::db::sql_placeholders(kinds.len());
     let make_sql = |order_by: &str| {
         format!(
-            "SELECT key, kind, body, refs FROM memories
+            "SELECT id, key, kind, refs FROM memories
              WHERE superseded_by IS NULL AND kind IN ({placeholders})
                AND (expires_at = 0 OR expires_at > ?) AND refs != ''
              ORDER BY {order_by}"
@@ -259,7 +265,7 @@ fn collect_guards(
         .collect();
     let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, String>(0)?,
+            r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
@@ -267,8 +273,9 @@ fn collect_guards(
     }) else {
         return;
     };
-    for (key, kind, body, refs) in rows.flatten() {
-        if out.len() >= limit {
+    let mut matched: Vec<(i64, String, String, String)> = Vec::new();
+    for (id, key, kind, refs) in rows.flatten() {
+        if out.len() + matched.len() >= limit {
             break;
         }
         if seen_keys.contains(&key) {
@@ -280,13 +287,32 @@ fn collect_guards(
             .find(|t| ref_matches_target(&refs, t))
         {
             seen_keys.insert(key.clone());
-            out.push(GuardedNote {
-                key,
-                kind,
-                summary: compact_summary(&body),
-                target: target.to_string(),
-            });
+            matched.push((id, key, kind, target.to_string()));
         }
+    }
+    if matched.is_empty() {
+        return;
+    }
+    let id_placeholders = crate::db::sql_placeholders(matched.len());
+    let id_sql = format!("SELECT id, body FROM memories WHERE id IN ({id_placeholders})");
+    let mut bodies = std::collections::HashMap::new();
+    if let Ok(mut b_stmt) = conn.prepare(&id_sql) {
+        let ids: Vec<rusqlite::types::Value> =
+            matched.iter().map(|(id, _, _, _)| (*id).into()).collect();
+        if let Ok(b_rows) = b_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }) {
+            bodies.extend(b_rows.flatten());
+        }
+    }
+    for (id, key, kind, target) in matched {
+        let body = bodies.get(&id).map(String::as_str).unwrap_or("");
+        out.push(GuardedNote {
+            key,
+            kind,
+            summary: compact_summary(body),
+            target,
+        });
     }
 }
 
@@ -335,19 +361,12 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         for i in 0..256_i64 {
             let key = format!("note-{i}");
-            let body = format!(
-                "resolver keeps confidence tiers over resolved edges with invariant {i} and stable behavior"
-            );
-            let id: i64 = tx
-                .query_row(
-                    "INSERT INTO memories
-                     (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
-                     VALUES (?1, 1, 'fact', 'durable', '', ?2, 'resolver', 'src/query.rs', 0, 'cli', 1, 0)
-                     RETURNING id",
-                    rusqlite::params![key, body],
-                    |r| r.get(0),
-                )
-                .unwrap();
+            let body = format!("resolver keeps confidence tiers over resolved edges with invariant {i} and stable behavior");
+            let id: i64 = tx.query_row(
+                "INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
+                 VALUES (?1, 1, 'fact', 'durable', '', ?2, 'resolver', 'src/query.rs', 0, 'cli', 1, 0) RETURNING id",
+                rusqlite::params![key, body], |r| r.get(0),
+            ).unwrap();
             tx.execute(
                 "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
                 rusqlite::params![id, crate::memory::mem_fts_text(&key, "resolver", &body)],
@@ -363,27 +382,26 @@ mod tests {
         let start = Instant::now();
         let found = find_consolidation_match(&conn, &candidate).is_some();
         let elapsed = start.elapsed();
-        println!("consolidation scan on 256 notes: {elapsed:?} (match={found})");
         assert!(
             elapsed < Duration::from_millis(2),
-            "C3 latency gate: {elapsed:?} >= 2ms"
+            "C3 latency gate: {elapsed:?} >= 2ms (match={found})"
         );
     }
 
     #[test]
     fn identical_notes_score_one_hundred() {
-        let note = note(
+        let n = note(
             "resolver keeps confidence tiers over edges",
             "src/query.rs",
             "resolver",
         );
-        let row = row(
+        let r = row(
             "old",
             "resolver keeps confidence tiers over edges",
             "src/query.rs",
             "resolver",
         );
-        assert_eq!(consolidation_similarity(&note, &row, false), 100);
+        assert_eq!(consolidation_similarity(&n, &r, false), 100);
     }
 
     #[test]
@@ -402,7 +420,6 @@ mod tests {
         assert!(
             consolidation_similarity(&candidate, &paraphrase, false) >= CONSOLIDATION_THRESHOLD_PCT
         );
-
         let unrelated = row(
             "other",
             "dashboard renders latency sparklines with ANSI colors",
@@ -429,7 +446,6 @@ mod tests {
             if consolidation_similarity(&candidate, &stored, false) >= CONSOLIDATION_THRESHOLD_PCT {
                 detected += 1;
             }
-
             let unrelated_body = [
                 "omega", "sigma", "tau", "upsilon", "phi", "chi", "psi", "rho", "nu", "mu",
             ]
@@ -456,6 +472,10 @@ mod tests {
         assert!(ref_matches_target("Context.render", "render"));
         assert!(!ref_matches_target("src/query/my_impact.rs", "impact.rs"));
         assert!(!ref_matches_target("src/query/impact.rs", ""));
+        // Extension-only and middle-segment tokens must not match.
+        assert!(!ref_matches_target("src/a.rs", "rs"));
+        assert!(!ref_matches_target("crate::memory::guard", "memory"));
+        assert!(!ref_matches_target("a.b.c", "b"));
     }
 
     fn run_collect(conn: &rusqlite::Connection, kinds: &[&str], limit: usize) -> Vec<String> {

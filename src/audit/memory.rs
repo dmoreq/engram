@@ -103,25 +103,17 @@ pub fn collect(mode: &Mode, repos: &[PathBuf], now: i64) -> MemoryFacts {
             continue;
         }
         facts.stores_checked += 1;
-        if let Err(kind) = inspect_store(store, size, now, &mut facts) {
+        if let Err(kind) = inspect_store(store, now, &mut facts) {
             facts.failure = Some(kind);
         }
     }
     facts
 }
 
-fn inspect_store(
-    store: &Store,
-    size: u64,
-    now: i64,
-    facts: &mut MemoryFacts,
-) -> Result<(), MemoryFailure> {
+fn inspect_store(store: &Store, now: i64, facts: &mut MemoryFacts) -> Result<(), MemoryFailure> {
     let conn = open_store(store)?;
-    let integrity: std::result::Result<String, _> = if size > 50 * 1024 * 1024 {
-        conn.query_row("PRAGMA quick_check", [], |r| r.get(0))
-    } else {
-        conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))
-    };
+    let integrity: std::result::Result<String, _> =
+        conn.query_row("PRAGMA integrity_check", [], |r| r.get(0));
     if !matches!(integrity, Ok(ref v) if v == "ok") {
         return Err(MemoryFailure::Corrupt);
     }
@@ -149,26 +141,23 @@ fn inspect_store(
             ))
         })
         .map_err(|_| MemoryFailure::Corrupt)?;
+    let mut ref_cache: std::collections::HashMap<String, db::ResolvedRef> =
+        std::collections::HashMap::new();
     for row in rows {
         let (refs, anchored_at, created_at) = row.map_err(|_| MemoryFailure::Corrupt)?;
-        let anchor = if anchored_at > 0 {
-            anchored_at
-        } else {
-            created_at
-        };
+        let anchor = anchored_at.max(created_at);
         for r in refs.split_whitespace().take(20) {
-            let resolved = crate::dashboard::data::memories::resolve_single_ref(
-                r,
-                index.as_ref(),
-                store.repo.as_deref(),
-                anchor,
-            );
-            match resolved.get("status").and_then(|s| s.as_str()) {
-                Some("broken") => facts.broken += 1,
-                Some("modified") => facts.modified += 1,
-                Some("valid") => facts.valid += 1,
-                Some("unverified") => facts.unverified += 1,
-                _ => {}
+            let resolved = ref_cache
+                .entry(r.to_string())
+                .or_insert_with(|| {
+                    db::resolve_ref_detail(index.as_ref(), store.repo.as_deref(), r, anchor)
+                })
+                .with_anchor(anchor);
+            match resolved.status {
+                db::RefStatus::Broken => facts.broken += 1,
+                db::RefStatus::Modified => facts.modified += 1,
+                db::RefStatus::Valid => facts.valid += 1,
+                db::RefStatus::Unverified => facts.unverified += 1,
             }
         }
     }

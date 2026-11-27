@@ -10,21 +10,8 @@ pub(super) fn run_mem_reindex(req: &CommandRequest, root_arg: Option<&Path>) -> 
     let CommandRequest::MemReindex { global, embed } = req else {
         unreachable!("run_mem_reindex called with a non-reindex request")
     };
-    let was_usable = open_mem_conn(root_arg, *global, MemoryMode::Query)
-        .and_then(|ro| crate::db::memory_fts_v2_usable(&ro))?;
-    let conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
-    // `open_mem_conn(Mutation)` already ran `ensure_memory_fts_v2(false)` and
-    // rebuilt `memories_fts_v2` when `fts_epoch < 3`; skip the redundant second
-    // drop/reconcile pass and read the indexed row count directly.
-    let rows = if was_usable {
-        crate::db::ensure_memory_fts_v2(&conn, true)?
-    } else {
-        conn.query_row("SELECT COUNT(*) FROM memories_fts_v2", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .map(|n| n.max(0) as u64)
-        .map_err(crate::db::map_memory_err)?
-    };
+    let mut conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
+    let rows = crate::db::ensure_memory_fts_v2(&conn, true)?;
     let mut stderr = String::new();
     let mut embedded = 0usize;
     if *embed {
@@ -33,22 +20,38 @@ pub(super) fn run_mem_reindex(req: &CommandRequest, root_arg: Option<&Path>) -> 
                 "eg: reindex: no text model configured (set EG_JUDGE_TEXT_MODEL); embeddings left NULL\n",
             );
         } else {
-            for (id, body) in crate::db::memory_current_note_bodies(&conn)? {
-                match crate::memory::embed::embed_text(&body) {
-                    Some(vector) => {
-                        conn.execute(
-                            "UPDATE memories SET embedding = ?1 WHERE id = ?2",
-                            rusqlite::params![crate::memory::embed::embedding_blob(&vector), id],
-                        )
-                        .map_err(crate::db::map_memory_err)?;
-                        embedded += 1;
-                    }
-                    None => {
-                        stderr.push_str(&format!(
-                            "eg: reindex: embedding failed for row {id}; left NULL\n"
-                        ));
+            let items = crate::db::memory_current_note_bodies(&conn)?;
+            for chunk in items.chunks(64) {
+                let mut updates = Vec::with_capacity(chunk.len());
+                for (id, body) in chunk {
+                    match crate::memory::embed::embed_text(body) {
+                        Some(vector) => {
+                            updates.push((*id, crate::memory::embed::embedding_blob(&vector)));
+                        }
+                        None => {
+                            stderr.push_str(&format!(
+                                "eg: reindex: embedding failed for row {id}; left NULL\n"
+                            ));
+                        }
                     }
                 }
+                if updates.is_empty() {
+                    continue;
+                }
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(crate::db::map_memory_err)?;
+                {
+                    let mut stmt = tx
+                        .prepare("UPDATE memories SET embedding = ?1 WHERE id = ?2")
+                        .map_err(crate::db::map_memory_err)?;
+                    for (id, blob) in &updates {
+                        stmt.execute(rusqlite::params![blob, id])
+                            .map_err(crate::db::map_memory_err)?;
+                    }
+                }
+                tx.commit().map_err(crate::db::map_memory_err)?;
+                embedded += updates.len();
             }
         }
     }
