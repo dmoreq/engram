@@ -54,11 +54,14 @@ pub(crate) const RAW_CLIENTS: &[&str] = &[
 ];
 
 pub(crate) fn is_raw_client(callee: &str) -> bool {
-    RAW_CLIENTS.iter().any(|&r| raw_client_eq(r, callee))
+    RAW_CLIENTS.contains(&callee)
 }
 
 fn raw_client_eq(a: &str, b: &str) -> bool {
-    a == b || a.replace("::", ".") == b.replace("::", ".")
+    a == b
+        || a.split("::")
+            .flat_map(|p| p.split('.'))
+            .eq(b.split("::").flat_map(|p| p.split('.')))
 }
 
 /// One reuse detector: resolve a target against the corpus to a candidate.
@@ -201,10 +204,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
         PostingKind::TokenPair,
         1,
         |candidate| {
-            if candidate.tokens.len() < 2
-                || target.name_tokens.is_empty()
-                || candidate.name_tokens.is_empty()
-            {
+            if candidate.name_tokens.len() < 2 || target.name_tokens.is_empty() {
                 return None;
             }
             // GUARD-COMP: resolved caller/callee edges reject. A bare-name-only
@@ -329,7 +329,7 @@ fn consider_d3<'a>(
 /// Detector D3: Raw Client / Abstraction Bypass.
 fn check_d3(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> {
     let mut best_wrapper: Option<(&SymbolData, &str)> = None;
-    let family = language_family(&target.file_path);
+    let family = target.lang_family;
     match corpus.index {
         Some(index) => {
             // Each posting is best-canonical first. The first eligible
@@ -342,7 +342,7 @@ fn check_d3(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> 
                 .map(|callee| normalize_client(callee))
                 .collect();
             for client in std::mem::take(&mut clients) {
-                let Some(postings) = index.raw_candidates(&client, &family) else {
+                let Some(postings) = index.raw_candidates(&client, family) else {
                     continue;
                 };
                 for id in postings {

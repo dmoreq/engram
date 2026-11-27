@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use super::corpus::SymbolData;
 use super::detectors::is_raw_client;
+use super::guards::LangFamily;
 
 /// Corpora at or below this size keep the allocation-free flat scan.
 pub(super) const INVERTED_INDEX_MIN_SYMBOLS: usize = 1_000;
@@ -41,32 +42,26 @@ pub(super) struct CorpusIndex {
     deep_group_rep: Vec<i64>,
     deep_key_group: HashMap<i64, usize>,
     by_token_pair: HashMap<(String, String), Vec<i64>>,
-    by_raw_client: HashMap<(String, String), Vec<i64>>,
+    by_raw_client: HashMap<(String, LangFamily), Vec<i64>>,
 }
 
 impl CorpusIndex {
     /// Build the posting lists in one pass over the corpus.
-    pub(super) fn build(symbols: &HashMap<i64, SymbolData>) -> Self {
+    pub(super) fn build(symbols: &HashMap<i64, SymbolData>, deep_callee: bool) -> Self {
         let mut index = CorpusIndex::default();
         for sym in symbols.values() {
-            for callee in &sym.callee_ids {
-                // Post only IDs that can satisfy D1's C_in predicate. A
-                // stoplisted ubiquitous callee would otherwise create an
-                // N-length posting shared by every caller, making each target
-                // scan the whole corpus before the detector filters it out.
-                if symbols.get(callee).is_some_and(|callee_sym| {
-                    !super::guards::cross_language(sym, callee_sym)
-                        && sym.resolved_callees.contains(&callee_sym.name)
-                }) {
+            if deep_callee {
+                for callee in sym.deep_weights.keys() {
+                    index
+                        .by_deep_callee
+                        .entry(*callee)
+                        .or_default()
+                        .push(sym.id);
+                }
+            } else {
+                for callee in &sym.d1_callee_ids {
                     index.by_callee.entry(*callee).or_default().push(sym.id);
                 }
-            }
-            for callee in sym.deep_weights.keys() {
-                index
-                    .by_deep_callee
-                    .entry(*callee)
-                    .or_default()
-                    .push(sym.id);
             }
             let mut tokens: Vec<&String> = sym.name_tokens.iter().collect();
             tokens.sort_unstable();
@@ -86,10 +81,7 @@ impl CorpusIndex {
                     if is_raw_client(callee) {
                         index
                             .by_raw_client
-                            .entry((
-                                normalize_client(callee),
-                                super::guards::language_family(&sym.file_path),
-                            ))
+                            .entry((normalize_client(callee), sym.lang_family))
                             .or_default()
                             .push(sym.id);
                     }
@@ -98,26 +90,29 @@ impl CorpusIndex {
         }
         // Group deep keys whose posting lists are identical. A target with
         // 2,000 shared leaves then walks one 400-symbol list, not 2,000.
-        let mut deep_keys: Vec<i64> = index.by_deep_callee.keys().copied().collect();
-        deep_keys.sort_unstable();
-        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
-        for key in deep_keys {
-            let hash = hash_ids(&index.by_deep_callee[&key]);
-            let existing = buckets.get(&hash).and_then(|groups| {
-                groups.iter().copied().find(|&group| {
-                    index.by_deep_callee[&index.deep_group_rep[group]] == index.by_deep_callee[&key]
-                })
-            });
-            let group = match existing {
-                Some(group) => group,
-                None => {
-                    let group = index.deep_group_rep.len();
-                    index.deep_group_rep.push(key);
-                    buckets.entry(hash).or_default().push(group);
-                    group
-                }
-            };
-            index.deep_key_group.insert(key, group);
+        if deep_callee {
+            let mut deep_keys: Vec<i64> = index.by_deep_callee.keys().copied().collect();
+            deep_keys.sort_unstable();
+            let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+            for key in deep_keys {
+                let hash = hash_ids(&index.by_deep_callee[&key]);
+                let existing = buckets.get(&hash).and_then(|groups| {
+                    groups.iter().copied().find(|&group| {
+                        index.by_deep_callee[&index.deep_group_rep[group]]
+                            == index.by_deep_callee[&key]
+                    })
+                });
+                let group = match existing {
+                    Some(group) => group,
+                    None => {
+                        let group = index.deep_group_rep.len();
+                        index.deep_group_rep.push(key);
+                        buckets.entry(hash).or_default().push(group);
+                        group
+                    }
+                };
+                index.deep_key_group.insert(key, group);
+            }
         }
         // D3 picks the most canonical wrapper. Sort each raw-client posting
         // best-first so a target can stop at the first eligible candidate
@@ -139,9 +134,9 @@ impl CorpusIndex {
     }
 
     /// Raw-client posting list, best canonical first.
-    pub(super) fn raw_candidates(&self, client: &str, family: &str) -> Option<&[i64]> {
+    pub(super) fn raw_candidates(&self, client: &str, family: LangFamily) -> Option<&[i64]> {
         self.by_raw_client
-            .get(&(client.to_string(), family.to_string()))
+            .get(&(client.to_string(), family))
             .map(Vec::as_slice)
     }
 
@@ -157,7 +152,7 @@ impl CorpusIndex {
         let mut counts: HashMap<i64, usize> = HashMap::new();
         match kind {
             PostingKind::Callee => {
-                for key in &target.callee_ids {
+                for key in &target.d1_callee_ids {
                     add_postings(self.by_callee.get(key), &mut counts);
                 }
             }
@@ -231,19 +226,24 @@ mod tests {
     }
 
     fn symbol_with(id: i64, callees: &[&str], tokens: &[&str]) -> SymbolData {
+        let file_path = format!("src/f{id}.rs");
+        let lang_family = LangFamily::Rust;
         SymbolData {
             id,
             name: format!("s{id}"),
             qualname: format!("m.s{id}"),
             file_id: id,
-            file_path: format!("src/f{id}.rs"),
+            file_path,
+            lang_family,
             line_start: 1,
             line_end: 2,
             resolved_callees: callees.iter().map(|s| s.to_string()).collect(),
             all_callees: callees.iter().map(|s| s.to_string()).collect(),
             unresolved_callees: HashSet::new(),
             callee_ids: callees.iter().map(|name| callee_key(name)).collect(),
+            d1_callee_ids: callees.iter().map(|name| callee_key(name)).collect(),
             deep_weights: HashMap::new(),
+            deep_total: 0.0,
             inbound_callers: 0,
             tokens: tokens.iter().map(|s| s.to_string()).collect(),
             type_tokens: HashSet::new(),
@@ -268,7 +268,7 @@ mod tests {
         for name in ["a", "b", "c", "d", "x"] {
             symbols.insert(callee_key(name), callee_symbol(name));
         }
-        let index = CorpusIndex::build(&symbols);
+        let index = CorpusIndex::build(&symbols, false);
         let target = &symbols[&1];
         let mut ids = index.candidates(target, PostingKind::Callee, 2);
         ids.retain(|id| *id != target.id);
@@ -282,7 +282,7 @@ mod tests {
         symbols.insert(1, symbol_with(1, &[], &["parse", "token", "alpha"]));
         symbols.insert(2, symbol_with(2, &[], &["parse", "token", "beta"]));
         symbols.insert(3, symbol_with(3, &[], &["parse", "gamma"]));
-        let index = CorpusIndex::build(&symbols);
+        let index = CorpusIndex::build(&symbols, false);
         let mut ids = index.candidates(&symbols[&1], PostingKind::TokenPair, 1);
         ids.retain(|id| *id != 1);
         assert_eq!(ids, vec![2]);
@@ -301,9 +301,9 @@ mod tests {
             symbol.inbound_callers = 2;
             symbols.insert(id, symbol);
         }
-        let index = CorpusIndex::build(&symbols);
+        let index = CorpusIndex::build(&symbols, false);
         let mut ids = index
-            .raw_candidates("reqwest.get", "rust")
+            .raw_candidates("reqwest.get", LangFamily::Rust)
             .unwrap_or_default()
             .to_vec();
         ids.retain(|id| *id != 1);

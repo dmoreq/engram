@@ -16,13 +16,16 @@ fn make_test_symbol(
         qualname: qualname.to_string(),
         file_id,
         file_path: format!("src/file_{file_id}.rs"),
+        lang_family: guards::LangFamily::Rust,
         line_start: 10,
         line_end: 20,
         resolved_callees: HashSet::new(),
         all_callees: callees.iter().map(|&s| s.to_string()).collect(),
         unresolved_callees: HashSet::new(),
         callee_ids: HashSet::new(),
+        d1_callee_ids: HashSet::new(),
         deep_weights: HashMap::new(),
+        deep_total: 0.0,
         inbound_callers: callers,
         tokens: HashSet::new(),
         type_tokens: HashSet::new(),
@@ -226,6 +229,7 @@ fn deep_symbol(
     for name in second_hop {
         sym.deep_weights.entry(probe_id(name)).or_insert(0.5);
     }
+    sym.deep_total = sym.deep_weights.values().sum();
     sym
 }
 
@@ -248,7 +252,7 @@ fn deep_callee_precision_meets_the_gate() {
             2,
             deep_symbol(2, "t.canonical", candidate_direct, &[], 2, 5),
         );
-        let index = CorpusIndex::build(&symbols);
+        let index = CorpusIndex::build(&symbols, true);
         let corpus = Corpus {
             symbols: &symbols,
             index: Some(&index),
@@ -327,7 +331,8 @@ fn detector_scan_gate_on_5000_symbols() {
             }
         }
     }
-    let index = CorpusIndex::build(&symbols);
+    corpus::precompute_d1_callee_ids(&mut symbols);
+    let index = CorpusIndex::build(&symbols, false);
     let corpus = Corpus {
         symbols: &symbols,
         index: Some(&index),
@@ -406,7 +411,8 @@ fn inverted_index_preserves_detector_results() {
             }
         }
     }
-    let index = CorpusIndex::build(&symbols);
+    corpus::precompute_d1_callee_ids(&mut symbols);
+    let index = CorpusIndex::build(&symbols, false);
     let flat = Corpus {
         symbols: &symbols,
         index: None,
@@ -491,4 +497,32 @@ fn d3_emits_no_measured_overlap() {
         assert!(cand.overlap_pct.is_none(), "D3 carries no percentage");
         assert_eq!(cand.sort_rank(), 90);
     }
+}
+
+#[test]
+fn deep_callee_budget_is_deterministic() {
+    let mut picked = Vec::new();
+    for _ in 0..8 {
+        let mut symbols = HashMap::new();
+        let target = deep_symbol(10, "m.target", &["a", "b", "c"], &[], 10, 0);
+        let c1 = deep_symbol(1, "m.alpha", &["a", "b", "c"], &[], 1, 3);
+        let c2 = deep_symbol(2, "m.beta", &["a", "b", "c"], &[], 2, 3);
+        symbols.insert(10, target);
+        symbols.insert(1, c1);
+        symbols.insert(2, c2);
+        let corpus = Corpus {
+            symbols: &symbols,
+            index: None,
+            df_all_excl: None,
+            deep_callee: true,
+            guarded_out: Cell::new(0),
+            deep_budget: Cell::new(1),
+        };
+        let cand = find_best_d1(&symbols[&10], &corpus).unwrap();
+        picked.push(cand.canonical);
+    }
+    assert!(
+        picked.iter().all(|c| c == "m.alpha"),
+        "budget=1 must deterministically pick file_1 (m.alpha): {picked:?}"
+    );
 }

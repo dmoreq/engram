@@ -26,19 +26,7 @@ pub(super) fn finalize(
     report
         .pool
         .retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
-    report.pool.sort_by(|a, b| {
-        b.confidence
-            .rank()
-            .cmp(&a.confidence.rank())
-            .then_with(|| b.sort_rank().cmp(&a.sort_rank()))
-            .then_with(|| b.canonical_callers.cmp(&a.canonical_callers))
-            .then_with(|| a.symbol.cmp(&b.symbol))
-            .then_with(|| a.file.cmp(&b.file))
-            .then_with(|| a.line.cmp(&b.line))
-            .then_with(|| a.canonical.cmp(&b.canonical))
-            .then_with(|| a.canonical_file.cmp(&b.canonical_file))
-            .then_with(|| a.canonical_line.cmp(&b.canonical_line))
-    });
+    super::sort_candidates(&mut report.pool);
     let below_threshold = report.counts.below_threshold + extra_below;
     let eligible = report.pool.len();
     let limit_omitted = eligible.saturating_sub(opts.limit);
@@ -217,7 +205,12 @@ pub(super) fn finalize(
             "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts\n",
         );
     }
-    if !opts.judge && (low > 0 || provisional > 0) && judge_is_available() {
+    if !opts.judge
+        && emitted
+            .iter()
+            .any(|(c, _)| judge::is_judgeable(c, report.mode))
+        && judge::is_available()
+    {
         report
             .stderr
             .push_str("eg: tip: rerun with --judge to arbitrate gray-band candidates locally\n");
@@ -226,29 +219,6 @@ pub(super) fn finalize(
     query.mode = report.mode;
     query.truncated = report.counts.truncated;
     Ok(query)
-}
-
-fn judge_is_available() -> bool {
-    let has_bin = std::env::var("EG_JUDGE_BIN")
-        .ok()
-        .is_some_and(|v| !v.is_empty())
-        || std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join("eg-judge").is_file())
-        });
-    if !has_bin {
-        return false;
-    }
-    let model = match std::env::var("EG_JUDGE_MODEL") {
-        Ok(value) if !value.is_empty() => std::path::PathBuf::from(value),
-        _ => match std::env::var("HOME") {
-            Ok(home) => std::path::PathBuf::from(home)
-                .join(".engram")
-                .join("judge")
-                .join("model"),
-            Err(_) => return false,
-        },
-    };
-    model.join("lazy.json").exists()
 }
 
 #[cfg(test)]
@@ -261,9 +231,11 @@ mod tests {
             symbol: "pkg.Alpha".into(),
             file: "src/a.py".into(),
             line: 1,
+            line_end: 2,
             canonical: "pkg.Beta".into(),
             canonical_file: canonical_file.into(),
             canonical_line,
+            canonical_line_end: canonical_line + 1,
             canonical_callers: 0,
             overlap_pct: None,
             shared_items: Vec::new(),

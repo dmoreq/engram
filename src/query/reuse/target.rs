@@ -12,6 +12,7 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
     let mut paths = Vec::new();
     let mut symbols = HashSet::new();
     let mut matched_files = HashSet::new();
+    let mut has_dir = false;
 
     for input in inputs {
         if input.is_empty() {
@@ -64,6 +65,7 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
                 resolve_file(ctx, &normalized, &mut paths, &mut matched_files)?
             }
             Ok(meta) if meta.is_dir() => {
+                has_dir = true;
                 resolve_dir(ctx, &normalized, &mut paths, &mut matched_files)?
             }
             Ok(_) => {
@@ -92,21 +94,13 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
     let kind = if paths.is_empty() && symbols.is_empty() {
         ScopeKind::Repo
     } else if !paths.is_empty() {
-        ScopeKind::Files(paths.clone())
+        if has_dir {
+            ScopeKind::Dir
+        } else {
+            ScopeKind::Files
+        }
     } else {
-        let ids = symbols
-            .iter()
-            .filter_map(|qualname| {
-                ctx.conn
-                    .query_row(
-                        "SELECT id FROM symbols WHERE qualname = ?1 LIMIT 1",
-                        [qualname],
-                        |row| row.get(0),
-                    )
-                    .ok()
-            })
-            .collect();
-        ScopeKind::Symbols(ids)
+        ScopeKind::Symbols
     };
     let mut files: Vec<String> = matched_files.into_iter().collect();
     files.sort();
@@ -272,23 +266,40 @@ fn resolve_symbol(
     symbols: &mut HashSet<String>,
     matched_files: &mut HashSet<String>,
 ) -> Result<()> {
-    let escaped = crate::db::like_escape(input);
-    let module_suffix = format!("%::{escaped}");
-    let dot_suffix = format!("%.{escaped}");
-    let mut stmt = ctx.conn.prepare(
+    let mut exact_stmt = ctx.conn.prepare(
         "SELECT file_path, line_start, qualname FROM symbols
-         WHERE qualname = ?1 OR name = ?1
-            OR qualname LIKE ?2 ESCAPE '\\' OR qualname LIKE ?3 ESCAPE '\\'
+         WHERE is_test = 0 AND kind IN ('function', 'method')
+           AND (qualname = ?1 OR name = ?1)
          ORDER BY file_path, line_start, qualname",
     )?;
-    let rows = stmt.query_map(rusqlite::params![input, module_suffix, dot_suffix], |row| {
+    let exact_rows = exact_stmt.query_map([input], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, i64>(1)?,
             row.get::<_, String>(2)?,
         ))
     })?;
-    let all: Vec<NameCandidate> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut all: Vec<NameCandidate> = exact_rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if all.is_empty() {
+        let escaped = crate::db::like_escape(input);
+        let module_suffix = format!("%::{escaped}");
+        let dot_suffix = format!("%.{escaped}");
+        let mut suffix_stmt = ctx.conn.prepare(
+            "SELECT file_path, line_start, qualname FROM symbols
+             WHERE is_test = 0 AND kind IN ('function', 'method')
+               AND (qualname LIKE ?1 ESCAPE '\\' OR qualname LIKE ?2 ESCAPE '\\')
+             ORDER BY file_path, line_start, qualname",
+        )?;
+        let suffix_rows =
+            suffix_stmt.query_map(rusqlite::params![module_suffix, dot_suffix], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+        all = suffix_rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    }
     let total = all.len();
     match total {
         0 => {

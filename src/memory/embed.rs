@@ -6,10 +6,11 @@
 //! network, no Python runtime, child lifetime bound to one call.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
+
+use super::judge_proc;
 
 /// One cold Metal start plus one warm embed, matching the judge deadline.
 const EMBED_TIMEOUT: Duration = Duration::from_millis(20_000);
@@ -29,57 +30,16 @@ pub fn text_model_dir() -> Option<PathBuf> {
 /// binary, a timeout, or a malformed payload must never fail the note write.
 pub fn embed_text(text: &str) -> Option<Vec<f32>> {
     let model = text_model_dir()?;
-    let binary = match std::env::var("EG_JUDGE_BIN") {
-        Ok(value) if !value.is_empty() => PathBuf::from(value),
-        _ => which_eg_judge()?,
-    };
-    let mut command = Command::new(binary);
+    let binary = judge_proc::find_bin()?;
+    let home = std::env::var("HOME").ok();
+    let mut command = judge_proc::base_command(&binary, home.as_deref());
     command
         .arg("embed")
         .arg("--text")
         .arg(text)
         .arg("--model")
-        .arg(&model)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env_clear();
-    if let Ok(home) = std::env::var("HOME") {
-        command.env("HOME", home);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + EMBED_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    // The child exited (or forked a helper that inherited stdout): tear the
-    // process group down so the drain below is bounded, then read.
-    kill_group(&child);
-    let stdout = child.stdout.take()?;
-    let mut raw = String::new();
-    use std::io::Read;
-    stdout.take(256 * 1024 + 1).read_to_string(&mut raw).ok()?;
-    if raw.len() > 256 * 1024 {
-        return None;
-    }
+        .arg(&model);
+    let raw = judge_proc::run_bounded(command, None, EMBED_TIMEOUT, 256 * 1024)?;
     let value: Value = serde_json::from_str(raw.trim()).ok()?;
     let dim = value.get("dim")?.as_u64()? as usize;
     let vector: Vec<f32> = value
@@ -89,33 +49,6 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
         .map(|v| v.as_f64().map(|n| n as f32))
         .collect::<Option<_>>()?;
     (vector.len() == dim && dim > 0).then_some(vector)
-}
-
-/// Tear the child's process group down so a forked stdout holder cannot keep
-/// the drain alive past the deadline.
-#[cfg(unix)]
-fn kill_group(child: &std::process::Child) {
-    let group = format!("-{}", child.id());
-    for signal in ["-TERM", "-KILL"] {
-        let _ = Command::new("kill")
-            .arg(signal)
-            .arg(&group)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_group(_child: &std::process::Child) {}
-
-/// Resolve the `eg-judge` binary from PATH (same discovery contract as the
-/// reuse judge; `EG_JUDGE_BIN` wins).
-fn which_eg_judge() -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join("eg-judge"))
-        .find(|candidate| candidate.is_file())
 }
 
 /// L2-normalised f32 vector -> little-endian BLOB bytes.
