@@ -185,7 +185,7 @@ mod tests {
         // and answers both requests.
         let marker = root.join("seen");
         let body = format!(
-            "#!/bin/sh\nif [ ! -f '{}' ]; then\n  touch '{}'\n  IFS= read -r _\n  printf '{{\"decision\":\"duplicate\",\"similarity\":0.9}}\\n'\n  exit 0\nfi\nwhile IFS= read -r _; do\n  printf '{{\"decision\":\"distinct\",\"similarity\":0.1}}\\n'\ndone\n",
+            "#!/bin/sh\nif [ ! -f '{}' ]; then\n  : > '{}'\n  IFS= read -r _\n  printf '{{\"decision\":\"duplicate\",\"similarity\":0.9}}\\n'\n  exit 0\nfi\nwhile IFS= read -r _; do\n  printf '{{\"decision\":\"distinct\",\"similarity\":0.1}}\\n'\ndone\n",
             marker.display(),
             marker.display()
         );
@@ -194,6 +194,12 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();
 
+        if let Ok(mut guard) = slot().lock() {
+            if let Some(state) = guard.as_mut() {
+                state.session = None;
+                state.serve_unsupported = false;
+            }
+        }
         enable();
         let setup = Setup {
             binary: script,
