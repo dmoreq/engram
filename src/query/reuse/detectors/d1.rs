@@ -38,14 +38,7 @@ fn score_d1_confidence(reasons: &[ReasonCode], weak: f64, ratio: f64, bal: f64) 
 /// every worker against every other worker's thousands of leaf callees.
 const MAX_DEEP_FOOTPRINT: usize = 512;
 
-fn score_d1_match(
-    target: &SymbolData,
-    candidate: &SymbolData,
-    corpus: &Corpus<'_>,
-    shared_ids: &[i64],
-    ratio: f64,
-    bal: f64,
-) -> (u64, Vec<String>, ReuseConfidence, Vec<ReasonCode>) {
+fn shared_names(corpus: &Corpus<'_>, shared_ids: &[i64]) -> Vec<String> {
     let mut shared: Vec<String> = shared_ids
         .iter()
         .filter_map(|id| corpus.symbols.get(id))
@@ -53,6 +46,17 @@ fn score_d1_match(
         .collect();
     shared.sort();
     shared.dedup();
+    shared
+}
+
+fn score_d1_match(
+    target: &SymbolData,
+    candidate: &SymbolData,
+    corpus: &Corpus<'_>,
+    shared_ids: Vec<i64>,
+    ratio: f64,
+    bal: f64,
+) -> (u64, Vec<i64>, ReuseConfidence, Vec<ReasonCode>) {
     let mut reasons = Vec::new();
     // Only unresolved bare-name overlaps are composition hints; a call
     // resolved to a different project symbol is not this pair.
@@ -72,20 +76,28 @@ fn score_d1_match(
     if bal < 0.50 {
         reasons.push(ReasonCode::SizeImbalance);
     }
-    let weak = distinctive_weakness(corpus, shared_ids);
+    let weak = distinctive_weakness(corpus, &shared_ids);
     let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
-    ((ratio * 100.0).round() as u64, shared, confidence, reasons)
+    (
+        (ratio * 100.0).round() as u64,
+        shared_ids,
+        confidence,
+        reasons,
+    )
 }
 
 /// Weighted deep scan. Stops after the per-invocation pair budget.
 fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> {
+    if corpus.deep_budget.get() == 0 {
+        corpus.guard();
+        return None;
+    }
     best_by_overlap(
         DetectorId::D1,
         target,
         corpus,
         PostingKind::DeepCallee,
         2,
-        true,
         |candidate| {
             if target.callee_ids.contains(&candidate.id)
                 || candidate.callee_ids.contains(&target.id)
@@ -123,14 +135,10 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
                 .copied()
                 .collect();
             ControlFlow::Continue(Some(score_d1_match(
-                target,
-                candidate,
-                corpus,
-                &shared_ids,
-                ratio,
-                bal,
+                target, candidate, corpus, shared_ids, ratio, bal,
             )))
         },
+        |ids| shared_names(corpus, &ids),
     )
 }
 
@@ -152,7 +160,6 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
         corpus,
         PostingKind::Callee,
         2,
-        false,
         |candidate| {
             let c_ids = &candidate.d1_callee_ids;
             // GUARD-COMP: a resolved call edge in either direction is a
@@ -184,14 +191,10 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
                 return ControlFlow::Continue(None);
             }
             ControlFlow::Continue(Some(score_d1_match(
-                target,
-                candidate,
-                corpus,
-                &shared_ids,
-                ratio,
-                bal,
+                target, candidate, corpus, shared_ids, ratio, bal,
             )))
         },
+        |ids| shared_names(corpus, &ids),
     )
 }
 
