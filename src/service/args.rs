@@ -30,10 +30,6 @@ impl ArgReader<'_> {
         self.0.get(key).and_then(|v| v.as_str()).map(str::to_string)
     }
 
-    fn b(&self, key: &str) -> bool {
-        self.0.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
-    }
-
     /// Strict String reader for new params: absent/null is `None`, a string is
     /// accepted, and any other JSON type is a usage error instead of a silent
     /// filter drop.
@@ -167,7 +163,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
     let a = ArgReader(args);
     match tool {
         "build" => Ok(CommandRequest::Build {
-            force: a.b("force"),
+            force: a.b_spec(tool, "force")?,
             max_parse_error_rate: a.f_spec(
                 tool,
                 "max_parse_error_rate",
@@ -175,12 +171,8 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             )?,
         }),
         "usage" => Ok(CommandRequest::Usage {
-            quality: a
-                .0
-                .get("quality")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            global: a.0.get("global").and_then(|v| v.as_bool()).unwrap_or(false),
+            quality: a.b_spec(tool, "quality")?,
+            global: a.b_spec(tool, "global")?,
         }),
         "callers" | "callees" => {
             let name = a.req("name")?;
@@ -207,23 +199,28 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }),
         "impact" => Ok(CommandRequest::Impact {
             file: a.req("file")?,
-            sites: a.b("sites"),
+            sites: a.b_spec(tool, "sites")?,
             depth: a.n_spec(tool, "depth", crate::query::DEFAULT_DEPTH)?,
             edges: crate::query::parse_edge_kinds(
-                &a.s("edges")
+                &a.s_opt_spec(tool, "edges")?
                     .unwrap_or_else(|| crate::query::DEFAULT_IMPACT_EDGES.to_string()),
             )?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
         "symbols" => Ok(CommandRequest::Symbols {
             file: a.req("file")?,
-            outline: a.b("outline"),
+            outline: a.b_spec(tool, "outline")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
         "reuse" => {
-            if let Some(limit) = a.0.get("limit").and_then(serde_json::Value::as_i64) {
+            if let Some(v) = a.0.get("limit").filter(|v| !v.is_null()) {
+                let limit = v.as_u64().ok_or_else(|| {
+                    EgError::Usage(format!(
+                        "argument 'limit' must be a non-negative integer, got {v}"
+                    ))
+                })?;
                 // 0 is the count-only convention (summary totals, no rows).
-                if !(0..=100).contains(&limit) {
+                if limit > 100 {
                     return Err(EgError::Usage("limit must be 0..=100".to_string()));
                 }
             }
@@ -250,14 +247,16 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             key: a.req("key")?,
             body: a.req("body")?,
             kind: a.req("kind")?,
-            tags: a.s("tags"),
-            refs: a.s("refs"),
-            scope: a.s("scope").unwrap_or_else(|| "durable".to_string()),
+            tags: a.s_opt_spec(tool, "tags")?,
+            refs: a.s_opt_spec(tool, "refs")?,
+            scope: a
+                .s_opt_spec(tool, "scope")?
+                .unwrap_or_else(|| "durable".to_string()),
             ttl: a.n_opt_spec(tool, "ttl")?.map(|v| v as u64),
-            supersedes: a.s("supersedes"),
+            supersedes: a.s_opt_spec(tool, "supersedes")?,
             global: a.b_spec(tool, "global")?,
-            touch: a.b("touch"),
-            confirm: a.b("confirm"),
+            touch: a.b_spec(tool, "touch")?,
+            confirm: a.b_spec(tool, "confirm")?,
         }),
         "mem_touch" => Ok(CommandRequest::MemTouch {
             key: a.req("key")?,
@@ -292,12 +291,21 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
                     })
                     .unwrap_or_default(),
                 all: a.b_spec(tool, "all")?,
-                kind: crate::memory::parse_kind_filter("mem query", a.s("kind").as_deref())?,
-                scope: crate::memory::parse_scope_filter("mem query", a.s("scope").as_deref())?,
+                kind: crate::memory::parse_kind_filter(
+                    "mem query",
+                    a.s_opt_spec(tool, "kind")?.as_deref(),
+                )?,
+                scope: crate::memory::parse_scope_filter(
+                    "mem query",
+                    a.s_opt_spec(tool, "scope")?.as_deref(),
+                )?,
                 limit: a.n_spec(tool, "limit", crate::memory::DEFAULT_MEM_LIMIT)?,
                 include_superseded: a.b_spec(tool, "include_superseded")?,
                 global,
-                reference: a.s("ref").or_else(|| a.s("reference")),
+                reference: match a.s_opt_spec(tool, "ref")? {
+                    Some(v) => Some(v),
+                    None => a.s("reference"),
+                },
                 since: window.since,
                 until: window.until,
                 local,
@@ -331,7 +339,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             };
             crate::memory::validate_window(&window, "mem export")?;
             Ok(CommandRequest::MemExport {
-                format: a.s("format"),
+                format: a.s_opt_spec(tool, "format")?,
                 limit: a.n_opt_spec(tool, "limit")?,
                 global: a.b_spec(tool, "global")?,
                 since: window.since,
@@ -341,8 +349,8 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }
         "mem_import" => Ok(CommandRequest::MemImport {
             path: a.req("path")?,
-            format: a.s("format"),
-            force: a.b("force"),
+            format: a.s_opt_spec(tool, "format")?,
+            force: a.b_spec(tool, "force")?,
             global: a.b_spec(tool, "global")?,
         }),
         "mem_reindex" => Ok(CommandRequest::MemReindex {

@@ -106,16 +106,22 @@ pub fn begin(surface: &'static str, tool: &str, args: &JournalArgs) {
 /// outcome is known; I/O failures are swallowed. A `None` root or an
 /// identityless root skips the write (no `.engram/` location exists).
 pub fn finalize(root: Option<&Path>, exit_code: i32, latency_us: u64) {
+    let repo = root.map(crate::repo::RepoRef::from_root);
+    finalize_repo(repo.as_ref(), exit_code, latency_us);
+}
+
+/// Append the usage line using an already-resolved [`crate::repo::RepoRef`],
+/// avoiding redundant canonicalization and `.git` probing.
+pub(crate) fn finalize_repo(repo: Option<&crate::repo::RepoRef>, exit_code: i32, latency_us: u64) {
     let Some(pending) = PENDING.with(|p| p.borrow_mut().take()) else {
         return;
     };
-    // One identity for every surface (see `repo::RepoRef`).
-    let repo = root.map(crate::repo::RepoRef::from_root);
-    let Some(repo_path) = repo.as_ref().and_then(crate::repo::RepoRef::journal_repo) else {
+    let Some(repo_path) = repo.and_then(crate::repo::RepoRef::journal_repo) else {
         return;
     };
-    let repo_name = repo.as_ref().map(|r| r.name().to_string());
-    let is_worktree = repo.as_ref().is_some_and(crate::repo::RepoRef::is_worktree);
+    let root = repo.map(crate::repo::RepoRef::root);
+    let repo_name = repo.map(|r| r.name().to_string());
+    let is_worktree = repo.is_some_and(crate::repo::RepoRef::is_worktree);
     let reuse = pending
         .reuse_counts
         .map(|c| {
@@ -231,44 +237,46 @@ fn append_line(path: &Path, line: &str) {
     // regular file under a real `.engram/` directory. A symlinked directory or log
     // would append attacker-chosen content outside the repo (the read path
     // already rejects non-regular files).
-    if let Some(dir) = path.parent() {
-        if let Ok(meta) = fs::symlink_metadata(dir) {
+    let dir_exists = match path.parent().map(fs::symlink_metadata) {
+        Some(Ok(meta)) => {
             if !meta.is_dir() {
                 return;
             }
+            true
         }
-    }
+        Some(Err(_)) | None => false,
+    };
     if let Ok(meta) = fs::symlink_metadata(path) {
         if !meta.is_file() {
             return;
         }
-    }
-    rotate_if_needed(path, ROTATE_BYTES);
-    // Whether `.engram` exists before this append: the journal seeds the gitignore
-    // marker only when IT creates the directory. A pre-existing `.engram` is owned
-    // by build/doctor (or the user) — appending must not touch its marker.
-    let eg_created_here = path
-        .parent()
-        .is_none_or(|dir| fs::symlink_metadata(dir).is_err());
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+        if meta.len() > ROTATE_BYTES {
+            rotate_if_needed(path, ROTATE_BYTES);
+        }
     }
     let mut file = match OpenOptions::new().append(true).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let eg_created_here = !dir_exists;
+            if !dir_exists {
+                if let Some(dir) = path.parent() {
+                    let _ = fs::create_dir_all(dir);
+                }
+            }
             recreate_journal(path, eg_created_here);
             // create(true), not create_new(true): a concurrent appender may
             // have recreated the journal between our miss and this open, and
             // discarding the line would lose telemetry.
-            match OpenOptions::new().create(true).append(true).open(path) {
+            let opened = match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(file) => file,
                 Err(_) => return,
-            }
+            };
+            // Owner-only mode: the journal carries repository paths and tool usage.
+            let _ = crate::db::harden_file_mode(path);
+            opened
         }
         Err(_) => return,
     };
-    // Owner-only mode: the journal carries repository paths and tool usage.
-    let _ = crate::db::harden_file_mode(path);
     let _ = file.write_all(line.as_bytes());
 }
 
@@ -322,7 +330,7 @@ mod tokens;
 
 pub use prune::{
     prune_ephemeral_entries, prune_ephemeral_entries_all, prune_stale_entries,
-    prune_stale_entries_all,
+    prune_stale_entries_all, prune_startup_entries_all,
 };
 
 use agent::env_tag;

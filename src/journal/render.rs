@@ -53,6 +53,7 @@ struct ToolAgg {
     latencies: Vec<u64>,
     total_shown: usize,
     total_results: usize,
+    saved_tokens: usize,
     reuse_usage: ReuseUsage,
     reuse_truncated: usize,
     reuse_modes: usize,
@@ -134,7 +135,9 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
         crate::error::ExitClass::Ok => {
             agg.ok_calls += 1;
             agg.total_shown += shown;
-            agg.total_results += fields.result_count.max(0) as usize;
+            let result_count = fields.result_count.max(0) as usize;
+            agg.total_results += result_count;
+            agg.saved_tokens += estimated_tokens_saved(&fields.tool, shown, result_count, 1);
         }
         crate::error::ExitClass::Error => agg.errors += 1,
         crate::error::ExitClass::Empty => agg.exit1 += 1,
@@ -160,8 +163,8 @@ fn fold_tool(fields: &UsageFields, agg: &mut ToolAgg) {
         agg.stale += 1;
     }
     agg.ambiguous += fields.ambiguous.max(0) as usize;
-    if let Some(us) = fields.latency_us {
-        agg.latencies.push(us.max(0) as u64);
+    if let Some(us) = fields.latency_us.filter(|&us| us >= 0) {
+        agg.latencies.push(us as u64);
     }
     reuse::fold(fields.reuse, fields.truncated, fields.tool == "reuse", agg);
     // Judge parity with the dashboard tile: a zero-judgeable run ({0,0,0})
@@ -300,31 +303,22 @@ fn aggregate_global_usage(
         // A linked worktree contributes under its main repository's row,
         // keyed by the canonical main root; an unresolvable pointer keeps
         // its own row.
-        let main = fields
-            .worktree
-            .then(|| crate::repo::cached_worktree_main_root(Path::new(&journaled)))
-            .flatten();
-        let (repo_key, display) = match &main {
-            Some(main) => {
-                let main = main.to_string_lossy().into_owned();
-                let display = Path::new(&main)
-                    .file_name()
-                    .map_or_else(|| main.clone(), |n| n.to_string_lossy().into_owned());
-                (main, display)
-            }
-            None => (
-                journaled,
-                fields
-                    .repo_name
-                    .clone()
-                    .unwrap_or_else(|| UNATTRIBUTED.to_string()),
-            ),
+        let (repo_key, folded) = crate::repo::canonical_repo_bucket(&journaled, fields.worktree);
+        let display = if folded {
+            Path::new(&repo_key)
+                .file_name()
+                .map_or_else(|| repo_key.clone(), |n| n.to_string_lossy().into_owned())
+        } else {
+            fields
+                .repo_name
+                .clone()
+                .unwrap_or_else(|| UNATTRIBUTED.to_string())
         };
         fold_tool(&fields, aggs.entry(fields.tool.clone()).or_default());
 
         let r_agg = repo_aggs.entry(repo_key).or_default();
         if r_agg.display.is_empty() {
-            r_agg.display = display;
+            r_agg.display = display.clone();
         }
         r_agg.calls += 1;
         if crate::error::ExitClass::of(fields.exit_code) == crate::error::ExitClass::Error {
@@ -332,14 +326,14 @@ fn aggregate_global_usage(
             errors.push(ErrorRecord {
                 ts: fields.ts,
                 tool: fields.tool,
-                repo_name: fields.repo_name,
+                repo_name: Some(display),
                 exit_code: fields.exit_code,
                 agent: fields.agent,
             });
         }
         // `[worktree]` marks an unresolved worktree row only; a folded entry
         // already shows under its main repository.
-        if fields.worktree && main.is_none() {
+        if fields.worktree && !folded {
             r_agg.worktree = true;
         }
     }
@@ -462,5 +456,27 @@ mod stream3_tests {
         aggs.get_mut("callers").unwrap().exit2 = 0;
         let clean = render_global_summary(&aggs, &repo_aggs, &[], false).join("\n");
         assert!(!clean.contains("query misses"), "{clean}");
+    }
+
+    #[test]
+    fn reuse_per_call_saved_tokens_matches_sum_without_inflation() {
+        let dir = crate::db::temp_root("render-reuse-parity");
+        crate::db::test_support::make_dir_all(&dir).unwrap();
+        let repo = dir.to_string_lossy();
+        let lines = format!(
+            concat!(
+                "{{\"tool\":\"reuse\",\"repo\":\"{repo}\",\"result_count\":3,\"shown\":3,\"exit_code\":0}}\n",
+                "{{\"tool\":\"reuse\",\"repo\":\"{repo}\",\"result_count\":2,\"shown\":2,\"exit_code\":0}}\n",
+                "{{\"tool\":\"reuse\",\"repo\":\"{repo}\",\"result_count\":0,\"shown\":0,\"exit_code\":1}}\n"
+            ),
+            repo = repo
+        );
+        let aggs = aggregate_usage(&lines);
+        let (total_saved, _) = kpi::calculate_telemetry_totals(&aggs);
+        let expected =
+            estimated_tokens_saved("reuse", 3, 3, 1) + estimated_tokens_saved("reuse", 2, 2, 1);
+        assert_eq!(total_saved, expected);
+        assert_eq!(aggs["reuse"].saved_tokens, expected);
+        crate::db::test_support::remove_tree(&dir);
     }
 }

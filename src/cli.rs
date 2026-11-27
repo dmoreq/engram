@@ -132,7 +132,7 @@ pub enum Cmd {
         /// Target file paths or symbol names to inspect for reuse candidates
         #[arg(required = false)]
         paths: Vec<String>,
-        /// Maximum candidates shown (default 10, range 1..=100)
+        /// Maximum candidates shown (default 10, range 0..=100)
         #[arg(long, default_value_t = crate::query::DEFAULT_REUSE_LIMIT)]
         limit: usize,
         /// Extend the callee footprint to second-hop callees (weight 0.5)

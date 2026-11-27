@@ -76,9 +76,8 @@ pub fn execute(
     // One resolution for both the arm and the journal line. `RepoRef` also
     // walks a subdirectory up to its git root, so a `--root src` cannot invent
     // a repository named after the directory.
-    let resolved_root = crate::repo::RepoRef::resolve(root_arg)
-        .ok()
-        .map(|r| r.root().to_path_buf());
+    let resolved_repo = crate::repo::RepoRef::resolve(root_arg).ok();
+    let resolved_root = resolved_repo.as_ref().map(|r| r.root().to_path_buf());
     let outcome = run(req, resolved_root.as_deref().or(root_arg), surface);
     let latency_us = started.elapsed().as_micros() as u64;
     let (stdout, stderr, exit_code, shown) = match outcome {
@@ -86,7 +85,7 @@ pub fn execute(
             let code = arm.exit_code.unwrap_or(0);
             if journal {
                 // record_result for the query shapes ran inside the arm.
-                crate::journal::finalize(resolved_root.as_deref(), code, latency_us);
+                crate::journal::finalize_repo(resolved_repo.as_ref(), code, latency_us);
             }
             (arm.stdout, arm.stderr, code, arm.shown)
         }
@@ -107,7 +106,7 @@ pub fn execute(
             }
             let stderr = format!("{e}\n");
             if journal {
-                crate::journal::finalize(resolved_root.as_deref(), e.exit_code(), latency_us);
+                crate::journal::finalize_repo(resolved_repo.as_ref(), e.exit_code(), latency_us);
             }
             (stdout, stderr, e.exit_code(), None)
         }

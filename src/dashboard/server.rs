@@ -93,12 +93,7 @@ pub fn serve_dashboard(
         log_path.display()
     );
 
-    let _ = crate::journal::prune_stale_entries_all(&log_path);
-    if !local {
-        // Global telemetry lists durable repositories: probe fixtures under
-        // the OS temp tree are scratch identities, not projects.
-        let _ = crate::journal::prune_ephemeral_entries_all(&log_path);
-    }
+    let _ = crate::journal::prune_startup_entries_all(&log_path, !local);
 
     let running = Arc::new(AtomicBool::new(true));
 

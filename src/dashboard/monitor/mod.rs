@@ -153,10 +153,6 @@ fn run_interactive(
                 b'\t' => Some(InputEvent::NextTab),
                 b'r' | b'R' => Some(InputEvent::Refresh),
                 b'q' | b'Q' | 3 => Some(InputEvent::Quit),
-                // A lone Esc quits cleanly instead of blocking the reader on
-                // a 2-byte read_exact for a sequence that never arrives.
-                // Tab switching keeps the 1-4 keys and Tab.
-                27 => Some(InputEvent::Quit),
                 _ => None,
             };
             if let Some(e) = evt {
@@ -208,9 +204,10 @@ fn run_interactive(
         }
 
         if last_refresh.elapsed() >= Duration::from_secs(5) {
-            state.refresh(root_path.as_deref());
+            if state.refresh_if_changed(root_path.as_deref()) {
+                need_render = true;
+            }
             last_refresh = std::time::Instant::now();
-            need_render = true;
         }
 
         if need_render {
@@ -346,7 +343,7 @@ fn is_event_matched(
     }
     if errors_only {
         let code = val.get("exit_code").and_then(Value::as_i64).unwrap_or(0);
-        if code < 3 {
+        if crate::error::ExitClass::of(code) != crate::error::ExitClass::Error {
             return false;
         }
     }
