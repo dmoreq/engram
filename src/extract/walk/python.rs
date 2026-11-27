@@ -217,7 +217,7 @@ pub(super) fn visit_python_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
         }
         "assignment" | "augmented_assignment" => {
             record_assignment(w);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         _ => return false,
     }
@@ -285,6 +285,6 @@ fn visit_python_class<'a>(w: &mut Walker<'a, '_, '_>) {
     if let Some(body) = w.node.child_by_field_name("body") {
         w.ctx.class_stack.push(qualname);
         w.work.push(Step::PopClass);
-        push_children_rev(w.work, body);
+        push_children_rev(w.work, w.cursor, body);
     }
 }

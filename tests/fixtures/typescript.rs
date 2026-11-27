@@ -240,3 +240,119 @@ fn ts_barrel_reexport_binds_exported_names() {
         resolution.unresolved_calls
     );
 }
+
+#[test]
+fn ts_export_star_and_carried_barrel_parity() {
+    let sub = "export class Service {\n    ping(): void {}\n}\n";
+    let barrel = "export * from './sub'\nexport { Service as Svc } from './sub'\n";
+    let app = "import { Service, Svc, Missing } from './pkg'\nexport function go() {\n    const s = new Service()\n    s.ping()\n    const s2 = new Svc()\n    s2.ping()\n}\n";
+    let p1 = parse_source(sub.as_bytes(), Lang::TypeScript).unwrap();
+    let p2 = parse_source(barrel.as_bytes(), Lang::TypeScript).unwrap();
+    let p3 = parse_source(app.as_bytes(), Lang::TypeScript).unwrap();
+    let fx1 = extract_file(0, "pkg/sub.ts", sub.as_bytes(), &p1);
+    let fx2 = extract_file(1, "pkg/index.ts", barrel.as_bytes(), &p2);
+    let fx3 = extract_file(2, "app.ts", app.as_bytes(), &p3);
+    let fresh = engram::extract::resolve(vec![fx1, fx2, fx3], Default::default());
+    assert!(
+        fresh.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "pkg.sub.Service.ping"
+        }),
+        "fresh export * + aliased barrel must resolve Service.ping: {:?}",
+        fresh.edges
+    );
+    assert!(
+        fresh
+            .unresolved_calls
+            .iter()
+            .any(|u| u.name == "pkg.Missing"),
+        "missing import from barrel must stay unresolved: {:?}",
+        fresh.unresolved_calls
+    );
+
+    // Carried parity: carry pkg/sub.ts and pkg/index.ts, re-extract only app.ts.
+    let carried = engram::extract::CarriedIndex {
+        symbols: vec![
+            engram::extract::CarriedSymbol {
+                row_id: 1,
+                kind: engram::extract::SymbolKind::Module,
+                name: "sub".into(),
+                qualname: "pkg.sub".into(),
+                module: "pkg.sub".into(),
+                return_type: String::new(),
+            },
+            engram::extract::CarriedSymbol {
+                row_id: 2,
+                kind: engram::extract::SymbolKind::Class,
+                name: "Service".into(),
+                qualname: "pkg.sub.Service".into(),
+                module: "pkg.sub".into(),
+                return_type: String::new(),
+            },
+            engram::extract::CarriedSymbol {
+                row_id: 3,
+                kind: engram::extract::SymbolKind::Method,
+                name: "ping".into(),
+                qualname: "pkg.sub.Service.ping".into(),
+                module: "pkg.sub".into(),
+                return_type: String::new(),
+            },
+            engram::extract::CarriedSymbol {
+                row_id: 4,
+                kind: engram::extract::SymbolKind::Module,
+                name: "pkg".into(),
+                qualname: "pkg".into(),
+                module: "pkg".into(),
+                return_type: String::new(),
+            },
+        ],
+        inherits: vec![],
+        class_fields: vec![],
+        reexports: vec![("pkg".into(), "Svc".into(), 2)],
+        module_stars: vec![("pkg".into(), "pkg.sub".into())],
+    };
+    let fx3_only = extract_file(0, "app.ts", app.as_bytes(), &p3);
+    let inc = engram::extract::resolve(vec![fx3_only], carried);
+    assert!(
+        inc.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "pkg.sub.Service.ping"
+        }),
+        "carried barrel must resolve Service.ping identically to fresh: {:?}",
+        inc.edges
+    );
+}
+
+#[test]
+fn ts_nullable_union_and_nested_type_identifier() {
+    let src = "namespace ns {\n    export class Base<T> {\n        run(): void {}\n    }\n}\nclass Other {}\nclass Child extends ns.Base<number> {}\nfunction ok(b: ns.Base<number> | null | undefined) {\n    b.run()\n}\nfunction ambig(x: ns.Base<number> | Other) {\n    x.run()\n}\n";
+    let p = parse_source(src.as_bytes(), Lang::TypeScript).unwrap();
+    let fx = extract_file(0, "app.ts", src.as_bytes(), &p);
+    let res = engram::extract::resolve(vec![fx], Default::default());
+    assert!(
+        res.edges.iter().any(|e| {
+            e.kind == EdgeKind::Inherits
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "app.ns.Base"
+        }),
+        "nested_type_identifier + generic extends ns.Base<T> must resolve: {:?}",
+        res.edges
+    );
+    let run_lines: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "app.ns.Base.run"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    assert_eq!(
+        run_lines,
+        vec![9],
+        "nullable union resolves b.run() on line 9, multi-type union on line 12 stays unresolved: {run_lines:?}"
+    );
+}

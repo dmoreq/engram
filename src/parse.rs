@@ -143,15 +143,24 @@ pub fn parse_source(src: &[u8], lang: Lang) -> Result<ParsedFile> {
 
 /// Single tree walk producing error nodes count.
 pub fn syntax_stats(root: Node<'_>) -> SyntaxStats {
+    if !root.has_error() {
+        return SyntaxStats {
+            error_nodes: 0,
+            status: "ok",
+        };
+    }
     let mut error_nodes = 0usize;
     let mut stack = vec![root];
+    let mut cursor = root.walk();
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
             error_nodes += 1;
         }
-        let mut cursor = node.walk();
+        cursor.reset(node);
         for child in node.children(&mut cursor) {
-            stack.push(child);
+            if child.has_error() {
+                stack.push(child);
+            }
         }
     }
     SyntaxStats {

@@ -47,6 +47,14 @@ impl WalkCtx {
         self.func_stack.last().cloned().unwrap_or_default()
     }
 
+    pub(super) fn alias_scope<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.func_stack.is_empty() && self.class_stack.is_empty() && self.mod_stack.is_empty() {
+            ""
+        } else {
+            self.enclosing_scope(fallback)
+        }
+    }
+
     pub(super) fn parent_container(&self) -> Option<&str> {
         self.class_stack
             .last()
@@ -83,6 +91,7 @@ pub(super) struct Walker<'a, 's, 'b> {
     pub(super) fx: &'b mut FileExtraction,
     pub(super) ctx: &'b mut WalkCtx,
     pub(super) work: &'b mut Vec<Step<'a>>,
+    pub(super) cursor: &'b mut tree_sitter::TreeCursor<'a>,
 }
 
 impl<'a, 's> Walker<'a, 's, '_> {
@@ -107,7 +116,7 @@ impl<'a, 's> Walker<'a, 's, '_> {
         if let Some(body) = self.node.child_by_field_name("body") {
             self.ctx.func_stack.push(spec.qualname.to_string());
             self.work.push(Step::PopFunc);
-            push_children_rev(self.work, body);
+            push_children_rev(self.work, self.cursor, body);
         }
     }
 

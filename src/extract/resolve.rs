@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::*;
 
-/// (scope_func, var) -> ordered (site_line, constructor target chain).
-type BindingEvents = HashMap<(String, String), Vec<(usize, Vec<String>)>>;
+/// (scope_func -> (var -> ordered (site_line, constructor target chain))).
+type BindingEvents = HashMap<String, HashMap<String, Vec<(usize, Vec<String>)>>>;
 
 struct FileCtx {
     module: String,
@@ -34,16 +34,16 @@ struct FileCtx {
 /// block per side instead of per-field across `FileCtx` and `merge_fresh`.
 struct ResolvedBindings {
     aliases: HashMap<String, Vec<(String, ImportTarget)>>,
-    /// (scope_func, var) parameters/locals that shadow outer names.
-    locals: HashSet<(String, String)>,
+    /// scope_func -> set of parameter/local names that shadow outer names.
+    locals: HashMap<String, HashSet<String>>,
     /// Anonymous callback parameters, scoped by source line range.
     arrow_params: Vec<ArrowParam>,
     stars: Vec<(String, usize)>,
     from_import_parents: HashSet<(usize, String)>,
-    /// (scope_func, var) -> ordered (site_line, constructor target chain).
+    /// scope_func -> (var -> ordered (site_line, constructor target chain)).
     assignments: BindingEvents,
-    /// (scope_func, var) -> annotation chain.
-    params: HashMap<(String, String), Vec<String>>,
+    /// scope_func -> (var -> annotation chain).
+    params: HashMap<String, HashMap<String, Vec<String>>>,
     /// Raw `self.field` / class-body field bindings, resolved in `resolve_types_and_fields`.
     self_fields: Vec<SelfField>,
     /// Raw function/method/`@property` return type chains, resolved in `resolve_types_and_fields`.
@@ -54,8 +54,8 @@ struct Tables {
     symbols: Vec<NewSymbol>,
     existing_ids: Vec<Option<i64>>,
     edges: Vec<NewEdge>,
-    /// Direct module children only (Python bare-name visibility).
-    by_mod_name: HashMap<(String, String), Vec<usize>>,
+    /// Direct module children only (module -> (name -> sym_idxs)).
+    by_mod_name: HashMap<String, HashMap<String, Vec<usize>>>,
     by_qualname: HashMap<String, Vec<usize>>,
     class_methods: HashMap<String, HashMap<String, Vec<usize>>>,
     /// Every registered method index keyed by bare name, so the Rust
@@ -64,12 +64,14 @@ struct Tables {
     methods_by_name: HashMap<String, Vec<usize>>,
     /// class qualname -> resolved base qualnames
     class_bases: HashMap<String, Vec<String>>,
-    /// (class qualname, field) -> resolved target class qualname
-    class_fields: HashMap<(String, String), String>,
+    /// class qualname -> (field -> resolved target class qualname)
+    class_fields: HashMap<String, HashMap<String, String>>,
     /// function/method qualname -> resolved return class qualname
     return_types: HashMap<String, String>,
-    /// Carried `__init__.py` / module re-exports: `(module_qn, name) -> sym_idxs`
-    carried_reexports: HashMap<(String, String), Vec<usize>>,
+    /// Carried module re-exports: `module_qn -> (exported_name -> sym_idxs)`
+    carried_reexports: HashMap<String, HashMap<String, Vec<usize>>>,
+    /// Carried star re-exports: `module_qn -> [star_module]`
+    carried_stars: HashMap<String, Vec<String>>,
     module_paths: HashSet<String>,
     file_ctx: Vec<FileCtx>,
     /// module -> file_ctx index (first fresh file wins, matching the linear
@@ -84,7 +86,8 @@ impl Tables {
 
     pub(super) fn mod_child(&self, module: &str, name: &str) -> Option<&[usize]> {
         self.by_mod_name
-            .get(&(module.to_string(), name.to_string()))
+            .get(module)
+            .and_then(|m| m.get(name))
             .map(|v| v.as_slice())
     }
 }
@@ -129,6 +132,7 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
         class_fields: HashMap::new(),
         return_types: HashMap::new(),
         carried_reexports: HashMap::new(),
+        carried_stars: HashMap::new(),
         module_paths: HashSet::new(),
         file_ctx: Vec::new(),
         file_by_module: HashMap::new(),
@@ -157,15 +161,54 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
         &mut unresolved_per_file,
         &mut stats,
     );
+    let (module_exports, module_stars) = collect_module_exports(&t);
     Resolution {
         symbols: t.symbols,
         existing_ids: t.existing_ids,
         edges: t.edges,
         class_fields,
+        module_exports,
+        module_stars,
         stats,
         unresolved_per_file,
         unresolved_calls,
     }
+}
+
+fn collect_module_exports(t: &Tables) -> (Vec<ResolvedModuleExport>, Vec<ResolvedModuleStar>) {
+    let mut exports = Vec::new();
+    let mut stars = Vec::new();
+    for fctx in &t.file_ctx {
+        let file_idx = t.symbols[fctx.module_sym_idx].file_idx;
+        for (star_mod, _) in &fctx.bindings.stars {
+            stars.push(ResolvedModuleStar {
+                file_idx,
+                module_qualname: fctx.module.clone(),
+                star_module: star_mod.clone(),
+            });
+        }
+        for (alias, entries) in &fctx.bindings.aliases {
+            for (scope, target) in entries {
+                if !scope.is_empty() && scope != &fctx.module {
+                    continue;
+                }
+                if let ImportTarget::Symbol { module, name } = target {
+                    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+                    if let Some(Outcome::Extracted(dst_idx)) =
+                        follow_binding(t, (module, name), 0, &mut seen, alias)
+                    {
+                        exports.push(ResolvedModuleExport {
+                            file_idx,
+                            module_qualname: fctx.module.clone(),
+                            exported_name: alias.clone(),
+                            target_sym_idx: dst_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    (exports, stars)
 }
 
 /// Merge fresh extractions: register symbols and build each file's
@@ -216,20 +259,30 @@ fn fold_binding_maps(fx: &mut FileBindings) -> ResolvedBindings {
     for (scope, alias, target) in bindings.aliases {
         aliases.entry(alias).or_default().push((scope, target));
     }
-    let locals: HashSet<(String, String)> = bindings.locals.into_iter().collect();
+    let mut locals: HashMap<String, HashSet<String>> = HashMap::new();
+    for (scope, var) in bindings.locals {
+        locals.entry(scope).or_default().insert(var);
+    }
     let mut assignments: BindingEvents = HashMap::new();
     for a in bindings.assignments {
         assignments
-            .entry((a.scope_func, a.var))
+            .entry(a.scope_func)
+            .or_default()
+            .entry(a.var)
             .or_default()
             .push((a.site_line, a.target_dotted));
     }
-    for events in assignments.values_mut() {
-        events.sort_by_key(|(line, _)| *line);
+    for vars in assignments.values_mut() {
+        for events in vars.values_mut() {
+            events.sort_by_key(|(line, _)| *line);
+        }
     }
-    let mut params = HashMap::new();
+    let mut params: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for p in bindings.params {
-        params.insert((p.scope_func, p.var), p.ann_dotted);
+        params
+            .entry(p.scope_func)
+            .or_default()
+            .insert(p.var, p.ann_dotted);
     }
     ResolvedBindings {
         aliases,
@@ -252,6 +305,7 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
         inherits: carried_inherits,
         class_fields: carried_fields,
         reexports: carried_reexports,
+        module_stars: carried_stars,
     } = carried;
     let mut row_to_idx: HashMap<i64, usize> = HashMap::with_capacity(carried_syms.len());
     for c in carried_syms {
@@ -288,15 +342,23 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
         t.class_bases.entry(sub_qn).or_default().push(base_qn);
     }
     for (class_qn, field, target_qn) in carried_fields {
-        t.class_fields.insert((class_qn, field), target_qn);
+        t.class_fields
+            .entry(class_qn)
+            .or_default()
+            .insert(field, target_qn);
     }
     for (mod_qn, exported_name, dst_row_id) in carried_reexports {
         if let Some(&sym_idx) = row_to_idx.get(&dst_row_id) {
             t.carried_reexports
-                .entry((mod_qn, exported_name))
+                .entry(mod_qn)
+                .or_default()
+                .entry(exported_name)
                 .or_default()
                 .push(sym_idx);
         }
+    }
+    for (mod_qn, star_mod) in carried_stars {
+        t.carried_stars.entry(mod_qn).or_default().push(star_mod);
     }
 }
 

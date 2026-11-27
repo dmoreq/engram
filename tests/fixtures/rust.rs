@@ -271,3 +271,56 @@ fn rust_workspace_crate_root_maps_crate_paths() {
         "workspace crate:: import must resolve through crates.auth.src: {e:?}"
     );
 }
+
+#[test]
+fn rust_use_scope_local_shadow_and_const_call() {
+    let util = "pub fn helper() -> usize { 1 }\n";
+    let app = "use crate::util::helper;\nconst C: usize = helper();\nfn shadowed() {\n    let helper = 42;\n    helper();\n}\n";
+    let p1 = parse_source(util.as_bytes(), Lang::Rust).unwrap();
+    let p2 = parse_source(app.as_bytes(), Lang::Rust).unwrap();
+    let fx1 = extract_file(0, "src/util.rs", util.as_bytes(), &p1);
+    let fx2 = extract_file(1, "src/app.rs", app.as_bytes(), &p2);
+    let res = resolve(vec![fx1, fx2], Default::default());
+    let call_lines: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "src.util.helper"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    assert_eq!(
+        call_lines,
+        vec![2],
+        "module-scope const call resolves (line 2), local let shadow does not (line 5): {call_lines:?}"
+    );
+}
+
+#[test]
+fn rust_scoped_use_list_and_std_drop() {
+    let inner = "pub fn work() {}\n";
+    let lib = "mod inner;\nuse std::collections::{HashMap, HashSet};\nuse inner::{work};\npub fn run() { work(); }\n";
+    let p1 = parse_source(inner.as_bytes(), Lang::Rust).unwrap();
+    let p2 = parse_source(lib.as_bytes(), Lang::Rust).unwrap();
+    let fx1 = extract_file(0, "src/inner.rs", inner.as_bytes(), &p1);
+    let fx2 = extract_file(1, "src/lib.rs", lib.as_bytes(), &p2);
+    let res = resolve(vec![fx1, fx2], Default::default());
+    assert!(
+        !res.unresolved_calls
+            .iter()
+            .any(|u| u.name.contains("std") || u.name.contains("HashMap")),
+        "std::collections::{{...}} must drop cleanly without fabricated src.std.* unresolved sites: {:?}",
+        res.unresolved_calls
+    );
+    assert!(
+        res.edges.iter().any(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "src.inner.work"
+        }),
+        "local mod inner::{{work}} must resolve: {:?}",
+        res.edges
+    );
+}

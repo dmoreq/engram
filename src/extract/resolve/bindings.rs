@@ -20,12 +20,7 @@ pub(super) fn follow_binding<'a>(
     if !seen.insert((module, name)) {
         return None;
     }
-    if let Some(out) = bare_candidates(
-        t.by_mod_name
-            .get(&(module.to_string(), name.to_string()))
-            .map(|v| v.as_slice()),
-        display,
-    ) {
+    if let Some(out) = bare_candidates(t.mod_child(module, name), display) {
         return Some(out);
     }
     // Bounded re-export walk: a chain longer than 4 hops stays UNRESOLVED.
@@ -35,19 +30,18 @@ pub(super) fn follow_binding<'a>(
         return None;
     }
     let Some(file_idx) = t.file_by_module.get(module).copied() else {
-        if let Some(cands) = t
-            .carried_reexports
-            .get(&(module.to_string(), name.to_string()))
-        {
+        if let Some(cands) = t.carried_reexports.get(module).and_then(|m| m.get(name)) {
             return bare_candidates(Some(cands.as_slice()), display);
+        }
+        if let Some(stars) = t.carried_stars.get(module) {
+            return star_follow(t, stars, name, depth, seen, display);
         }
         return None;
     };
     let fctx = &t.file_ctx[file_idx];
-    // Look the binding up under the file's own module scope: top-level Rust
-    // `use` items record under it, and a scope-"" lookup would miss every
-    // Rust re-export link. Python file-level imports record under "" and
-    // stay visible from any scope.
+    // Look the binding up under the file's own module scope: inline `mod`
+    // `use` items record under it, and file-level imports record under ""
+    // (always visible).
     if let Some(ImportTarget::Symbol {
         module: m2,
         name: n2,
@@ -55,14 +49,14 @@ pub(super) fn follow_binding<'a>(
     {
         return follow_binding(t, (m2, n2), depth + 1, seen, display);
     }
-    // Star-import re-export fallback (`from .sub import *` inside `__init__.py`).
+    // Star-import re-export fallback (`from .sub import *` / `export * from './sub'`).
     let mut star_hits: Vec<usize> = Vec::new();
     for (star_mod, _) in &fctx.bindings.stars {
         if let Some(out) = follow_binding(t, (star_mod, name), depth + 1, seen, display) {
             match out {
-                Outcome::Extracted(idx) => star_hits.push(idx),
+                Outcome::Extracted(idx) if !star_hits.contains(&idx) => star_hits.push(idx),
+                Outcome::Extracted(_) | Outcome::Dropped | Outcome::Unresolved => {}
                 Outcome::Ambiguous(_) => return Some(out),
-                Outcome::Dropped | Outcome::Unresolved => {}
             }
         }
     }
@@ -73,36 +67,29 @@ pub(super) fn follow_binding<'a>(
     }
 }
 
-/// MRO walk, level by level: one match at the nearest level wins; several at
-/// the same level are AMBIGUOUS; exhausted -> UNRESOLVED. Bounded at 6 levels
-/// (deliberate work cap; deeper hierarchies stay UNRESOLVED and surface in
-/// `eg unresolved`).
-pub(super) fn mro_outcome(t: &Tables, class_qn: &str, method: &str) -> Outcome {
-    let mut level = vec![class_qn.to_string()];
-    let mut seen: HashSet<String> = HashSet::new();
-    for _ in 0..6 {
-        let mut next: Vec<String> = Vec::new();
-        let mut found: Vec<usize> = Vec::new();
-        for qn in &level {
-            if !seen.insert(qn.clone()) {
-                continue;
+fn star_follow<'a>(
+    t: &'a Tables,
+    stars: &'a [String],
+    name: &'a str,
+    depth: usize,
+    seen: &mut HashSet<Binding<'a>>,
+    display: &str,
+) -> Option<Outcome> {
+    let mut hits: Vec<usize> = Vec::new();
+    for star_mod in stars {
+        if let Some(out) = follow_binding(t, (star_mod, name), depth + 1, seen, display) {
+            match out {
+                Outcome::Extracted(idx) if !hits.contains(&idx) => hits.push(idx),
+                Outcome::Extracted(_) | Outcome::Dropped | Outcome::Unresolved => {}
+                Outcome::Ambiguous(_) => return Some(out),
             }
-            if let Some(idxs) = t.class_methods.get(qn).and_then(|m| m.get(method)) {
-                found.extend_from_slice(idxs);
-            } else if let Some(bases) = t.class_bases.get(qn) {
-                next.extend(bases.iter().cloned());
-            }
-        }
-        match found.len() {
-            1 => return Outcome::Extracted(found[0]),
-            0 if next.is_empty() => return Outcome::Unresolved,
-            0 => level = next,
-            // Two or more same-level definitions (e.g. diamond): AMBIGUOUS, as
-            // documented — never silently drop the call site.
-            _ => return Outcome::Ambiguous(format!("{class_qn}.{method}")),
         }
     }
-    Outcome::Unresolved
+    match hits.len() {
+        0 => None,
+        1 => Some(Outcome::Extracted(hits[0])),
+        _ => Some(Outcome::Ambiguous(display.to_string())),
+    }
 }
 
 /// Latest annotation or assignment at or before `site_line` in one scope.
@@ -114,14 +101,19 @@ pub(super) fn latest_binding<'a>(
     site_line: usize,
     include_params: bool,
 ) -> Option<&'a Vec<String>> {
-    let key = (scope.to_string(), var.to_string());
-    if let Some(events) = fctx.bindings.assignments.get(&key) {
-        if let Some((_, target)) = events.iter().rev().find(|(line, _)| *line <= site_line) {
-            return Some(target);
+    if let Some(events) = fctx
+        .bindings
+        .assignments
+        .get(scope)
+        .and_then(|m| m.get(var))
+    {
+        let idx = events.partition_point(|(line, _)| *line <= site_line);
+        if idx > 0 {
+            return Some(&events[idx - 1].1);
         }
     }
     if include_params {
-        if let Some(ann) = fctx.bindings.params.get(&key) {
+        if let Some(ann) = fctx.bindings.params.get(scope).and_then(|m| m.get(var)) {
             return Some(ann);
         }
     }
@@ -136,7 +128,9 @@ pub(super) fn resolve_var_class(
     fi: usize,
     var: &str,
     scope: &str,
+    scope_class: Option<&str>,
     site_line: usize,
+    depth: usize,
 ) -> Option<String> {
     let fctx = &t.file_ctx[fi];
     // Walk the lexical parent scopes out to the module: a receiver typed in
@@ -156,7 +150,7 @@ pub(super) fn resolve_var_class(
             if target.is_empty() {
                 return None;
             }
-            return resolve_target_class(t, fi, target, scope, 0);
+            return resolve_target_class(t, fi, target, scope, scope_class, site_line, depth);
         }
     }
     None
@@ -387,16 +381,17 @@ pub(super) fn module_chain_outcome(
     scope: &str,
 ) -> Outcome {
     let fctx = &t.file_ctx[fi];
+    let lang = fctx.lang;
     let start: Option<String> =
         match nearest_alias_scoped(fctx, scope, &chain[0]).map(|(_, target)| target) {
             Some(ImportTarget::ModuleRoot { path }) => {
-                return chain_from_module(t, path.to_string(), &chain[1..]);
+                return chain_from_module(t, lang, path.to_string(), &chain[1..]);
             }
             Some(ImportTarget::Module { .. }) => None,
             Some(ImportTarget::Symbol { module, name }) => {
                 let qn = format!("{module}.{name}");
                 if t.module_paths.contains(&qn) {
-                    return chain_from_module(t, qn, &chain[1..]);
+                    return chain_from_module(t, lang, qn, &chain[1..]);
                 }
                 // Imported class: ImportedClass.method(...)
                 if class_exists(t, &qn) && chain.len() == 2 {
@@ -405,9 +400,7 @@ pub(super) fn module_chain_outcome(
                 // An imported symbol whose origin module is not indexed
                 // (third-party or stdlib package) is an external call site,
                 // not this repo's unresolved gap.
-                if !t.module_paths.contains(module)
-                    || STDLIB_MODULES.contains(&module.split('.').next().unwrap_or(module))
-                {
+                if !t.module_paths.contains(module) || is_stdlib_module(lang, module) {
                     return Outcome::Dropped;
                 }
                 return Outcome::Unresolved;
@@ -423,10 +416,15 @@ pub(super) fn module_chain_outcome(
     let Some(start_module) = start else {
         return Outcome::Unresolved;
     };
-    chain_from_module(t, start_module, &chain[1..])
+    chain_from_module(t, lang, start_module, &chain[1..])
 }
 
-pub(super) fn chain_from_module(t: &Tables, module: String, rest: &[String]) -> Outcome {
+pub(super) fn chain_from_module(
+    t: &Tables,
+    lang: Lang,
+    module: String,
+    rest: &[String],
+) -> Outcome {
     if rest.is_empty() {
         return Outcome::Unresolved; // calling a bare module
     }
@@ -435,7 +433,7 @@ pub(super) fn chain_from_module(t: &Tables, module: String, rest: &[String]) -> 
             return Outcome::Unresolved;
         }
         if r.len() == 1 {
-            if let Some(cands) = t.by_mod_name.get(&(m.clone(), r[0].clone())) {
+            if let Some(cands) = t.mod_child(&m, &r[0]) {
                 return match cands.len() {
                     1 => Outcome::Extracted(cands[0]),
                     0 => Outcome::Unresolved,
@@ -477,17 +475,17 @@ pub(super) fn chain_from_module(t: &Tables, module: String, rest: &[String]) -> 
                     return mro_outcome(t, &cur_class, r.last().unwrap());
                 }
                 if t.symbols[idx].kind == SymbolKind::Module {
-                    return chain_from_module(t, t.symbols[idx].qualname.clone(), &r[1..]);
+                    return chain_from_module(t, lang, t.symbols[idx].qualname.clone(), &r[1..]);
                 }
             }
         }
-        if STDLIB_MODULES.contains(&m.split('.').next().unwrap_or(&m)) {
+        if is_stdlib_module(lang, &m) {
             return Outcome::Dropped;
         }
         return Outcome::Unresolved;
     }
     // Start module itself is external (import os; os.path.join(...)).
-    if STDLIB_MODULES.contains(&module.split('.').next().unwrap_or(&module)) {
+    if is_stdlib_module(lang, &module) {
         return Outcome::Dropped;
     }
     Outcome::Unresolved
