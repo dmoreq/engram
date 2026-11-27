@@ -29,13 +29,21 @@ pub(crate) fn env_tag(keys: &[&str]) -> String {
 /// the tag is a pid+clock token.
 static MCP_SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Session attribution for memory rows and journal lines: the MCP session id
-/// wins over `$ENGRAM_SESSION` when the server pinned one.
+/// Session attribution for memory rows and journal lines: an explicit
+/// `$ENGRAM_SESSION` override wins over the process-lifetime MCP session id.
 pub fn session_tag() -> String {
-    if let Some(tag) = MCP_SESSION.get() {
-        return tag.clone();
+    resolve_session_tag(
+        env_tag(&["ENGRAM_SESSION"]),
+        MCP_SESSION.get().map(String::as_str),
+    )
+}
+
+fn resolve_session_tag(explicit: String, mcp: Option<&str>) -> String {
+    if !explicit.is_empty() {
+        explicit
+    } else {
+        mcp.unwrap_or_default().to_string()
     }
-    env_tag(&["ENGRAM_SESSION"])
 }
 
 /// Pin the MCP session id for this process.
@@ -296,5 +304,18 @@ mod tests {
     #[test]
     fn no_markers_falls_back_to_user() {
         assert_eq!(identify(None, lookup_from(&[])), "user");
+    }
+
+    #[test]
+    fn engram_session_beats_mcp_session() {
+        assert_eq!(
+            resolve_session_tag("explicit-sess".to_string(), Some("mcp-123")),
+            "explicit-sess"
+        );
+        assert_eq!(
+            resolve_session_tag(String::new(), Some("mcp-123")),
+            "mcp-123"
+        );
+        assert_eq!(resolve_session_tag(String::new(), None), "");
     }
 }

@@ -399,7 +399,16 @@ fn parse_line(line: &str, now: i64, local_root: Option<&Path>) -> LineOutcome {
     if repo_raw.is_empty() || !crate::journal::liveness::repo_is_live(Some(repo_raw)) {
         return LineOutcome::DeadRepo;
     }
-    let repo = PathBuf::from(repo_raw);
+    if local_root.is_none() && crate::journal::liveness::repo_is_ephemeral(repo_raw) {
+        return LineOutcome::DeadRepo;
+    }
+    let worktree = v.get("worktree").and_then(|x| x.as_bool()).unwrap_or(false);
+    let mut repo = PathBuf::from(repo_raw);
+    if local_root.is_none() && worktree {
+        if let Some(main) = crate::repo::cached_worktree_main_root(&repo) {
+            repo = main;
+        }
+    }
     if let Some(root) = local_root {
         if !same_root(&repo, root) {
             return LineOutcome::OutsideScope;
@@ -460,3 +469,30 @@ pub fn is_navigation(tool: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stream3_tests {
+    use super::*;
+    use crate::db::test_support as ts;
+    #[test]
+    fn global_folds_worktree_and_drops_ephemeral() {
+        let m = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/eg-wt-test");
+        ts::remove_tree(&m);
+        ts::make_dir_all(m.join(".git/worktrees/w")).unwrap();
+        let (wt, s) = (ts::temp_root("awt"), ts::temp_root("asc"));
+        let gd = format!("gitdir: {}/.git/worktrees/w\n", m.display());
+        ts::write_file(wt.join(".git"), gd.as_bytes()).unwrap();
+        let l = |p: &Path, w| {
+            format!(
+                r#"{{"ts":10,"tool":"callers","exit_code":0,"repo":"{}","worktree":{w}}}"#,
+                p.display()
+            )
+        };
+        let p = |d: &Path, w, r| parse_line(&l(d, w), 20, r);
+        let e = std::fs::canonicalize(&m).unwrap();
+        assert!(matches!(p(&wt, true, None), LineOutcome::Valid(x) if x.repo == e));
+        assert!(matches!(p(&s, false, None), LineOutcome::DeadRepo));
+        assert!(matches!(p(&s, false, Some(&s)), LineOutcome::Valid(_)));
+        [&m, &wt, &s].into_iter().for_each(ts::remove_tree);
+    }
+}

@@ -142,7 +142,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "callers",
-        description: "Who calls this symbol — direct by default; transitive with depth; pointer list path:line",
+        description: "Who calls this symbol (symbol name, qualname, or path:line pointer — not a file path or search terms); direct by default, use depth for transitive callers",
         params: &[NAME_PARAM, DEPTH_PARAM, LIMIT_PARAM],
         core: true,
     },
@@ -164,7 +164,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "context",
-        description: "One-call symbol context: definition + signature, direct callers, direct callees over resolved edges plus tagged ambiguous candidates",
+        description: "One-call symbol context (symbol name, qualname, or path:line pointer — not a file path): definition + signature, direct callers, and direct callees; use limit to bound per-section rows",
         params: &[
             NAME_PARAM,
             p_int!("limit", 1, Some(50), false, "Callers/callees shown per section (default 10)"),
@@ -184,14 +184,14 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
             FILE_PARAM,
             p_bool!("sites", "List every call site instead of one row per file"),
             DEPTH_PARAM,
-            p_str!("edges", false, "Edge kinds: calls,imports,inherits,all (default calls)"),
+            p_str!("edges", false, "Edge kinds: calls,imports,inherits,all (default calls,imports,inherits)"),
             LIMIT_PARAM,
         ],
         core: true,
     },
     ToolSpec {
         name: "symbols",
-        description: "Symbols of one indexed file or directory, ordered by line; outline adds signatures",
+        description: "Symbols of one indexed file or directory path (not a symbol name), ordered by line; pass outline=true for signatures",
         params: &[
             p_str!("file", true, "Repo-relative path of the indexed file or directory"),
             p_bool!("outline", "Append the one-line signature column"),
@@ -201,10 +201,10 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "reuse",
-        description: "Anti-reinvention candidates: detect duplicate helpers and suggest canonical reuse",
+        description: "Anti-reinvention scan: detect duplicate helpers and suggest canonical reuse; pass paths for focused scans on edited files, limit=0 for count-only, or judge=true to arbitrate gray-band pairs",
         params: &[
             p_str_arr!("paths", "File paths or symbols to inspect (default: entire index)"),
-            p_int!("limit", 1, Some(100), false, "Maximum candidates shown (default 10)"),
+            p_int!("limit", 0, Some(100), false, "Maximum candidates shown; 0 = count-only summary (default 10)"),
             p_bool!("deep_callee", "Extend the callee footprint to second-hop callees (weight 0.5)"),
             p_str!("min_confidence", false, "Minimum confidence: low, provisional, medium, or high (default low)"),
             p_str!("propose", false, "Propose a signature before writing it; paths are not allowed"),
@@ -254,7 +254,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "mem_query",
-        description: "Rank current project-memory notes for the terms (bm25 + ref-token overlap + recency, deterministic); all=true lists by recency instead",
+        description: "Rank current project-memory notes for terms (space-separated keywords, mutually exclusive with all=true); use ref/kind/scope/since/until to filter, explain=true for match reasons",
         params: &[
             p_str!("terms", false, "Space-separated terms (mutually exclusive with all)"),
             p_bool!("all", "List current notes by recency instead of ranking"),
@@ -314,6 +314,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
             p_bool!("global", "Export from global memory store"),
             p_str!("since", false, "Lower bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
             p_str!("until", false, "Exclusive upper bound on created_at: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @unix-seconds"),
+            p_bool!("scan", "Run an advisory scan for suspected secrets in exported notes"),
         ],
         core: false,
     },

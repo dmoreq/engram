@@ -212,10 +212,43 @@ pub(super) fn finalize(
         report.freshness.state == Freshness::Stale,
         0,
     );
+    if opts.paths.is_empty() && omitted > 0 {
+        report.stderr.push_str(
+            "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts\n",
+        );
+    }
+    if !opts.judge && (low > 0 || provisional > 0) && judge_is_available() {
+        report
+            .stderr
+            .push_str("eg: tip: rerun with --judge to arbitrate gray-band candidates locally\n");
+    }
     let mut query = crate::query::LineQuery::new(out, report.stderr, report.counts.shown);
     query.mode = report.mode;
     query.truncated = report.counts.truncated;
     Ok(query)
+}
+
+fn judge_is_available() -> bool {
+    let has_bin = std::env::var("EG_JUDGE_BIN")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+        || std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join("eg-judge").is_file())
+        });
+    if !has_bin {
+        return false;
+    }
+    let model = match std::env::var("EG_JUDGE_MODEL") {
+        Ok(value) if !value.is_empty() => std::path::PathBuf::from(value),
+        _ => match std::env::var("HOME") {
+            Ok(home) => std::path::PathBuf::from(home)
+                .join(".engram")
+                .join("judge")
+                .join("model"),
+            Err(_) => return false,
+        },
+    };
+    model.join("lazy.json").exists()
 }
 
 #[cfg(test)]
@@ -272,6 +305,35 @@ mod tests {
         assert!(
             joined.contains("3 duplication candidate(s) found"),
             "{joined}"
+        );
+    }
+
+    #[test]
+    fn finalize_emits_scope_tip_when_repo_wide_scan_omits_candidates() {
+        let conn = Connection::open_in_memory().unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let opts = ReuseOpts::new(Vec::new(), 1, false, ReuseConfidence::Low, false).unwrap();
+        let report = ReuseReport {
+            mode: ReuseMode::Scan,
+            pool: vec![
+                tie_candidate("src/alpha.py", 1),
+                tie_candidate("src/beta.py", 2),
+            ],
+            counts: ReuseCounts::default(),
+            freshness: freshness::FreshnessReport::default(),
+            path_matches: 0,
+            stderr: String::new(),
+        };
+        let query = finalize(&ctx, report, &opts).unwrap();
+        assert!(
+            query.stderr.contains(
+                "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts"
+            ),
+            "{}",
+            query.stderr
         );
     }
 }

@@ -358,6 +358,7 @@ fn render_global_summary(
     let mut out = vec![format!(
         "eg global usage: {total} journaled calls across {repo_count} repositories"
     )];
+    out.push(resolution_line(aggs));
     out.extend(kpi_section(aggs, " across all repos"));
 
     if repo_count > 0 {
@@ -430,3 +431,36 @@ fn format_age_secs(diff: i64) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stream3_tests {
+    use super::*;
+
+    #[test]
+    fn render_global_summary_includes_resolution_line_and_query_misses() {
+        let mut aggs: std::collections::BTreeMap<String, ToolAgg> = Default::default();
+        aggs.insert(
+            "callers".to_string(),
+            ToolAgg {
+                calls: 5,
+                ok_calls: 3,
+                exit1: 1,
+                exit2: 1,
+                ..Default::default()
+            },
+        );
+        let repo_aggs: std::collections::BTreeMap<String, RepoAgg> = Default::default();
+        let out = render_global_summary(&aggs, &repo_aggs, &[], false).join("\n");
+        assert!(
+            out.contains("eg usage: engine health 100.0% clean (0 crashes/corrupt) · query resolution 60.0% (3 returned data, 1 empty/miss, 1 ambiguous)"),
+            "{out}"
+        );
+        assert!(out.contains("2 query misses"), "{out}");
+
+        // When total_misses == 0, ", N query misses" is omitted.
+        aggs.get_mut("callers").unwrap().exit1 = 0;
+        aggs.get_mut("callers").unwrap().exit2 = 0;
+        let clean = render_global_summary(&aggs, &repo_aggs, &[], false).join("\n");
+        assert!(!clean.contains("query misses"), "{clean}");
+    }
+}

@@ -160,9 +160,13 @@ fn symbols_directory(
     };
     let total = count("symbols s JOIN files f ON f.id = s.file_id")?;
     if total == 0 {
-        return Err(EgError::NoResults(format!(
-            "0 symbols in '{dir}' (indexed)"
-        )));
+        let mut msg = format!("0 symbols in '{dir}' (indexed)");
+        if !dir.is_empty() && !dir.contains('/') && !dir.contains('.') {
+            msg.push_str(
+                " (hint: 'eg symbols' takes a file or directory path; for a symbol use 'eg context <name>' or 'eg search \"<terms>\"')",
+            );
+        }
+        return Err(EgError::NoResults(msg));
     }
     let n_files = count("files f")?;
     let rows = dir_symbol_rows(conn, &prefix, outline, limit)?;
@@ -205,4 +209,36 @@ fn dir_symbol_rows(
         })?
         .collect::<std::result::Result<_, _>>()?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbols_directory_zero_emits_hint_for_bare_identifier() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, file_id INTEGER, kind TEXT, qualname TEXT, line_start INTEGER, signature TEXT);",
+        )
+        .unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let err = symbols(&ctx, "my_func", 50, SymbolsOpts { outline: false })
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.contains("'eg symbols' takes a file or directory path; for a symbol use 'eg context <name>' or 'eg search \"<terms>\"'"),
+            "{err}"
+        );
+        let dir_err = symbols(&ctx, "src/missing", 50, SymbolsOpts { outline: false })
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(!dir_err.contains("eg context"), "{dir_err}");
+    }
 }
