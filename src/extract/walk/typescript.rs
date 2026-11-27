@@ -48,7 +48,8 @@ pub(super) fn collect_heritage(
 /// The clause arms: push every named child back onto the heritage stack.
 fn push_clause_children<'a>(n: Node<'a>, stack: &mut Vec<Node<'a>>) {
     let mut c = n.walk();
-    for child in n.named_children(&mut c) {
+    let children: Vec<_> = n.named_children(&mut c).collect();
+    for child in children.into_iter().rev() {
         stack.push(child);
     }
 }
@@ -103,22 +104,27 @@ fn mixin_bases(
 pub(super) fn define_method_ts<'a>(w: &mut Walker<'a, '_, '_>) {
     // method_definition: name field is a property_identifier inside a class body.
     let Some(name_node) = w.node.child_by_field_name("name") else {
-        push_children_rev(w.work, w.node);
+        push_children_rev(w.work, w.cursor, w.node);
         return;
     };
     // Object-literal method shorthand `{ foo() { bar(); } }` is not a class
     // member: descend into the body so its call sites are traversed instead
     // of silently dropping them.
     if w.node.parent().map(|p| p.kind()) != Some("class_body") {
-        push_children_rev(w.work, w.node);
+        push_children_rev(w.work, w.cursor, w.node);
         return;
     }
     let Some(class_qn) = w.ctx.class_stack.last().cloned() else {
-        push_children_rev(w.work, w.node);
+        push_children_rev(w.work, w.cursor, w.node);
         return;
     };
     let name = text(name_node, w.src);
     let qualname = format!("{class_qn}.{name}");
+    if let Some(rt) = w.node.child_by_field_name("return_type") {
+        if let Some(chain) = type_dotted_chain(rt, w.src) {
+            w.fx.bindings.return_types.push((qualname.clone(), chain));
+        }
+    }
     let spec = w.callable_spec(SymbolKind::Method, &name, &qualname);
     define_callable(w, &spec);
 }
@@ -162,6 +168,11 @@ pub(super) fn record_ts_arrow_function<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     }
     let name = text(name_node, w.src);
     let qualname = format!("{}.{}", w.fx.module, name);
+    if let Some(rt) = value.child_by_field_name("return_type") {
+        if let Some(chain) = type_dotted_chain(rt, w.src) {
+            w.fx.bindings.return_types.push((qualname.clone(), chain));
+        }
+    }
     w.fx.push_symbol(NewSymbol::from_node(
         w,
         SymbolKind::Function,
@@ -174,12 +185,12 @@ pub(super) fn record_ts_arrow_function<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     w.ctx.func_stack.push(qualname.clone());
     collect_arrow_params(w, value, &qualname, None);
     w.work.push(Step::PopFunc);
-    push_children_rev(w.work, value);
+    push_children_rev(w.work, w.cursor, value);
     true
 }
 
-/// TS `const value = new C()` receiver binding. A plain call
-/// (`const value = factory()`) has no knowable constructed type and is ignored.
+/// TS `const value = new C()` receiver binding. Unknown initializers emit an
+/// empty shadow assignment so local bindings shadow outer/imported names.
 pub(super) fn record_ts_variable_binding(
     node: Node<'_>,
     src: &[u8],
@@ -192,22 +203,33 @@ pub(super) fn record_ts_variable_binding(
     else {
         return;
     };
-    if let Some(ty) = node.child_by_field_name("type") {
-        push_param_type(fx, name.clone(), dotted_chain(ty, src), &ctx.scope_func());
-    }
+    let line = node.start_position().row + 1;
+    let has_type = if let Some(ty) = node.child_by_field_name("type") {
+        let chain = dotted_chain(ty, src);
+        let ok = chain.is_some();
+        push_param_type(fx, name.clone(), chain, &ctx.scope_func());
+        ok
+    } else {
+        false
+    };
     let Some(value) = node.child_by_field_name("value") else {
+        if !has_type {
+            push_assignment(fx, name, Vec::new(), ctx, line);
+        }
         return;
     };
-    if value.kind() != "new_expression" {
-        return;
+    if value.kind() == "new_expression" {
+        if let Some(chain) = value
+            .child_by_field_name("constructor")
+            .and_then(|c| dotted_chain(c, src))
+        {
+            push_assignment(fx, name, chain, ctx, line);
+            return;
+        }
     }
-    let Some(chain) = value
-        .child_by_field_name("constructor")
-        .and_then(|c| dotted_chain(c, src))
-    else {
-        return;
-    };
-    push_assignment(fx, name, chain, ctx, node.start_position().row + 1);
+    if !has_type {
+        push_assignment(fx, name, Vec::new(), ctx, line);
+    }
 }
 
 /// TS/TSX/JSX static ESM imports. Relative sources resolve by module path;
@@ -215,7 +237,10 @@ pub(super) fn record_ts_variable_binding(
 /// builtin counter, not the unresolved counter).
 pub(super) fn visit_ts_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     match w.node.kind() {
-        "class_declaration" | "abstract_class_declaration" => {
+        "class_declaration"
+        | "abstract_class_declaration"
+        | "type_alias_declaration"
+        | "enum_declaration" => {
             define_class_symbol(w, SymbolKind::Class);
         }
         "function_declaration" | "generator_function_declaration" => {
@@ -226,7 +251,7 @@ pub(super) fn visit_ts_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
         "variable_declarator" => {
             if !record_ts_arrow_function(w) {
                 record_ts_variable_binding(w.node, w.src, w.fx, w.ctx);
-                push_children_rev(w.work, w.node);
+                push_children_rev(w.work, w.cursor, w.node);
             }
         }
         "arrow_function" | "function_expression" => {
@@ -235,21 +260,21 @@ pub(super) fn visit_ts_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
             let node = w.node;
             let scope = w.ctx.scope_func();
             collect_arrow_params(w, node, &scope, Some((start, end)));
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "new_expression" => {
             record_call(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "import_statement" => record_import_ts(w.node, w.src, w.fx),
         "export_statement" => {
             record_export_ts(w.node, w.src, w.fx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "internal_module" | "module" => visit_internal_module(w),
         "assignment_expression" => {
             record_reassignment(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         _ => return false,
     }
@@ -262,22 +287,17 @@ fn visit_internal_module<'a>(w: &mut Walker<'a, '_, '_>) {
         .child_by_field_name("name")
         .map(|n| text(n, w.src))
         .unwrap_or_default();
-    let parent = w
-        .ctx
-        .class_stack
-        .last()
-        .map(|s| s.as_str())
-        .unwrap_or(&w.fx.module);
+    let parent = w.ctx.enclosing_scope(&w.fx.module);
     let qualname = format!("{parent}.{name}");
     let item_is_test = is_test_item(w.fx, w.ctx, &name);
     push_scope_symbol(w.fx, w.node, name, &qualname, item_is_test);
-    w.ctx.class_stack.push(qualname);
+    w.ctx.mod_stack.push(qualname);
     let mut cursor = w.node.walk();
     let children: Vec<_> = w.node.children(&mut cursor).collect();
-    w.work.push(Step::PopClass);
+    w.work.push(Step::PopMod);
     for child in children.into_iter().rev() {
         if child.child_by_field_name("body").is_some() || child.kind() == "statement_block" {
-            push_children_rev(w.work, child);
+            push_children_rev(w.work, w.cursor, child);
         }
     }
 }

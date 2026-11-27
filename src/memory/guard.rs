@@ -92,16 +92,23 @@ pub fn find_consolidation_match(
 ) -> Option<ConsolidationMatch> {
     let ok_v2 = crate::db::memory_fts_v2_usable(conn).ok().unwrap_or(false);
     let legacy = !ok_v2;
-    let mut terms = if legacy {
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let raw_body = if legacy {
         crate::memory::mem_tokens_legacy(&note.body)
     } else {
         crate::memory::mem_tokens(&note.body)
     };
-    terms.extend(if legacy {
+    let raw_tags = if legacy {
         crate::memory::mem_tokens_legacy(&note.tags)
     } else {
         crate::memory::mem_tokens(&note.tags)
-    });
+    };
+    for token in raw_body.into_iter().chain(raw_tags) {
+        if !CONSOLIDATION_STOPWORDS.contains(&token.as_str()) && seen.insert(token.clone()) {
+            terms.push(token);
+        }
+    }
     if terms.is_empty() {
         return None;
     }
@@ -158,7 +165,11 @@ pub struct GuardedNote {
 
 fn ends_with_delim(haystack: &str, needle: &str) -> bool {
     haystack.strip_suffix(needle).is_some_and(|prefix| {
-        prefix.ends_with('/') || prefix.ends_with("::") || prefix.ends_with('.')
+        if haystack.contains('/') {
+            prefix.ends_with('/')
+        } else {
+            prefix.ends_with("::") || prefix.ends_with('.')
+        }
     })
 }
 
@@ -174,10 +185,6 @@ pub fn ref_matches_target(refs: &str, target: &str) -> bool {
         r_norm == target_norm
             || ends_with_delim(r_norm, target_norm)
             || ends_with_delim(target_norm, r_norm)
-            || target_norm.split("::").any(|seg| seg == r_norm)
-            || target_norm.split('.').any(|seg| seg == r_norm)
-            || r_norm.split("::").any(|seg| seg == target_norm)
-            || r_norm.split('.').any(|seg| seg == target_norm)
     })
 }
 
@@ -210,8 +217,7 @@ pub fn find_guarding_notes_filtered(
         return Vec::new();
     }
     let q = GuardQuery(crate::db::unix_now(), paths, symbols, kinds, limit);
-    let mut results = Vec::new();
-    let mut seen_keys = HashSet::new();
+    let (mut results, mut seen_keys) = (Vec::new(), HashSet::new());
     if let Ok(local_conn) = crate::db::open_memory_query(root) {
         collect_guards(&local_conn, &q, &mut seen_keys, &mut results);
     }
@@ -236,19 +242,17 @@ fn collect_guards(
         return;
     }
     let placeholders = crate::db::sql_placeholders(kinds.len());
-    let make_sql = |order_by: &str| {
+    let make_sql = |cols: &str| {
         format!(
-            "SELECT key, kind, body, refs FROM memories
+            "SELECT {cols} FROM memories
              WHERE superseded_by IS NULL AND kind IN ({placeholders})
                AND (expires_at = 0 OR expires_at > ?) AND refs != ''
-             ORDER BY {order_by}"
+             ORDER BY created_at DESC"
         )
     };
     let Ok(mut stmt) = conn
-        .prepare(&make_sql(
-            "MAX(anchored_at, created_at) DESC, created_at DESC, key ASC",
-        ))
-        .or_else(|_| conn.prepare(&make_sql("created_at DESC, key ASC")))
+        .prepare(&make_sql("id, key, kind, refs, anchored_at, created_at"))
+        .or_else(|_| conn.prepare(&make_sql("id, key, kind, refs, 0, created_at")))
     else {
         return;
     };
@@ -259,18 +263,18 @@ fn collect_guards(
         .collect();
     let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, String>(0)?,
+            r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
         ))
     }) else {
         return;
     };
-    for (key, kind, body, refs) in rows.flatten() {
-        if out.len() >= limit {
-            break;
-        }
+    let mut matched = Vec::new();
+    for (id, key, kind, refs, anchored_at, created_at) in rows.flatten() {
         if seen_keys.contains(&key) {
             continue;
         }
@@ -280,13 +284,41 @@ fn collect_guards(
             .find(|t| ref_matches_target(&refs, t))
         {
             seen_keys.insert(key.clone());
-            out.push(GuardedNote {
+            matched.push((
+                (anchored_at.max(created_at), created_at, id),
                 key,
                 kind,
-                summary: compact_summary(&body),
-                target: target.to_string(),
-            });
+                target.to_string(),
+            ));
         }
+    }
+    if matched.is_empty() {
+        return;
+    }
+    matched.sort_by_key(|a| std::cmp::Reverse(a.0));
+    matched.truncate(limit - out.len());
+    let id_placeholders = crate::db::sql_placeholders(matched.len());
+    let id_sql = format!("SELECT id, body FROM memories WHERE id IN ({id_placeholders})");
+    let mut bodies = std::collections::HashMap::new();
+    if let Ok(mut b_stmt) = conn.prepare(&id_sql) {
+        let ids: Vec<rusqlite::types::Value> = matched
+            .iter()
+            .map(|((_, _, id), _, _, _)| (*id).into())
+            .collect();
+        if let Ok(b_rows) = b_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }) {
+            bodies.extend(b_rows.flatten());
+        }
+    }
+    for ((_, _, id), key, kind, target) in matched {
+        let body = bodies.get(&id).map(String::as_str).unwrap_or("");
+        out.push(GuardedNote {
+            key,
+            kind,
+            summary: compact_summary(body),
+            target,
+        });
     }
 }
 
@@ -335,19 +367,12 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         for i in 0..256_i64 {
             let key = format!("note-{i}");
-            let body = format!(
-                "resolver keeps confidence tiers over resolved edges with invariant {i} and stable behavior"
-            );
-            let id: i64 = tx
-                .query_row(
-                    "INSERT INTO memories
-                     (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
-                     VALUES (?1, 1, 'fact', 'durable', '', ?2, 'resolver', 'src/query.rs', 0, 'cli', 1, 0)
-                     RETURNING id",
-                    rusqlite::params![key, body],
-                    |r| r.get(0),
-                )
-                .unwrap();
+            let body = format!("resolver keeps confidence tiers over resolved edges with invariant {i} and stable behavior");
+            let id: i64 = tx.query_row(
+                "INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
+                 VALUES (?1, 1, 'fact', 'durable', '', ?2, 'resolver', 'src/query.rs', 0, 'cli', 1, 0) RETURNING id",
+                rusqlite::params![key, body], |r| r.get(0),
+            ).unwrap();
             tx.execute(
                 "INSERT INTO memories_fts(rowid, text) VALUES (?1, ?2)",
                 rusqlite::params![id, crate::memory::mem_fts_text(&key, "resolver", &body)],
@@ -363,27 +388,26 @@ mod tests {
         let start = Instant::now();
         let found = find_consolidation_match(&conn, &candidate).is_some();
         let elapsed = start.elapsed();
-        println!("consolidation scan on 256 notes: {elapsed:?} (match={found})");
         assert!(
             elapsed < Duration::from_millis(2),
-            "C3 latency gate: {elapsed:?} >= 2ms"
+            "C3 latency gate: {elapsed:?} >= 2ms (match={found})"
         );
     }
 
     #[test]
     fn identical_notes_score_one_hundred() {
-        let note = note(
+        let n = note(
             "resolver keeps confidence tiers over edges",
             "src/query.rs",
             "resolver",
         );
-        let row = row(
+        let r = row(
             "old",
             "resolver keeps confidence tiers over edges",
             "src/query.rs",
             "resolver",
         );
-        assert_eq!(consolidation_similarity(&note, &row, false), 100);
+        assert_eq!(consolidation_similarity(&n, &r, false), 100);
     }
 
     #[test]
@@ -402,7 +426,6 @@ mod tests {
         assert!(
             consolidation_similarity(&candidate, &paraphrase, false) >= CONSOLIDATION_THRESHOLD_PCT
         );
-
         let unrelated = row(
             "other",
             "dashboard renders latency sparklines with ANSI colors",
@@ -429,7 +452,6 @@ mod tests {
             if consolidation_similarity(&candidate, &stored, false) >= CONSOLIDATION_THRESHOLD_PCT {
                 detected += 1;
             }
-
             let unrelated_body = [
                 "omega", "sigma", "tau", "upsilon", "phi", "chi", "psi", "rho", "nu", "mu",
             ]
@@ -449,47 +471,25 @@ mod tests {
     }
 
     #[test]
-    fn ref_matches_target_boundary_checks() {
-        assert!(ref_matches_target("src/query/impact.rs", "impact.rs"));
-        assert!(ref_matches_target("./a/b.rs", "a/b.rs"));
-        assert!(ref_matches_target("crate::memory::guard", "guard"));
-        assert!(ref_matches_target("Context.render", "render"));
-        assert!(!ref_matches_target("src/query/my_impact.rs", "impact.rs"));
-        assert!(!ref_matches_target("src/query/impact.rs", ""));
-    }
-
-    fn run_collect(conn: &rusqlite::Connection, kinds: &[&str], limit: usize) -> Vec<String> {
-        let (mut seen, mut out) = (HashSet::new(), Vec::new());
-        collect_guards(
-            conn,
-            &GuardQuery(1000, &["src/a.rs"], &[], kinds, limit),
-            &mut seen,
-            &mut out,
-        );
-        out.into_iter().map(|g| g.key).collect()
-    }
-
-    #[test]
     fn collect_guards_orders_filters_and_falls_back_on_v1() {
+        let run = |c: &rusqlite::Connection, k: &[&str], l: usize| -> Vec<String> {
+            let (mut s, mut o) = (HashSet::new(), Vec::new());
+            collect_guards(
+                c,
+                &GuardQuery(1000, &["src/a.rs"], &[], k, l),
+                &mut s,
+                &mut o,
+            );
+            o.into_iter().map(|g| g.key).collect()
+        };
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../schema/memory.sql"))
             .unwrap();
-        conn.execute_batch(
-            "INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, anchored_at, expires_at) VALUES
-             ('d1', 1, 'decision', 'durable', '', 'first', '', 'src/a.rs', 1, 'cli', 100, 0, 0),
-             ('g1', 1, 'gotcha',   'durable', '', 'anchored', '', 'src/a.rs', 2, 'cli', 50, 300, 0),
-             ('d2', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 3, 'cli', 200, 0, 0);",
-        ).unwrap();
-        assert_eq!(run_collect(&conn, &["decision", "gotcha"], 2), ["g1", "d2"]);
-        assert_eq!(run_collect(&conn, &["decision"], 1), vec!["d2"]);
-
+        conn.execute_batch("INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, anchored_at, expires_at) VALUES ('d1', 1, 'decision', 'durable', '', 'first', '', 'src/a.rs', 1, 'cli', 100, 0, 0), ('g1', 1, 'gotcha', 'durable', '', 'anchored', '', 'src/a.rs', 2, 'cli', 50, 300, 0), ('d2', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 3, 'cli', 200, 0, 0);").unwrap();
+        assert_eq!(run(&conn, &["decision", "gotcha"], 2), ["g1", "d2"]);
+        assert_eq!(run(&conn, &["decision"], 1), ["d2"]);
         let v1 = rusqlite::Connection::open_in_memory().unwrap();
-        v1.execute_batch(
-            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, rev INTEGER, kind TEXT, scope TEXT, session TEXT, body TEXT, tags TEXT, refs TEXT, content_hash INTEGER, source TEXT, created_at INTEGER, expires_at INTEGER, superseded_by TEXT, superseded_at INTEGER);
-             INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES
-             ('k-old', 1, 'decision', 'durable', '', 'older', '', 'src/a.rs', 1, 'cli', 10, 0),
-             ('k-new', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 2, 'cli', 20, 0);",
-        ).unwrap();
-        assert_eq!(run_collect(&v1, &["decision"], 2), vec!["k-new", "k-old"]);
+        v1.execute_batch("CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, rev INTEGER, kind TEXT, scope TEXT, session TEXT, body TEXT, tags TEXT, refs TEXT, content_hash INTEGER, source TEXT, created_at INTEGER, expires_at INTEGER, superseded_by TEXT, superseded_at INTEGER); INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES ('k-old', 1, 'decision', 'durable', '', 'older', '', 'src/a.rs', 1, 'cli', 10, 0), ('k-new', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 2, 'cli', 20, 0);").unwrap();
+        assert_eq!(run(&v1, &["decision"], 2), ["k-new", "k-old"]);
     }
 }

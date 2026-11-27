@@ -3,32 +3,51 @@
 
 use super::*;
 
-/// Cardinality of the exact ∪ FTS result set by symbol identity. The capped
-/// page overlap cannot stand in for the full overlap.
-fn search_union_total(conn: &Connection, exact_name: &str, fts_expr: &str) -> Result<usize> {
-    let n: i64 = conn.query_row(
-        &format!(
-            "SELECT COUNT(*) FROM (
-             SELECT s.id FROM symbols s WHERE {EXACT_IDENTITY_PREDICATE}
-             UNION
-             SELECT s.id FROM symbols_fts ft JOIN symbols s ON s.id = ft.rowid
-              WHERE symbols_fts MATCH ?2
-         )"
-        ),
-        rusqlite::params![exact_name, fts_expr],
-        |r| r.get(0),
-    )?;
-    Ok(n as usize)
+/// Cardinality of the exact ∪ FTS result set by symbol identity, computed
+/// as `fts_total + exact_total - exact_in_fts` by probing only exact symbol
+/// IDs against `symbols_fts`.
+fn search_union_total(
+    conn: &Connection,
+    exact_name: &str,
+    fts_expr: &str,
+    fts_total: usize,
+    exact_total: usize,
+) -> Result<usize> {
+    if fts_total == 0 {
+        return Ok(exact_total);
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT s.id FROM symbols s WHERE {EXACT_IDENTITY_PREDICATE}"
+    ))?;
+    let exact_ids: Vec<i64> = stmt
+        .query_map([exact_name], |r| r.get::<_, i64>(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    let mut exact_in_fts = 0usize;
+    crate::db::for_each_chunk(conn, &exact_ids, |conn, placeholders, chunk| {
+        let sql = format!(
+            "SELECT COUNT(*) FROM symbols_fts
+             WHERE symbols_fts MATCH ? AND rowid IN ({placeholders})"
+        );
+        let mut params = Vec::with_capacity(1 + chunk.len());
+        params.push(rusqlite::types::Value::from(fts_expr.to_string()));
+        params.extend(id_params(chunk));
+        let n: i64 = conn.query_row(&sql, rusqlite::params_from_iter(params.iter()), |r| {
+            r.get(0)
+        })?;
+        exact_in_fts += n as usize;
+        Ok(())
+    })?;
+    Ok(fts_total + exact_total - exact_in_fts)
 }
 
 /// Bound the OR expression (R6f Important 7): FTS5 cost is quadratic in the
 /// number of prefix terms under OR.
 const SEARCH_MAX_TERMS: usize = 32;
 
-/// Build the OR prefix expression and apply the qualified-identity fast path.
-/// Returns `(tokens, expr, terms_cap)`; `terms_cap` is `Some` when the input
-/// was truncated to `SEARCH_MAX_TERMS`, and the caller routes it through the
-/// stderr half of `LineQuery` (the single cap-notice channel).
+/// Build the FTS5 prefix expression with tiered precision:
+/// 1) adjacent phrase when qualified (`.`, `/`, `::`),
+/// 2) `"t1"* AND "t2"* ...` for multi-token queries,
+/// 3) `"t1"* OR "t2"* ...` fallback only when AND yields 0 hits.
 fn search_expr(conn: &Connection, terms: &str) -> Result<(Vec<String>, String, Option<String>)> {
     let mut toks: Vec<String> = crate::extract::split_ident(terms)
         .split_whitespace()
@@ -39,29 +58,34 @@ fn search_expr(conn: &Connection, terms: &str) -> Result<(Vec<String>, String, O
         toks.truncate(SEARCH_MAX_TERMS);
         terms_cap = Some(format!("[eg] search terms capped at {SEARCH_MAX_TERMS}"));
     }
-    let mut expr = toks
-        .iter()
-        .map(|tok| format!("\"{}\"*", tok.replace('"', "")))
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    if expr.is_empty() {
+    if toks.is_empty() {
         return Err(EgError::Usage("empty search terms".to_string()));
     }
-    // Identity fast path (R7): a qualified input (`.`, `/`, `::`) matched as
-    // an adjacent-token phrase preserves exact identity and avoids ranking
-    // the whole corpus (1M-symbol: ~500 ms -> <1 ms). Fall back to OR when
-    // the phrase has no hits, so recall does not regress.
-    if terms.contains('.') || terms.contains('/') || terms.contains("::") {
-        let phrase = format!("\"{}\"", toks.join(" ").replace('"', ""));
+    let quoted: Vec<String> = toks
+        .iter()
+        .map(|tok| format!("\"{}\"*", tok.replace('"', "")))
+        .collect();
+    let fts_has_hits = |expr: &str| -> Result<bool> {
         let n: i64 = conn.query_row(
             "SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH ?1",
-            [&phrase],
+            [expr],
             |r| r.get(0),
         )?;
-        if n > 0 {
-            expr = phrase;
+        Ok(n > 0)
+    };
+    if terms.contains('.') || terms.contains('/') || terms.contains("::") {
+        let phrase = format!("\"{}\"", toks.join(" ").replace('"', ""));
+        if fts_has_hits(&phrase)? {
+            return Ok((toks, phrase, terms_cap));
         }
     }
+    if toks.len() > 1 {
+        let and_expr = quoted.join(" AND ");
+        if fts_has_hits(&and_expr)? {
+            return Ok((toks, and_expr, terms_cap));
+        }
+    }
+    let expr = quoted.join(" OR ");
     Ok((toks, expr, terms_cap))
 }
 
@@ -71,7 +95,7 @@ fn search_expr(conn: &Connection, terms: &str) -> Result<(Vec<String>, String, O
 /// has one home (search ranking and reuse calibration share it).
 fn search_page_columns() -> String {
     format!(
-        "f.path, s.line_start, s.kind, s.qualname, s.signature, {} AS callers",
+        "s.file_path, s.line_start, s.kind, s.qualname, s.signature, {} AS callers",
         db::CALLER_COUNT_SQL
     )
 }
@@ -99,20 +123,24 @@ fn search_pointer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Pointer> {
 /// FTS page and total.
 fn search_fts_page(conn: &Connection, expr: &str, limit: usize) -> Result<(Vec<Pointer>, usize)> {
     let total: usize = conn.query_row(
-        "SELECT COUNT(*) FROM symbols_fts ft
-         JOIN symbols s ON s.id = ft.rowid JOIN files f ON f.id = s.file_id
-         WHERE symbols_fts MATCH ?1",
+        "SELECT COUNT(*) FROM symbols_fts WHERE symbols_fts MATCH ?1",
         [expr],
         |r| r.get::<_, i64>(0),
     )? as usize;
+    if total == 0 || limit == 0 {
+        return Ok((Vec::new(), total));
+    }
     let fetch_limit = (limit * 2).clamp(50, crate::query::MAX_LIMIT);
     let mut stmt = conn.prepare(&format!(
-        "SELECT {}, bm25(symbols_fts) AS bm25_score
-         FROM symbols_fts ft
-         JOIN symbols s ON s.id = ft.rowid
-         JOIN files f ON f.id = s.file_id
-         WHERE symbols_fts MATCH ?1
-         ORDER BY bm25(symbols_fts), s.qualname, f.path, s.line_start LIMIT ?2",
+        "SELECT {}, sub.bm25_score
+         FROM (
+             SELECT ft.rowid AS id, bm25(symbols_fts) AS bm25_score
+             FROM symbols_fts ft
+             JOIN symbols s ON s.id = ft.rowid
+             WHERE symbols_fts MATCH ?1
+             ORDER BY bm25(symbols_fts), s.qualname, s.file_path, s.line_start LIMIT ?2
+         ) sub
+         JOIN symbols s ON s.id = sub.id",
         search_page_columns()
     ))?;
     let mut candidates = stmt
@@ -147,22 +175,21 @@ fn search_exact_page(
 ) -> Result<(Vec<Pointer>, usize)> {
     let exact_total: usize = conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id
+            "SELECT COUNT(*) FROM symbols s
              WHERE {EXACT_IDENTITY_PREDICATE}"
         ),
         [exact_name],
         |r| r.get::<_, i64>(0),
     )? as usize;
-    if exact_total == 0 {
-        return Ok((Vec::new(), 0));
+    if exact_total == 0 || limit == 0 {
+        return Ok((Vec::new(), exact_total));
     }
     let mut stmt = conn.prepare(&format!(
         "SELECT {}
-         FROM symbols s JOIN files f ON f.id = s.file_id
+         FROM symbols s
          WHERE {EXACT_IDENTITY_PREDICATE}
-         ORDER BY {} DESC, f.path, s.line_start, s.qualname LIMIT ?2",
+         ORDER BY callers DESC, s.file_path, s.line_start, s.qualname LIMIT ?2",
         search_page_columns(),
-        db::CALLER_COUNT_SQL
     ))?;
     let ptrs = stmt
         .query_map(rusqlite::params![exact_name, limit as i64], search_pointer)?
@@ -209,7 +236,7 @@ pub fn search(ctx: &QueryCtx<'_>, terms: &str, limit: usize) -> Result<LineQuery
             // union of exact and FTS identities.
             (
                 merge_search_pointers(exact_ptrs, fts_ptrs),
-                search_union_total(conn, exact_name, &expr)?,
+                search_union_total(conn, exact_name, &expr, total, exact_total)?,
             )
         } else {
             (fts_ptrs, total)
@@ -231,4 +258,56 @@ pub fn search(ctx: &QueryCtx<'_>, terms: &str, limit: usize) -> Result<LineQuery
         result.stderr = format!("{notice}\n{}", result.stderr);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_expr_prefers_and_then_falls_back_to_or() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE symbols_fts USING fts5(text);
+             INSERT INTO symbols_fts(rowid, text) VALUES (1, 'parse json');
+             INSERT INTO symbols_fts(rowid, text) VALUES (2, 'parse xml');
+             INSERT INTO symbols_fts(rowid, text) VALUES (3, 'format yaml');",
+        )
+        .unwrap();
+
+        let (_, expr_and, _) = search_expr(&conn, "parse json").unwrap();
+        assert_eq!(expr_and, "\"parse\"* AND \"json\"*");
+
+        let (_, expr_or, _) = search_expr(&conn, "parse yaml").unwrap();
+        assert_eq!(expr_or, "\"parse\"* OR \"yaml\"*");
+    }
+
+    #[test]
+    fn search_exact_page_orders_by_callers_desc_before_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE symbols (
+                 id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT,
+                 file_id INTEGER, file_path TEXT, line_start INTEGER,
+                 signature TEXT, is_test INTEGER DEFAULT 0
+             );
+             CREATE TABLE edges (
+                 id INTEGER PRIMARY KEY, src_id INTEGER, dst_id INTEGER,
+                 dst_name TEXT, kind TEXT, confidence TEXT, site_line INTEGER
+             );
+             INSERT INTO symbols VALUES (1, 'function', 'run', 'a.run', 1, 'a.py', 1, '', 0);
+             INSERT INTO symbols VALUES (2, 'function', 'run', 'z.run', 2, 'z.py', 1, '', 0);
+             INSERT INTO symbols VALUES (3, 'function', 'caller1', 'c1', 3, 'c.py', 1, '', 0);
+             INSERT INTO symbols VALUES (4, 'function', 'caller2', 'c2', 3, 'c.py', 2, '', 0);
+             INSERT INTO edges VALUES (1, 3, 2, 'run', 'calls', 'resolved', 1);
+             INSERT INTO edges VALUES (2, 4, 2, 'run', 'calls', 'resolved', 2);",
+        )
+        .unwrap();
+
+        let (ptrs, total) = search_exact_page(&conn, "run", 1).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(ptrs.len(), 1);
+        assert_eq!(ptrs[0].file, "z.py");
+        assert!(ptrs[0].detail.contains("[callers=2]"), "{}", ptrs[0].detail);
+    }
 }

@@ -1,7 +1,10 @@
 //! Usage-log pruning with symlink-safe, atomic rewrites.
 
 use std::fs;
+use std::io::Read as _;
 use std::path::Path;
+
+const MAX_PRUNE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Rewrite `log_path` without the lines `should_drop` selects. Invalid JSON is
 /// preserved: the pruner owns liveness policy, not syntax repair.
@@ -16,12 +19,25 @@ fn prune_matching(
     // read and the rewrite makes the kept list stale; defer the prune
     // instead of silently dropping the appended lines.
     let initial_len = fs::symlink_metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    if initial_len > MAX_PRUNE_BYTES {
+        return Ok(0);
+    }
     // Lossy decode: one invalid byte (torn write, foreign writer) must not
     // abort the whole prune; the invalid line survives verbatim.
-    let bytes = match fs::read(log_path) {
-        Ok(b) => b,
-        Err(_) => return Ok(0),
+    let Ok(file) = fs::File::open(log_path) else {
+        return Ok(0);
     };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_PRUNE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Ok(0);
+    }
+    if bytes.len() as u64 > MAX_PRUNE_BYTES {
+        return Ok(0);
+    }
     let content = String::from_utf8_lossy(&bytes);
     let mut kept = Vec::new();
     let mut pruned = 0;
@@ -87,7 +103,7 @@ fn safe_prunable_log(path: &Path) -> bool {
 /// Prune the current generation and its rotated (`.1`) predecessor.
 fn prune_generations(
     base_path: &Path,
-    prune: fn(&Path) -> std::io::Result<usize>,
+    prune: impl Fn(&Path) -> std::io::Result<usize>,
 ) -> std::io::Result<usize> {
     let mut total = prune(base_path)?;
     if let Some(parent) = base_path.parent() {
@@ -107,6 +123,21 @@ pub fn prune_stale_entries_all(base_path: &Path) -> std::io::Result<usize> {
 /// Prune scratch-root entries from both journal generations.
 pub fn prune_ephemeral_entries_all(base_path: &Path) -> std::io::Result<usize> {
     prune_generations(base_path, prune_ephemeral_entries)
+}
+
+/// Combined startup prune: drop stale/unattributed entries (and optionally
+/// ephemeral scratch entries) in a single pass over both journal generations.
+pub fn prune_startup_entries_all(
+    base_path: &Path,
+    include_ephemeral: bool,
+) -> std::io::Result<usize> {
+    prune_generations(base_path, |path| {
+        prune_matching(path, |val| {
+            super::liveness::entry_is_stale(val)
+                || super::liveness::entry_is_unattributed(val)
+                || (include_ephemeral && super::liveness::entry_is_ephemeral(val))
+        })
+    })
 }
 
 #[cfg(test)]

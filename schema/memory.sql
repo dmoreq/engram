@@ -40,6 +40,7 @@ CREATE INDEX memories_created ON memories(created_at);
 -- sweep deletes by; without the partial index the sweep is a full-table scan.
 CREATE INDEX memories_superseded ON memories(superseded_at) WHERE superseded_by IS NOT NULL;
 CREATE INDEX memories_pending ON memories(id) WHERE fts_version < 2;
+CREATE INDEX IF NOT EXISTS memories_active_refs ON memories(kind, created_at DESC) WHERE superseded_by IS NULL AND refs != '';
 
 -- Internal key/value state for the derived FTS indexes: fts_epoch (tokenizer
 -- contract) and fts_v2_complete ("1" only after a clean reconcile). Missing

@@ -83,7 +83,7 @@ const IMPACT_CALLS_CAVEAT: &str =
 /// a symbol edge; every non-import edge remains an individual site.
 pub(super) fn impact_site_key() -> String {
     format!(
-        "CASE WHEN e.kind = '{}' THEN 'i:' || s.id || ':' || e.site_line ELSE 'e:' || e.id END",
+        "CASE WHEN e.kind = '{}' THEN -((s.id << 20) + e.site_line) ELSE e.id END",
         EdgeKind::Imports.as_str()
     )
 }
@@ -304,14 +304,8 @@ pub(crate) fn relativize_path(root: &Path, path: &str) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-/// Resolve a repo-relative file path and fail with the shared not-indexed
-/// error. `imports` and `impact` both start with this gate.
-fn indexed_file(conn: &Connection, file: &str) -> Result<String> {
-    indexed_file_opt(conn, normalize_scope(file))?.ok_or_else(|| EgError::not_indexed(file))
-}
-
-/// The same files-row lookup without the not-indexed error, so `symbols` can
-/// reuse the gate and fall through to its directory listing.
+/// The files-row lookup without the not-indexed error, so `symbols` and
+/// `impact` can reuse the gate and fall through to directory/symbol lookup.
 fn indexed_file_opt(conn: &Connection, rel: &str) -> Result<Option<String>> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM files WHERE path = ?1", [rel], |r| {
         r.get(0)

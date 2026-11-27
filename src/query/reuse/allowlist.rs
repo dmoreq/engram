@@ -14,29 +14,38 @@ pub(super) fn load(ctx: &QueryCtx<'_>) -> HashSet<(String, String)> {
     let Ok(conn) = crate::db::open_memory_query(ctx.root) else {
         return HashSet::new();
     };
-    let filter = crate::db::MemFilter {
-        kind: None,
-        scope: None,
-        now: crate::db::unix_now(),
-        include_superseded: false,
-        window: crate::memory::TimeWindow {
-            since: None,
-            until: None,
-        },
+    let now = crate::db::unix_now();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT key, refs, created_at, anchored_at FROM memories
+         WHERE superseded_by IS NULL
+           AND key >= 'reuse-allow/' AND key < 'reuse-allow0'
+           AND (expires_at = 0 OR expires_at > ?1)",
+    ) else {
+        return HashSet::new();
     };
-    let Ok(rows) = crate::db::memory_current_rows(&conn, &filter, None) else {
+    let Ok(rows) = stmt.query_map([now], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    }) else {
         return HashSet::new();
     };
     let mut pairs = HashSet::new();
     for row in rows {
-        let Some(pair) = row.key.strip_prefix("reuse-allow/") else {
+        let Ok((key, refs_str, created_at, anchored_at)) = row else {
+            continue;
+        };
+        let Some(pair) = key.strip_prefix("reuse-allow/") else {
             continue;
         };
         let Some((target, canonical)) = pair.split_once("->") else {
             continue;
         };
-        let refs: Vec<&str> = row.refs.split_whitespace().collect();
-        let anchor = row.anchor();
+        let refs: Vec<&str> = refs_str.split_whitespace().collect();
+        let anchor = anchored_at.max(created_at);
         if !refs.is_empty() && !refs.iter().all(|r| ref_is_fresh(ctx, r, anchor)) {
             continue;
         }
@@ -68,7 +77,29 @@ fn ref_is_fresh(ctx: &QueryCtx<'_>, raw: &str, anchor: i64) -> bool {
         })
         .ok();
     if indexed.is_none() && !raw.contains('/') {
-        return crate::db::check_ref_status(ctx.conn, raw, anchor) == crate::db::RefStatus::Valid;
+        if crate::db::check_ref_status(ctx.conn, raw, anchor) != crate::db::RefStatus::Valid {
+            return false;
+        }
+        let Ok(mut stmt) = ctx
+            .conn
+            .prepare("SELECT DISTINCT file_path FROM symbols WHERE qualname = ?1 OR name = ?1")
+        else {
+            return false;
+        };
+        let Ok(paths) = stmt.query_map([raw], |row| row.get::<_, String>(0)) else {
+            return false;
+        };
+        let mut any = false;
+        for path in paths {
+            let Ok(file_path) = path else {
+                return false;
+            };
+            any = true;
+            if crate::query::staleness::file_changed(ctx, &file_path) {
+                return false;
+            }
+        }
+        return any;
     }
     indexed.is_some()
         && !crate::query::staleness::file_changed(ctx, raw)
@@ -90,9 +121,11 @@ mod tests {
             symbol: "b.parse".into(),
             file: "b.py".into(),
             line: 1,
+            line_end: 2,
             canonical: "a.parse".into(),
             canonical_file: "a.py".into(),
             canonical_line: 1,
+            canonical_line_end: 2,
             canonical_callers: 0,
             overlap_pct: Some(100),
             shared_items: Vec::new(),
@@ -112,13 +145,23 @@ mod tests {
 
     #[test]
     fn symbol_ref_freshness_follows_check_ref_status() {
+        use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+
+        let root = temp_root("allowlist-sym-ref");
+        make_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/util.py");
+        write_file(&file, b"def normalize(x): return x\n").unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+        let mtime = crate::db::metadata_mtime(&meta).unwrap();
+        let hash = crate::hash::fnv1a64(b"def normalize(x): return x\n") as i64;
+
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../schema/index.sql"))
             .unwrap();
         conn.execute(
             "INSERT INTO files(id, path, size, mtime, content_hash, parse_status, error_nodes)
-             VALUES (NULL, 'src/util.py', 10, 10_000_000_000, 1, 'ok', 0)",
-            [],
+             VALUES (NULL, 'src/util.py', ?1, ?2, ?3, 'ok', 0)",
+            rusqlite::params![meta.len() as i64, mtime, hash],
         )
         .unwrap();
         conn.execute(
@@ -129,14 +172,17 @@ mod tests {
         .unwrap();
         let ctx = QueryCtx {
             conn: &conn,
-            root: std::path::Path::new("."),
+            root: &root,
         };
-        // Symbol-shaped refs resolve through the shared ref-status check's
-        // symbol arm: an anchor at or after the indexed mtime is fresh, an
-        // anchor before it is modified, and an unresolvable name is never
-        // fresh.
-        assert!(ref_is_fresh(&ctx, "util.normalize", 20));
-        assert!(!ref_is_fresh(&ctx, "util.normalize", 5));
-        assert!(!ref_is_fresh(&ctx, "util.missing", 1_000_000_000));
+        let mtime_secs = mtime / 1_000_000_000;
+        assert!(ref_is_fresh(&ctx, "util.normalize", mtime_secs + 10));
+        assert!(!ref_is_fresh(&ctx, "util.normalize", mtime_secs - 1));
+        assert!(!ref_is_fresh(&ctx, "util.missing", mtime_secs + 10));
+
+        // Modifying the backing file on disk must invalidate the symbol-ref
+        // allowlist even before `eg build` updates `files.mtime`.
+        write_file(&file, b"def normalize(x): return x + 1\n").unwrap();
+        assert!(!ref_is_fresh(&ctx, "util.normalize", mtime_secs + 100));
+        remove_tree(&root);
     }
 }

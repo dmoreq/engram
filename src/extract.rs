@@ -16,9 +16,14 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use crate::parse::{Lang, ParsedFile, SOURCE_EXTENSIONS};
+use crate::parse::{Lang, ParsedFile};
 
-pub const SCHEMA_VERSION: i32 = 11;
+mod paths;
+pub use paths::module_path_for;
+pub(crate) use paths::{is_test_name, is_test_path};
+use paths::{rust_crate_root, rust_lib_root};
+
+pub const SCHEMA_VERSION: i32 = 12;
 
 #[derive(Debug, Clone, Default)]
 pub struct NewSymbol {
@@ -37,36 +42,6 @@ pub struct NewSymbol {
     pub is_test: bool,
     /// Resolved return-type class qualname (schema v11), empty when absent.
     pub return_type: String,
-}
-
-/// Test classification (schema v8). One source of truth for every `is_test`
-/// writer; the set below is a SUPERSET of the v7 dead-code predicate
-/// (`f.path LIKE 'tests/%' ... 'test\_%.py'`, `%.test.%`, `%.spec.%`,
-/// `%\_test.py`, `%\_test.dart`, plus `s.name` `test_*` / `test[A-Z]*`): it
-/// also matches a `test/` or `tests/` segment at any depth, not only at the
-/// repo root. SQLite LIKE is ASCII case-insensitive and GLOB is
-/// case-sensitive; the helpers mirror that split.
-pub(crate) fn is_test_path(rel: &str) -> bool {
-    let lower = rel.to_ascii_lowercase();
-    let file = lower.rsplit('/').next().unwrap_or(&lower);
-    let dir_part = &lower[..lower.len() - file.len()];
-    let dir_hit = dir_part
-        .split('/')
-        .any(|seg| matches!(seg, "tests" | "test" | "__tests__"));
-    let file_hit = (file.starts_with("test_") && file.ends_with(".py"))
-        || file.ends_with("_test.py")
-        || file.ends_with("_test.go")
-        || file.ends_with("_test.dart");
-    // The dotted shapes matched the whole v7 path (`%.test.%`, `%.spec.%`),
-    // so a directory such as `pkg.test/` is covered too.
-    let dotted_hit = lower.contains(".test.") || lower.contains(".spec.");
-    dir_hit || file_hit || dotted_hit
-}
-
-pub(crate) fn is_test_name(name: &str) -> bool {
-    // LIKE 'test\_%' is case-insensitive; GLOB 'test[A-Z]*' is not.
-    name.to_ascii_lowercase().starts_with("test_")
-        || (name.starts_with("test") && name.chars().nth(4).is_some_and(|c| c.is_ascii_uppercase()))
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +87,8 @@ pub struct Resolution {
     pub edges: Vec<NewEdge>,
     /// Resolved `self.field` / class-body field types for fresh files (schema v11).
     pub class_fields: Vec<ResolvedClassField>,
+    pub module_exports: Vec<ResolvedModuleExport>,
+    pub module_stars: Vec<ResolvedModuleStar>,
     /// Kept for the lib surface (integration tests assert builtin_dropped);
     /// the binary's meta total is the per-file SQL sum instead.
     #[allow(dead_code)]
@@ -121,28 +98,6 @@ pub struct Resolution {
     /// files whose unresolved names became resolvable after a change.
     pub unresolved_calls: Vec<UnresolvedSite>,
     pub unresolved_per_file: Vec<usize>,
-}
-
-/// Symbols loaded from the previous index's fast-path files.
-pub struct CarriedSymbol {
-    pub row_id: i64,
-    pub kind: SymbolKind,
-    pub name: String,
-    pub qualname: String,
-    pub module: String,
-    pub return_type: String,
-}
-
-/// Inheritance pairs read from the previous index (subclass qualname, base qualname).
-pub type CarriedInherits = Vec<(String, String)>;
-
-/// Previous-index state joined into resolution (fast path).
-#[derive(Default)]
-pub struct CarriedIndex {
-    pub symbols: Vec<CarriedSymbol>,
-    pub inherits: CarriedInherits,
-    pub class_fields: Vec<(String, String, String)>,
-    pub reexports: Vec<(String, String, i64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +165,7 @@ enum Callee {
 struct ImportEdgeCandidate {
     line: usize,
     target: ImportTarget,
+    maybe_external: bool,
 }
 
 impl ImportEdgeCandidate {
@@ -217,21 +173,26 @@ impl ImportEdgeCandidate {
         Self {
             line,
             target: ImportTarget::Module { path },
+            maybe_external: false,
         }
     }
-
     fn symbol(line: usize, module: String, name: String) -> Self {
         Self {
             line,
             target: ImportTarget::Symbol { module, name },
+            maybe_external: false,
         }
     }
-
     fn module_root(line: usize, path: String) -> Self {
         Self {
             line,
             target: ImportTarget::ModuleRoot { path },
+            maybe_external: false,
         }
+    }
+    fn with_maybe_external(mut self, maybe_external: bool) -> Self {
+        self.maybe_external = maybe_external;
+        self
     }
 }
 
@@ -257,6 +218,12 @@ struct FileBindings {
     /// Modules appearing in `from m import *`.
     /// Star-imported modules with the statement line (per-statement scope).
     stars: Vec<(String, usize)>,
+    /// Enclosing `alias_scope` for scoped Rust star imports (`(module, line) -> scope`).
+    star_scopes: HashMap<(String, usize), String>,
+    /// Rust star imports `(module, line)` that may be external crates (validated in Phase B).
+    maybe_external_stars: HashSet<(String, usize)>,
+    /// Rust aliases `(scope, bound_name)` that may be external crates (validated in Phase B).
+    maybe_external_aliases: HashSet<(String, String)>,
     /// Python `from pkg import ...` parent module edges: (line, module).
     from_import_parents: HashSet<(usize, String)>,
     /// Python function/method/`@property` return type annotations: (qualname, chain).
@@ -269,6 +236,10 @@ pub struct FileExtraction {
     /// Rust crate root: a directory segment such as "src", or "" for a
     /// repo-root lib.rs/main.rs.
     pub crate_root: Option<String>,
+    /// Crate root used for `use <crate_name>::...` (covers `tests/*.rs` -> `"src"`).
+    pub lib_root: Option<String>,
+    /// Normalized Cargo crate name (`[lib] name` or `[package] name` with `-` -> `_`).
+    pub crate_name: Option<String>,
     /// Dot-joined DIRECTORY of the file (no file stem) — relative TS imports
     /// resolve against this, because stems may contain dots (x.test.ts).
     pub dir: String,
@@ -304,10 +275,10 @@ impl FileExtraction {
     /// the caller, which resolved it explicitly against the walk allowlist.
     fn for_file(file_idx: usize, rel: &str, lang: Lang) -> Self {
         let (module, is_package) = module_path_for(rel);
-        let crate_root = if lang == Lang::Rust {
-            rust_crate_root(rel)
+        let (crate_root, lib_root) = if lang == Lang::Rust {
+            (rust_crate_root(rel), rust_lib_root(rel))
         } else {
-            None
+            (None, None)
         };
         let mod_name = module.rsplit('.').next().unwrap_or(&module).to_string();
         let is_test_file = is_test_path(rel);
@@ -319,6 +290,8 @@ impl FileExtraction {
             file_idx,
             module: module.clone(),
             crate_root,
+            lib_root,
+            crate_name: None,
             dir,
             is_package,
             is_test_file,
@@ -371,63 +344,6 @@ impl FileExtraction {
     }
 }
 
-/// Derive the dot-joined module path from the repo-relative file path.
-/// Package/root markers (`__init__.py`, `index.*` TS/JS files, `mod.rs`,
-/// `lib.rs`) collapse into the containing module path.
-pub fn module_path_for(rel: &str) -> (String, bool) {
-    let file_name = rel.rsplit('/').next().unwrap_or(rel);
-    let is_py_pkg = file_name == "__init__.py";
-    // index.* package markers exist for every TS/JS extension in the master
-    // table (`parse::SOURCE_EXTENSIONS`), so a new TS-family extension needs
-    // no edit here.
-    let is_ts_pkg = SOURCE_EXTENSIONS
-        .iter()
-        .any(|(ext, lang)| lang.is_ts_js() && file_name.strip_suffix(ext) == Some("index"));
-    let is_rust_root = file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs";
-    if is_py_pkg || is_ts_pkg || is_rust_root {
-        let dir = rel
-            .strip_suffix(file_name)
-            .unwrap_or(rel)
-            .trim_end_matches('/')
-            .replace('/', ".");
-        if dir.is_empty() {
-            // A root-level `lib.rs`/`mod.rs` has no containing directory;
-            // keep its stem instead of inventing a shared "root" module.
-            if is_rust_root {
-                return (file_name.trim_end_matches(".rs").to_string(), true);
-            }
-            return ("root".to_string(), true);
-        }
-        return (dir, true);
-    }
-    // Strip the source extension (dotted rows in the master table; each
-    // suffix strips repeatedly, matching the historical chain behavior).
-    let mut stem = rel;
-    for (ext, _) in SOURCE_EXTENSIONS {
-        stem = stem.trim_end_matches(ext);
-    }
-    if stem.is_empty() {
-        return ("root".to_string(), false);
-    }
-    (stem.replace('/', "."), false)
-}
-
-/// Rust crate root for `crate::` paths: the top directory, or the empty
-/// string for a repo-root `lib.rs`/`main.rs`. Nested module files keep the
-/// same top directory; plain root modules have no crate root.
-fn rust_crate_root(rel: &str) -> Option<String> {
-    let file_name = rel.rsplit('/').next().unwrap_or(rel);
-    match rel.rfind("/src/") {
-        // Workspace member: crates/auth/src/anything.rs maps `crate::` to
-        // crates.auth.src. The old first-segment cut ("crates") sent every
-        // workspace crate:: lookup to the wrong module tree.
-        Some(i) => Some(format!("{}.src", rel[..i].replace('/', "."))),
-        None if rel.starts_with("src/") => Some("src".to_string()),
-        None if file_name == "lib.rs" || file_name == "main.rs" => Some(String::new()),
-        None => None,
-    }
-}
-
 /// One file's extraction inputs: merged-vector index, repo-relative path,
 /// language, and source bytes — bundled so both entry points pass one
 /// argument instead of four loose ones.
@@ -438,12 +354,22 @@ pub struct FileInput<'a> {
     pub src: &'a [u8],
 }
 
-/// Lib API used by tests and fixtures.
 #[allow(dead_code)]
 pub fn extract_file(file_idx: usize, rel: &str, src: &[u8], parsed: &ParsedFile) -> FileExtraction {
+    extract_file_with_crate(file_idx, rel, src, parsed, None)
+}
+
+#[allow(dead_code)]
+pub fn extract_file_with_crate(
+    file_idx: usize,
+    rel: &str,
+    src: &[u8],
+    parsed: &ParsedFile,
+    crate_name: Option<&str>,
+) -> FileExtraction {
     let root = parsed.tree.root_node();
     let lang = Lang::from_rel(rel).unwrap_or_else(|| panic!("unsupported source extension: {rel}"));
-    extract_file_nodes(
+    extract_file_nodes_inner(
         FileInput {
             file_idx,
             rel,
@@ -451,12 +377,26 @@ pub fn extract_file(file_idx: usize, rel: &str, src: &[u8], parsed: &ParsedFile)
             src,
         },
         root,
+        crate_name.map(str::to_string),
     )
 }
 
 /// Extraction from a parsed Tree-sitter root node.
 pub fn extract_file_nodes(input: FileInput<'_>, root: Node<'_>) -> FileExtraction {
+    let crate_name = (input.lang == Lang::Rust)
+        .then(crate::walk::take_current_crate_name)
+        .flatten();
+    extract_file_nodes_inner(input, root, crate_name)
+}
+
+fn extract_file_nodes_inner(
+    input: FileInput<'_>,
+    root: Node<'_>,
+    crate_name: Option<String>,
+) -> FileExtraction {
     let mut fx = FileExtraction::for_file(input.file_idx, input.rel, input.lang);
+    fx.crate_name = crate_name;
+    fx.symbols[0].line_end = root.end_position().row + 1;
     let mut ctx = WalkCtx::for_file(fx.lang, input.src);
     walk_children(root, input.src, &mut fx, &mut ctx);
     finalize_rust_impls(&mut fx);
@@ -486,8 +426,11 @@ pub(crate) fn is_direct_child(module: &str, name: &str, qualname: &str) -> bool 
 }
 
 mod vocab;
-pub use vocab::{Confidence, EdgeKind, EdgeSiteKind, SymbolKind};
-use vocab::{BUILTINS, STDLIB_MODULES};
+use vocab::{is_builtin, is_stdlib_module};
+pub use vocab::{
+    CarriedIndex, CarriedInherits, CarriedSymbol, Confidence, EdgeKind, EdgeSiteKind,
+    ResolvedModuleExport, ResolvedModuleStar, SymbolKind,
+};
 
 /// Per-language metric tables computed once per file instead of once per
 /// callable (B2): the filtered decision kinds and the branch kinds.

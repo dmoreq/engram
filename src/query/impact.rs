@@ -102,17 +102,14 @@ pub fn impact(
     // identity predicate to its defining file, so a symbol's blast radius is
     // queryable without knowing its path. (File-level granularity: the
     // impact of every symbol in that file is reported.)
-    let (rel, symbol_origin) =
-        match indexed_file_opt(qctx.conn, &crate::query::relativize_path(qctx.root, file))? {
-            Some(rel) => (rel, None),
-            None => match symbol_defining_file(
-                qctx.conn,
-                &crate::query::relativize_path(qctx.root, file),
-            ) {
-                Some((rel, matched)) => (rel, Some(matched)),
-                None => return Err(EgError::not_indexed(file)),
-            },
-        };
+    let norm = normalize_repo_path(qctx.root, file);
+    let (rel, symbol_origin) = match indexed_file_opt(qctx.conn, &norm)? {
+        Some(rel) => (rel, None),
+        None => match symbol_defining_file(qctx, &norm)? {
+            Some((rel, matched)) => (rel, Some(matched)),
+            None => return Err(EgError::not_indexed(file)),
+        },
+    };
     let extended = depth > 1 || kinds.iter().any(|k| *k != EdgeKind::Calls);
     let caveat = if extended {
         if kinds.iter().any(|k| *k != EdgeKind::Calls) {
@@ -173,18 +170,24 @@ pub fn impact(
     Ok(out)
 }
 
-/// The file defining a symbol: exact identity (bare name or qualname), first
-/// match in the deterministic order. Ambiguous names pick the same file on
-/// every run.
-fn symbol_defining_file(conn: &Connection, name: &str) -> Option<(String, String)> {
-    conn.query_row(
-        "SELECT f.path, s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
-         WHERE s.name = ?1 OR s.qualname = ?1
-         ORDER BY s.qualname, f.path, s.line_start LIMIT 1",
-        [name],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .ok()
+/// The file defining a symbol, routed through `resolve::target_ids`.
+/// Returns `EgError::Ambiguous` when the resolved candidates span >1 distinct
+/// file.
+fn symbol_defining_file(qctx: &QueryCtx<'_>, name: &str) -> Result<Option<(String, String)>> {
+    let (ids, cands) = target_ids(qctx.conn, qctx.root, name)?;
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let first_path = &cands[0].0;
+    if cands.iter().any(|c| &c.0 != first_path) {
+        return Err(EgError::Ambiguous {
+            name: name.to_string(),
+            total: ids.len(),
+            candidates: cands,
+            role: None,
+        });
+    }
+    Ok(Some((first_path.clone(), cands[0].2.clone())))
 }
 
 /// Shared, immutable arguments for the three impact phases. The phases stay

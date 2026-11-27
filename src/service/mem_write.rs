@@ -53,33 +53,21 @@ pub(super) fn run_mem_write(
         body,
         ttl: *ttl,
     })?;
+    let mut conn = open_mem_conn(root_arg, *global, MemoryMode::Store)?;
     // Advisory only: a near-duplicate under another key suggests --supersedes.
     // Same-key updates and explicit --supersedes already express intent.
-    let consolidation_conn = if supersedes.is_none() {
-        open_mem_conn(root_arg, *global, MemoryMode::Query).ok()
+    let consolidation = if supersedes.is_none() {
+        crate::memory::find_consolidation_match(&conn, &note)
     } else {
         None
     };
-    let consolidation = consolidation_conn
-        .as_ref()
-        .and_then(|conn| crate::memory::find_consolidation_match(conn, &note));
-    let outcome = write_note(
-        root_arg,
-        &note,
-        surface,
-        supersedes.as_deref(),
-        *global,
-        *touch,
-    )?;
+    let outcome = write_note(&mut conn, &note, surface, supersedes.as_deref(), *touch)?;
     crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
     let line = outcome_line(&outcome, &note.key);
     let mut stdout = format!("{}\n{line}\n", crate::memory::MEMORY_CAVEAT);
     if let Some(m) = consolidation {
         let mut hint = m.hint_line(&note.key);
-        if let Some(pct) = consolidation_conn
-            .as_ref()
-            .and_then(|conn| m.semantic_similarity_pct(conn, &note))
-        {
+        if let Some(pct) = m.semantic_similarity_pct(&conn, &note) {
             hint.push_str(&format!(" (similarity={pct}%)"));
         }
         stdout.push_str(&hint);
@@ -87,18 +75,11 @@ pub(super) fn run_mem_write(
     }
     let mut stderr = String::new();
     if !*global && !note.refs.is_empty() {
-        let root = crate::walk::discover_root(root_arg).ok();
-        let index_conn = root
-            .as_ref()
-            .and_then(|r| crate::db::open_for_query(r).ok());
+        let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
         for r in note.refs.split_whitespace() {
-            let on_disk = root
-                .as_deref()
-                .is_some_and(|repo_root| crate::db::check_disk_ref(repo_root, r).is_some());
-            let in_index = index_conn.as_ref().is_some_and(|conn| {
-                crate::db::check_ref_status(conn, r, i64::MAX) != crate::db::RefStatus::Broken
-            });
-            if !on_disk && !in_index {
+            let resolved =
+                crate::db::resolve_ref_detail(index_conn.as_deref(), root.as_deref(), r, i64::MAX);
+            if !resolved.status.is_verified() {
                 stderr.push_str(&format!(
                     "eg: warning: unverified ref '{r}' (not found on disk or in index)\n"
                 ));
@@ -109,23 +90,44 @@ pub(super) fn run_mem_write(
 }
 
 fn write_note(
-    root_arg: Option<&Path>,
+    conn: &mut rusqlite::Connection,
     note: &crate::memory::NormalizedNote,
     surface: Surface,
     supersedes: Option<&str>,
-    global: bool,
     touch: bool,
 ) -> Result<crate::db::MemWriteOutcome> {
-    let mut conn = open_mem_conn(root_arg, global, MemoryMode::Store)?;
     let session = crate::journal::session_tag();
     let now = crate::db::unix_now();
-    // Embedding runs BEFORE the store opens: the subprocess must never hold
-    // the write lock. Without a text model the column stays NULL and ranking
-    // falls back to the lexical features.
-    let embedding = crate::memory::embed::embed_text(&note.body)
-        .map(|v| crate::memory::embed::embedding_blob(&v));
+    // Skip embedding when the active revision already has the same content
+    // hash: `memory_write` will return `Duplicate` or `Touched` without
+    // inserting a new row.
+    let hash = crate::memory::mem_content_hash(
+        note.kind.as_str(),
+        &note.body,
+        &note.tags,
+        &note.refs,
+        note.scope.as_str(),
+    ) as i64;
+    let skip_embed = conn
+        .query_row(
+            "SELECT content_hash, expires_at FROM memories
+             WHERE key = ?1 AND superseded_by IS NULL
+             ORDER BY rev DESC LIMIT 1",
+            rusqlite::params![&note.key],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .ok()
+        .is_some_and(|(existing_hash, expires_at)| {
+            (expires_at == 0 || expires_at > now) && existing_hash == hash
+        });
+    let embedding = if skip_embed {
+        None
+    } else {
+        crate::memory::embed::embed_text(&note.body)
+            .map(|v| crate::memory::embed::embedding_blob(&v))
+    };
     crate::db::memory_write(
-        &mut conn,
+        conn,
         &crate::db::MemNoteInput {
             key: &note.key,
             kind: note.kind.as_str(),
@@ -258,15 +260,18 @@ pub(super) fn mem_query_args(req: &CommandRequest) -> JournalArgs {
 /// The local and global memory stores a read command resolves once: `None`
 /// means the store is absent (open errors other than "no store" propagate).
 pub(super) struct MemoryStores {
-    pub(super) local: Option<rusqlite::Connection>,
-    pub(super) global: Option<rusqlite::Connection>,
+    pub(super) local: Option<MemConn>,
+    pub(super) global: Option<MemConn>,
 }
 
 /// Open the memory stores both `mem query` and `mem get` read: the local store
 /// (only when root discovery and the open succeed) and the global one.
-pub(super) fn resolve_memory_stores(root_arg: Option<&Path>) -> Result<MemoryStores> {
+pub(super) fn resolve_memory_stores(
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<MemoryStores> {
     let local = match crate::walk::discover_root(root_arg) {
-        Ok(root) => match crate::db::open_memory_query(&root) {
+        Ok(root) => match open_mem_query_conn(Some(&root), false, surface) {
             Ok(conn) => Some(conn),
             Err(EgError::NoMemory(_)) => None,
             Err(e) => return Err(e),
@@ -276,7 +281,7 @@ pub(super) fn resolve_memory_stores(root_arg: Option<&Path>) -> Result<MemorySto
         Err(e) if root_arg.is_some() => return Err(e),
         Err(_) => None,
     };
-    let global = match crate::db::open_global_memory_query() {
+    let global = match open_mem_query_conn(None, true, surface) {
         Ok(conn) => Some(conn),
         Err(EgError::NoMemory(_)) => None,
         Err(e) => return Err(e),

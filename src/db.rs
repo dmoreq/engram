@@ -27,7 +27,7 @@ use crate::extract::{
 pub const GRAMMAR_VERSION: &str = env!("ENGRAM_GRAMMAR_VERSION");
 /// Extraction revision: older indexes must be re-extracted when capture or
 /// resolution rules change. This does not change the table shape.
-pub const SIGNATURE_VERSION: &str = "4";
+pub const SIGNATURE_VERSION: &str = "6";
 /// Per-symbol metric-rule version (Amendment 19); a mismatch disables the fast path.
 pub const METRICS_VERSION: &str = "2";
 
@@ -423,7 +423,10 @@ mod sql;
 #[cfg(test)]
 mod tests;
 
-pub use open::{check_schema_version, open_for_query, try_open_index, IndexOpenError};
+pub use open::{
+    check_schema_version, evict_mcp_cache, open_cached_for_mcp, open_for_query, try_open_index,
+    CachedConnection, IndexOpenError,
+};
 
 pub(crate) use inserts::*;
 pub(crate) use memory_fts::*;

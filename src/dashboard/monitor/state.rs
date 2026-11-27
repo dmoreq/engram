@@ -41,15 +41,6 @@ impl MonitorTab {
             Self::Stream => Self::Graph,
         }
     }
-
-    pub fn prev(&self) -> Self {
-        match self {
-            Self::Graph => Self::Stream,
-            Self::Reuse => Self::Graph,
-            Self::Memory => Self::Reuse,
-            Self::Stream => Self::Memory,
-        }
-    }
 }
 
 pub struct TuiState {
@@ -66,6 +57,27 @@ pub struct TuiState {
     pub memories: Vec<Value>,
     pub recent_events: Vec<Value>,
     pub total_repos: usize,
+    last_stamps: ((u64, u64), (u64, u64)),
+}
+
+fn file_stamp(path: &Path) -> (u64, u64) {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() && !m.file_type().is_symlink() => {
+            let ns = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            (ns, m.len())
+        }
+        _ => (0, 0),
+    }
+}
+
+fn log_stamps(path: &Path) -> ((u64, u64), (u64, u64)) {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    (file_stamp(&parent.join("usage.log.1")), file_stamp(path))
 }
 
 impl TuiState {
@@ -88,13 +100,27 @@ impl TuiState {
             memories: Vec::new(),
             recent_events: Vec::new(),
             total_repos: 0,
+            last_stamps: ((0, 0), (0, 0)),
         };
         state.refresh(root);
         state
     }
 
+    pub fn refresh_if_changed(&mut self, root: Option<&Path>) -> bool {
+        let stamps = log_stamps(&self.log_path);
+        if stamps == self.last_stamps {
+            return false;
+        }
+        self.refresh(root);
+        true
+    }
+
     pub fn refresh(&mut self, root: Option<&Path>) {
-        let entries = data::read_usage_entries(&self.log_path);
+        self.last_stamps = log_stamps(&self.log_path);
+        let mut entries = data::read_usage_entries(&self.log_path);
+        if self.exclude_ephemeral {
+            entries.retain(|e| !crate::journal::liveness::entry_is_ephemeral(e));
+        }
         self.summary = data::compute_summary(&entries);
 
         if let Ok((candidates, summary, _)) = data::collect_reuse_candidates(root, &entries) {

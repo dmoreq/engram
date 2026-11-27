@@ -50,9 +50,13 @@ fn mem_core_tools_default_surface_and_byte_parity() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert!(names.contains(&"mem_write".to_string()), "{names:?}");
-    assert!(names.contains(&"mem_query".to_string()), "{names:?}");
-    for tool in ["mem_get", "mem_delete", "mem_gc", "mem_export"] {
+    for tool in ["mem_write", "mem_query", "mem_touch", "mem_get"] {
+        assert!(
+            names.contains(&tool.to_string()),
+            "{tool} should be core: {names:?}"
+        );
+    }
+    for tool in ["mem_delete", "mem_gc", "mem_export"] {
         assert!(
             !names.contains(&tool.to_string()),
             "{tool} stays behind --all-tools: {names:?}"

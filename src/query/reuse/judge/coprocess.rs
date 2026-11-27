@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 
-use super::child::{kill_group, parse_verdict, TIMEOUT};
+use super::child::TIMEOUT;
 use super::Setup;
+use crate::memory::judge_proc;
 
 /// Per-verdict deadline. The first request after a spawn may pay the full
 /// Metal cold start, so this matches the one-shot batch deadline; warm
@@ -42,7 +43,7 @@ struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        kill_group(&self.child);
+        judge_proc::kill_group(&self.child);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -68,7 +69,7 @@ fn spawn(setup: &Setup) -> Option<Session> {
     if setup.subcommand != "similarity" {
         return None;
     }
-    let mut command = std::process::Command::new(&setup.binary);
+    let mut command = judge_proc::base_command(&setup.binary, setup.home.as_deref());
     command.arg("serve").arg("--model").arg(&setup.model);
     if let Some(recipe) = &setup.recipe {
         command.arg("--recipe").arg(recipe);
@@ -76,16 +77,7 @@ fn spawn(setup: &Setup) -> Option<Session> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env_clear();
-    if let Some(home) = &setup.home {
-        command.env("HOME", home);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+        .stderr(Stdio::null());
     let mut child = command.spawn().ok()?;
     let stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -116,7 +108,18 @@ fn spawn(setup: &Setup) -> Option<Session> {
 /// when the session cannot answer (tears itself down; the caller falls
 /// back to the one-shot batch).
 pub(super) fn judge_batch(setup: &Setup, pairs: &[(String, String)]) -> Option<Vec<String>> {
-    if !ENABLED.load(Ordering::SeqCst) || pairs.is_empty() {
+    let requests: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|(left, right)| serde_json::json!({"text_a": left, "text_b": right}))
+        .collect();
+    query_lines(setup, &requests)
+}
+
+/// Send arbitrary NDJSON request objects to the persistent coprocess and read
+/// one response line per request. Exposed internally for `embed`/`judge_hint`
+/// integration without altering the similarity NDJSON protocol.
+pub(super) fn query_lines(setup: &Setup, requests: &[serde_json::Value]) -> Option<Vec<String>> {
+    if !ENABLED.load(Ordering::SeqCst) || requests.is_empty() {
         return None;
     }
     let mut guard = slot().lock().ok()?;
@@ -134,18 +137,19 @@ pub(super) fn judge_batch(setup: &Setup, pairs: &[(String, String)]) -> Option<V
         }
     }
     let session = state.session.as_mut()?;
-    let mut lines = Vec::with_capacity(pairs.len());
-    for (left, right) in pairs {
-        let request = serde_json::json!({"text_a": left, "text_b": right});
-        writeln!(session.stdin, "{request}").ok()?;
-        session.stdin.flush().ok()?;
+    let mut lines = Vec::with_capacity(requests.len());
+    for request in requests {
+        if writeln!(session.stdin, "{request}").is_err() || session.stdin.flush().is_err() {
+            state.session = None;
+            if fresh && lines.is_empty() {
+                state.serve_unsupported = true;
+            }
+            return None;
+        }
         match session.verdicts.recv_timeout(VERDICT_TIMEOUT) {
             Ok(Some(line)) => {
                 // An error verdict keeps the session; parse_verdict maps
                 // it to a per-pair failure upstream.
-                if parse_verdict(&line).is_none() && line.contains("\"decision\":\"error\"") {
-                    return None;
-                }
                 lines.push(line);
             }
             // Child died or hung past the deadline: the session is toast.
@@ -163,4 +167,52 @@ pub(super) fn judge_batch(setup: &Setup, pairs: &[(String, String)]) -> Option<V
         }
     }
     Some(lines)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{remove_tree, temp_root, write_file};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    #[test]
+    fn dead_session_on_write_failure_recovers_on_next_call() {
+        let root = temp_root("judge-coproc-recover");
+        let script = root.join("eg-judge");
+        // First invocation answers one line then exits immediately (so the 2nd
+        // request hits broken pipe on stdin). Second invocation stays alive
+        // and answers both requests.
+        let marker = root.join("seen");
+        let body = format!(
+            "#!/bin/sh\nif [ ! -f '{}' ]; then\n  touch '{}'\n  IFS= read -r _\n  printf '{{\"decision\":\"duplicate\",\"similarity\":0.9}}\\n'\n  exit 0\nfi\nwhile IFS= read -r _; do\n  printf '{{\"decision\":\"distinct\",\"similarity\":0.1}}\\n'\ndone\n",
+            marker.display(),
+            marker.display()
+        );
+        write_file(&script, body.as_bytes()).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        enable();
+        let setup = Setup {
+            binary: script,
+            model: PathBuf::from("model"),
+            subcommand: "similarity",
+            recipe: None,
+            home: std::env::var("HOME").ok(),
+        };
+        let pairs = vec![
+            ("a".to_string(), "b".to_string()),
+            ("c".to_string(), "d".to_string()),
+        ];
+        // First call dies mid-batch (or on 2nd write) and must clear state.session.
+        // Give the child a moment to exit after its 1st line if needed.
+        let first = judge_batch(&setup, &pairs);
+        assert!(first.is_none(), "mid-batch death should return None");
+        // Next call must respawn a fresh session instead of staying wedged.
+        let second = judge_batch(&setup, &pairs).expect("recovered session must answer");
+        assert_eq!(second.len(), 2);
+        remove_tree(&root);
+    }
 }

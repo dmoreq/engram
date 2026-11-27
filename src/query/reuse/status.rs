@@ -3,11 +3,12 @@
 use std::collections::HashSet;
 
 /// One validated target kind. MCP/CLI argument parsing never mixes them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
     Repo,
-    Files(Vec<String>),
-    Symbols(Vec<i64>),
+    Files,
+    Dir,
+    Symbols,
 }
 
 /// One validated scan scope. `paths` holds exact files and directory prefixes;

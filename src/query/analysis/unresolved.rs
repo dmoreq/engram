@@ -16,7 +16,8 @@ struct UnresolvedScope<'a> {
 /// Unresolved edge names with locations (Amendment 19). Report shape: header,
 /// then one `path:line kind name` row per unresolved site.
 pub fn unresolved_names(ctx: &QueryCtx<'_>, path: Option<&str>, limit: usize) -> Result<LineQuery> {
-    let (limit, clause, params) = scoped_query(path, limit, "f", "path", 1)?;
+    let norm = path.map(|p| normalize_repo_path(ctx.root, p));
+    let (limit, clause, params) = scoped_query(norm.as_deref(), limit, "f", "path", 1)?;
     let scope = UnresolvedScope {
         conn: ctx.conn,
         clause,
@@ -68,22 +69,24 @@ pub fn unresolved_names(ctx: &QueryCtx<'_>, path: Option<&str>, limit: usize) ->
 /// empty, so the caller can return the no-results error without two extra
 /// count queries.
 fn unresolved_counts(scope: &UnresolvedScope<'_>) -> Result<Option<(i64, i64, i64)>> {
-    let scalar = |expr: &str, extra: &str| -> Result<i64> {
-        Ok(scope.conn.query_row(
-            &format!(
-                "SELECT {expr} FROM unresolved_calls u JOIN files f ON f.id = u.file_id WHERE 1=1 {extra} {}",
-                scope.clause
-            ),
-            rusqlite::params_from_iter(scope.params.iter()),
-            |r| r.get::<_, i64>(0),
-        )?)
-    };
-    let total = scalar("COUNT(*)", "AND u.site_line > 0")?;
+    let sql = format!(
+        "SELECT
+             COALESCE(SUM(CASE WHEN u.site_line > 0 THEN 1 ELSE 0 END), 0),
+             COUNT(DISTINCT CASE WHEN u.site_line > 0 THEN u.file_id END),
+             COALESCE(SUM(CASE WHEN u.site_line = 0 THEN 1 ELSE 0 END), 0)
+         FROM unresolved_calls u
+         JOIN files f ON f.id = u.file_id
+         WHERE 1=1 {}",
+        scope.clause
+    );
+    let (total, files, unlocated) = scope.conn.query_row(
+        &sql,
+        rusqlite::params_from_iter(scope.params.iter()),
+        crate::db::ints3,
+    )?;
     if total == 0 {
         return Ok(None);
     }
-    let files = scalar("COUNT(DISTINCT u.file_id)", "AND u.site_line > 0")?;
-    let unlocated = scalar("COUNT(*)", "AND u.site_line = 0")?;
     Ok(Some((total, files, unlocated)))
 }
 
@@ -124,7 +127,8 @@ fn unresolved_rows(scope: &UnresolvedScope<'_>, limit: usize) -> Result<Vec<Unre
 /// Unresolved-callee report (Amendment 5): files with counts, descending.
 /// Report shape — cap, no staleness; header carries the index total.
 pub fn unresolved(ctx: &QueryCtx<'_>, path: Option<&str>, limit: usize) -> Result<LineQuery> {
-    let (limit, clause, params) = scoped_query(path, limit, "f", "path", 1)?;
+    let norm = path.map(|p| normalize_repo_path(ctx.root, p));
+    let (limit, clause, params) = scoped_query(norm.as_deref(), limit, "f", "path", 1)?;
     let scope = UnresolvedScope {
         conn: ctx.conn,
         clause,
@@ -195,50 +199,50 @@ fn unresolved_from_where() -> String {
 
 /// Name-level view (R7 L4): file counts alone say where resolution failed,
 /// not what it missed. `[internal]` marks names that exist in the index — an
-/// actionable resolver gap — versus external/builtin calls.
+/// actionable resolver gap — versus external/builtin calls. Single-pass CTE
+/// evaluates `EXISTS` once per distinct name.
 fn unresolved_name_view(scope: &UnresolvedScope<'_>) -> Result<UnresolvedNames> {
-    let mut name_stmt = scope.conn.prepare(&format!(
-        "SELECT uc.dst_name, COUNT(*) AS n,
-                EXISTS(SELECT 1 FROM symbols s
-                       WHERE s.name = uc.dst_name OR s.qualname = uc.dst_name)
-         {} {}
-         GROUP BY uc.dst_name
-         ORDER BY n DESC, uc.dst_name
+    let sql = format!(
+        "WITH grouped AS (
+             SELECT uc.dst_name AS name,
+                    COUNT(*) AS n,
+                    EXISTS(
+                        SELECT 1 FROM symbols s
+                        WHERE s.name = uc.dst_name OR s.qualname = uc.dst_name
+                    ) AS is_internal
+             {} {}
+             GROUP BY uc.dst_name
+         ),
+         totals AS (
+             SELECT COUNT(*) AS distinct_cnt,
+                    COALESCE(SUM(is_internal), 0) AS internal_cnt
+             FROM grouped
+         )
+         SELECT g.name, g.n, g.is_internal, t.internal_cnt, t.distinct_cnt
+         FROM grouped g, totals t
+         ORDER BY g.n DESC, g.name
          LIMIT 10",
         unresolved_from_where(),
         scope.clause
-    ))?;
-    let names = name_stmt
-        .query_map(rusqlite::params_from_iter(scope.params.iter()), |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)? != 0,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let internal: i64 = scope.conn.query_row(
-        &format!(
-            "SELECT COUNT(*) FROM (
-            SELECT uc.dst_name {}
-              AND EXISTS(SELECT 1 FROM symbols s
-                         WHERE s.name = uc.dst_name OR s.qualname = uc.dst_name)
-              {}
-            GROUP BY uc.dst_name)",
-            unresolved_from_where(),
-            scope.clause
-        ),
-        rusqlite::params_from_iter(scope.params.iter()),
-        |r| r.get(0),
-    )?;
-    let distinct: i64 = scope.conn.query_row(
-        &format!(
-            "SELECT COUNT(DISTINCT uc.dst_name) {} {}",
-            unresolved_from_where(),
-            scope.clause
-        ),
-        rusqlite::params_from_iter(scope.params.iter()),
-        |r| r.get(0),
-    )?;
+    );
+    let mut stmt = scope.conn.prepare(&sql)?;
+    let mut names = Vec::new();
+    let mut internal = 0i64;
+    let mut distinct = 0i64;
+    let rows = stmt.query_map(rusqlite::params_from_iter(scope.params.iter()), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)? != 0,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (name, n, is_internal, int_cnt, dist_cnt) = row?;
+        internal = int_cnt;
+        distinct = dist_cnt;
+        names.push((name, n, is_internal));
+    }
     Ok((names, internal, distinct))
 }

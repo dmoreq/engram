@@ -145,7 +145,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
         let Some((warn, critical)) = budget(tool) else {
             continue;
         };
-        if agg.calls < 20 {
+        if agg.latencies_ms.len() < 20 {
             continue;
         }
         evaluated += 1;
@@ -154,7 +154,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
             .baseline_metrics
             .tools
             .get(tool)
-            .filter(|b| b.calls >= 20)
+            .filter(|b| b.latencies_ms.len() >= 20)
             .map(|b| b.p95())
             .filter(|b| *b > 0.0);
         let mut status = if p95 > critical {
@@ -215,7 +215,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
         .baseline_metrics
         .tools
         .get(&worst_tool)
-        .filter(|b| b.calls >= 20)
+        .filter(|b| b.latencies_ms.len() >= 20)
         .map(|b| BaselineView {
             value: b.p95(),
             ratio: if b.p95() > 0.0 {

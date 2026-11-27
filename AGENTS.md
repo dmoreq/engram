@@ -68,7 +68,7 @@ When adding, removing, or modifying any subcommand, flag, MCP tool, output forma
    - *Pillar 1 (Graph Navigation)*: `build`, `callers`, `callees`, `path`, `context`, `impact`, `imports`, `symbols`.
    - *Pillar 2 (Anti-Reinvention)*: Pre-write `search` (prioritizing `[callers=N]`) and post-edit `reuse`.
    - *Pillar 3 (Project Memory)*: Pre-task `mem query` and post-fix `mem write`.
-   - Keep human-audit commands (`tests`, `dead`, `complexity`, `hotspots`, `report`, `stats`, `files`) out of mandatory agent routing.
+   - Keep human-audit commands (`stats`, `unresolved`, `usage`, `audit`, `doctor`) out of mandatory agent routing.
 4. **Public Docs**: [`README.md`](README.md), [`docs/getting-started.md`](docs/getting-started.md), [`docs/usage.md`](docs/usage.md), [`docs/cli-reference.md`](docs/cli-reference.md), [`docs/agent-integration.md`](docs/agent-integration.md), and [`CHANGELOG.md`](CHANGELOG.md).
 5. **Packaging**: [`Cargo.toml`](Cargo.toml) (`include` list), [`tests/scripts/allowlist.txt`](tests/scripts/allowlist.txt), [`scripts/install.sh`](scripts/install.sh), and [`.github/workflows/`](.github/workflows/).
 

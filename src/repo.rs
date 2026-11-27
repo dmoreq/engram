@@ -184,6 +184,18 @@ pub fn cached_worktree_main_root(root: &Path) -> Option<PathBuf> {
     verdict
 }
 
+/// Canonical aggregation bucket for a journaled repository path: folds a
+/// linked git worktree into its main repository root when `worktree_hint` is
+/// true and the `.git` pointer resolves. Returns `(bucket_key, folded)`.
+pub fn canonical_repo_bucket(repo: &str, worktree_hint: bool) -> (String, bool) {
+    if worktree_hint {
+        if let Some(main) = cached_worktree_main_root(Path::new(repo)) {
+            return (main.to_string_lossy().into_owned(), true);
+        }
+    }
+    (repo.to_string(), false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

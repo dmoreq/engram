@@ -9,6 +9,10 @@ use ignore::WalkBuilder;
 
 use crate::error::{EgError, Result};
 
+mod cargo_manifest;
+use cargo_manifest::set_current_crate_name_for;
+pub(crate) use cargo_manifest::take_current_crate_name;
+
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 
 /// Walk allowlist (P2: Python + TypeScript/TSX + JavaScript/JSX + Rust),
@@ -248,6 +252,7 @@ pub(crate) fn open_regular_file(path: &Path) -> std::io::Result<Option<std::fs::
 /// prevents an unbounded allocation, and an over-cap result is an error rather
 /// than a truncated parse.
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+    set_current_crate_name_for(path);
     use std::io::Read;
     let not_regular = || EgError::Internal(format!("not a regular file: {}", path.display()));
     let file = match open_regular_file(path)? {

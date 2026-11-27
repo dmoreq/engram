@@ -41,6 +41,22 @@ pub(super) fn write_rows(
     // Edges: endpoints map fresh -> inserted id, carried -> previous row id.
     let edge_rows = edge_rows_for(resolution, &fresh_pos, &fresh_sym_ids);
     crate::db::insert_edge_rows(conn, &edge_rows)?;
+    let export_rows: Vec<(usize, &str, &str, i64)> = resolution
+        .module_exports
+        .iter()
+        .filter_map(|e| {
+            let target_id =
+                resolve_sym_id(e.target_sym_idx, &fresh_pos, &fresh_sym_ids, resolution)?;
+            Some((
+                e.file_idx,
+                e.module_qualname.as_str(),
+                e.exported_name.as_str(),
+                target_id,
+            ))
+        })
+        .collect();
+    crate::db::insert_module_exports(conn, &export_rows, &fresh_file_ids)?;
+    crate::db::insert_module_stars(conn, &resolution.module_stars, &fresh_file_ids)?;
     Ok(())
 }
 

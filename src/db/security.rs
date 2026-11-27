@@ -53,6 +53,7 @@ pub(crate) fn reject_symlink(path: &Path, label: &str) -> Result<()> {
 /// repository's journal through one.
 pub(crate) fn reject_unsafe_journal(root: &Path) -> Result<()> {
     let dir = eg_dir(root);
+    reject_symlink(&dir, ".engram directory")?;
     for name in ["usage.log", "usage.log.1"] {
         let path = dir.join(name);
         if let Ok(meta) = fs::symlink_metadata(&path) {
@@ -64,7 +65,7 @@ pub(crate) fn reject_unsafe_journal(root: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
+    reject_tracked_eg_dir(root)
 }
 
 /// Create or validate the machine-wide confinement directory and keep it

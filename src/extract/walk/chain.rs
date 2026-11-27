@@ -10,6 +10,27 @@ pub(crate) fn node_str<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
 
+/// Comments never carry signature structure; skip them wholesale so a
+/// decorated declaration or a brace inside a comment cannot truncate the scan.
+fn skip_comment(src: &[u8], end: usize, stop: usize, python: bool) -> Option<usize> {
+    let b = src[end];
+    if (b == b'/' && end + 1 < stop && src[end + 1] == b'/') || (b == b'#' && python) {
+        let mut cur = end;
+        while cur < stop && src[cur] != b'\n' {
+            cur += 1;
+        }
+        return Some(cur);
+    }
+    if b == b'/' && end + 1 < stop && src[end + 1] == b'*' {
+        let mut cur = end + 2;
+        while cur + 1 < stop && !(src[cur] == b'*' && src[cur + 1] == b'/') {
+            cur += 1;
+        }
+        return Some((cur + 2).min(stop));
+    }
+    None
+}
+
 /// One-line signature (Amendments 12a and 18): capture the declaration
 /// header, continue across line wraps inside a parameter list, stop at the
 /// body delimiter (`{`, `;`, or Python `:`), collapse whitespace, and cap
@@ -23,30 +44,11 @@ pub(super) fn signature_of(node: Node<'_>, src: &[u8]) -> String {
     let mut end = start;
     let mut prev_non_space: u8 = 0;
     while end < stop {
+        if let Some(next) = skip_comment(src, end, stop, python) {
+            end = next;
+            continue;
+        }
         let b = src[end];
-        // Comments never carry signature structure; skip them wholesale so a
-        // decorated declaration or a brace inside a comment cannot truncate
-        // the scan early.
-        if b == b'/' && end + 1 < stop && src[end + 1] == b'/' {
-            while end < stop && src[end] != b'\n' {
-                end += 1;
-            }
-            continue;
-        }
-        if b == b'/' && end + 1 < stop && src[end + 1] == b'*' {
-            end += 2;
-            while end + 1 < stop && !(src[end] == b'*' && src[end + 1] == b'/') {
-                end += 1;
-            }
-            end = (end + 2).min(stop);
-            continue;
-        }
-        if b == b'#' && python {
-            while end < stop && src[end] != b'\n' {
-                end += 1;
-            }
-            continue;
-        }
         match b {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,
@@ -155,9 +157,10 @@ fn dotted_chain_inner(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec
         // Rust `a.b` (fields `value`/`field`) share the same chain rule.
         "attribute" | "member_expression" | "field_expression" => member_chain(node, src),
         // Rust scoped type paths in impl/trait positions: crate::Shape,
-        // std::fmt::Display. Treat them like scoped_identifier so a qualified
-        // impl target still produces an edge or unresolved row.
-        "scoped_type_identifier" | "scoped_identifier" => scoped_chain(node, src),
+        // std::fmt::Display, and TS nested_type_identifier (ns.Base).
+        "scoped_type_identifier" | "scoped_identifier" | "nested_type_identifier" => {
+            scoped_chain(node, src)
+        }
         // Annotation wrappers unwrap to the inner type's chain.
         "type" | "type_annotation" => unwrapped_chain(node, src),
         "generic_type" => generic_chain(node, src, allow_str),
@@ -273,7 +276,7 @@ fn is_none_type_node(node: Node<'_>, src: &[u8]) -> bool {
     } else {
         node
     };
-    inner.kind() == "none" || node_str(inner, src) == "None"
+    inner.kind() == "none" || matches!(node_str(inner, src), "None" | "null" | "undefined")
 }
 
 fn union_pipe_chain(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec<String>> {
@@ -341,10 +344,11 @@ fn forward_ref_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
     Some(parts)
 }
 
-/// Rust scoped path (`a::b::c`): append `name` to the chain of `path`.
+/// Rust/TS scoped path (`a::b::c`, `ns.Base`): append `name` to the chain of `path`/`module`.
 fn scoped_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
     let mut chain = node
         .child_by_field_name("path")
+        .or_else(|| node.child_by_field_name("module"))
         .and_then(|p| dotted_chain(p, src))
         .unwrap_or_default();
     if let Some(name) = node.child_by_field_name("name") {
@@ -353,8 +357,16 @@ fn scoped_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
     (!chain.is_empty()).then_some(chain)
 }
 
-/// `Trait<T>`: use the first type identifier as the base name.
+/// `Trait<T>`, `crate::pkg::Trait<T>`, `ns.Base<T>`: resolve the base type chain.
 fn generic_base(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
+    if let Some(ty) = node
+        .child_by_field_name("type")
+        .or_else(|| node.child_by_field_name("name"))
+    {
+        if let Some(chain) = dotted_chain(ty, src) {
+            return Some(chain);
+        }
+    }
     let mut stack = vec![node];
     while let Some(n) = stack.pop() {
         if n.kind() == "type_identifier" {

@@ -28,7 +28,9 @@ use crate::error::{EgError, Result};
 pub(crate) use crate::query::sanitize;
 use crate::query::QueryCtx;
 
-use corpus::{load_callees, load_deep_weights, load_df_all, load_symbols, select_targets};
+use corpus::{
+    load_callees, load_deep_weights, load_symbols, precompute_d1_callee_ids, select_targets,
+};
 use detectors::{Corpus, DETECTORS};
 use index::{CorpusIndex, INVERTED_INDEX_MIN_SYMBOLS};
 use opts::ReuseOpts;
@@ -56,9 +58,11 @@ pub struct ReuseCandidate {
     pub symbol: String,
     pub file: String,
     pub line: i64,
+    pub line_end: i64,
     pub canonical: String,
     pub canonical_file: String,
     pub canonical_line: i64,
+    pub canonical_line_end: i64,
     pub canonical_callers: i64,
     pub overlap_pct: Option<u64>,
     pub shared_items: Vec<String>,
@@ -175,7 +179,7 @@ pub fn detect_hints(ctx: &QueryCtx<'_>, new_names: &HashSet<String>) -> Result<V
     }
     let opts = ReuseOpts::for_hints();
     let scope = status::ResolvedScope {
-        kind: status::ScopeKind::Symbols(Vec::new()),
+        kind: status::ScopeKind::Symbols,
         paths: Vec::new(),
         symbols: new_names.clone(),
         files: Vec::new(),
@@ -222,19 +226,10 @@ pub struct ProposalRunArgs {
 
 /// Run `eg reuse` across the whole repository or specified paths.
 pub fn run_reuse(ctx: &QueryCtx<'_>, args: ReuseRunArgs) -> Result<crate::query::LineQuery> {
-    let opts = ReuseOpts::new(
-        args.paths,
-        args.limit,
-        args.deep_callee,
-        args.min_confidence,
-        args.explain,
-    )?
-    .with_show_suppressed(args.show_suppressed)
-    .with_coverage(&args.coverage)?
-    .with_judge(args.judge);
+    let opts = ReuseOpts::from_run_args(args)?;
     let scope = target::resolve_scope(ctx, &opts.paths)?;
     let report = analyze_corpus_with(ctx, &opts, &scope)?;
-    finalize::finalize(ctx, report, &opts)
+    finalize::finalize(report, &opts)
 }
 
 /// Phase 2 proposal entry point. Paths are rejected by the caller; the repo
@@ -243,19 +238,10 @@ pub fn run_reuse_proposal(
     ctx: &QueryCtx<'_>,
     args: ProposalRunArgs,
 ) -> Result<crate::query::LineQuery> {
-    let opts = ReuseOpts::new_proposal(
-        args.signature,
-        args.callees,
-        args.limit,
-        args.deep_callee,
-        args.min_confidence,
-        args.explain,
-    )?
-    .with_show_suppressed(args.show_suppressed)
-    .with_judge(args.judge);
+    let opts = ReuseOpts::from_proposal_args(args)?;
     let scope = target::resolve_scope(ctx, &[])?;
     let report = analyze_corpus_with(ctx, &opts, &scope)?;
-    finalize::finalize(ctx, report, &opts)
+    finalize::finalize(report, &opts)
 }
 
 /// Analysis entry point: load the corpus, run guards/detectors or the
@@ -269,7 +255,11 @@ pub(super) fn analyze_corpus_with(
     let (mut pool, _total, guarded_out) = if opts.mode == ReuseMode::Propose {
         (proposal::analyze(ctx.conn, opts)?, 0, 0)
     } else if opts.mode == ReuseMode::Coverage {
-        (coverage::analyze(ctx.conn, &opts.coverage)?, 0, 0)
+        (
+            coverage::analyze(ctx.conn, &opts.coverage, scope.path_filter())?,
+            0,
+            0,
+        )
     } else {
         analyze_corpus(
             ctx.conn,
@@ -279,7 +269,11 @@ pub(super) fn analyze_corpus_with(
             opts.deep_callee,
         )?
     };
-    let allowed = allowlist::load(ctx);
+    let allowed = if pool.is_empty() {
+        HashSet::new()
+    } else {
+        allowlist::load(ctx)
+    };
     let mut suppressed = 0usize;
     if !allowed.is_empty() {
         if opts.show_suppressed {
@@ -298,20 +292,28 @@ pub(super) fn analyze_corpus_with(
             });
         }
     }
+    // Evaluate freshness before judge::apply so stale/unknown canonicals are
+    // demoted and never promoted by a semantic duplicate verdict.
+    let freshness = if opts.freshness_mode == FreshnessMode::Full {
+        freshness::evaluate(ctx, scope, &mut pool)?
+    } else {
+        freshness::FreshnessReport::default()
+    };
     // Judge BEFORE the confidence gate. The judge removes gray-band candidates
     // the semantic side calls distinct and promotes surviving gray duplicates,
     // so a sub-threshold candidate CAN return: an early gate would drop
     // exactly the candidates the judge exists to arbitrate, and
     // `--min-confidence medium` used to yield "0 judgeable candidates".
     // Without --judge the call is a no-op, so the reorder costs nothing on
-    // the default path; freshness still only demotes, so it stays after the
-    // gate. `for_hints()` forces min_confidence Low, so hints are unaffected.
+    // the default path. `for_hints()` forces min_confidence Low, so hints are
+    // unaffected.
     let judge_note = judge::apply(
         ctx,
         &mut pool,
         opts.judge,
         opts.mode,
         opts.proposal_signature.as_deref(),
+        &allowed,
     );
     let below_threshold = pool
         .iter()
@@ -319,11 +321,6 @@ pub(super) fn analyze_corpus_with(
         .count();
     pool.retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     let total = pool.len() + below_threshold;
-    let freshness = if opts.freshness_mode == FreshnessMode::Full {
-        freshness::evaluate(ctx, scope, &mut pool)?
-    } else {
-        freshness::FreshnessReport::default()
-    };
     let counts = ReuseCounts {
         guarded_out,
         below_threshold,
@@ -348,12 +345,20 @@ pub(crate) fn analyze_corpus(
     limit: usize,
     deep_callee: bool,
 ) -> Result<(Vec<ReuseCandidate>, usize, usize)> {
-    let mut symbols = load_symbols(conn)?;
+    let mut symbols = load_symbols(conn, false)?;
     if symbols.len() < 2 {
         return Ok((Vec::new(), 0, 0));
     }
 
-    load_callees(conn, &mut symbols)?;
+    let target_ids: Vec<i64> = select_targets(&symbols, path_filter, target_names)
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    if target_ids.is_empty() {
+        return Ok((Vec::new(), 0, 0));
+    }
+
+    let df_all_excl = load_callees(conn, &mut symbols)?;
     let stopset = build_stoplist(&symbols);
     let name_stopset = build_name_stoplist(&symbols);
     for sym in symbols.values_mut() {
@@ -365,11 +370,15 @@ pub(crate) fn analyze_corpus(
         sym.name_tokens
             .retain(|token| !name_stopset.contains(token));
     }
+    precompute_d1_callee_ids(&mut symbols);
     if deep_callee {
         load_deep_weights(&mut symbols);
     }
 
-    let mut targets = select_targets(&symbols, path_filter, target_names);
+    let mut targets: Vec<&corpus::SymbolData> = target_ids
+        .into_iter()
+        .filter_map(|id| symbols.get(&id))
+        .collect();
     // Duplicate qualnames across files race for the same deduped pair; sort by
     // the full identity so the surviving target (and its freshness) is stable.
     targets.sort_by(|a, b| {
@@ -378,8 +387,8 @@ pub(crate) fn analyze_corpus(
             .then_with(|| a.file_path.cmp(&b.file_path))
             .then_with(|| a.line_start.cmp(&b.line_start))
     });
-    let index = (symbols.len() > INVERTED_INDEX_MIN_SYMBOLS).then(|| CorpusIndex::build(&symbols));
-    let df_all_excl = load_df_all(conn)?;
+    let index = (symbols.len() > INVERTED_INDEX_MIN_SYMBOLS && targets.len() >= 16)
+        .then(|| CorpusIndex::build(&symbols, deep_callee));
     let corpus = Corpus {
         symbols: &symbols,
         index: index.as_ref(),
@@ -410,7 +419,15 @@ pub(crate) fn analyze_corpus(
         }
     }
 
-    candidates.sort_by(|a, b| {
+    sort_candidates(&mut candidates);
+    let total = candidates.len();
+    let guarded_out = corpus.guarded_out.get();
+    candidates.truncate(limit);
+    Ok((candidates, total, guarded_out))
+}
+
+pub(super) fn sort_candidates(pool: &mut [ReuseCandidate]) {
+    pool.sort_by(|a, b| {
         b.confidence
             .rank()
             .cmp(&a.confidence.rank())
@@ -419,11 +436,10 @@ pub(crate) fn analyze_corpus(
             .then_with(|| a.symbol.cmp(&b.symbol))
             .then_with(|| a.file.cmp(&b.file))
             .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.canonical.cmp(&b.canonical))
+            .then_with(|| a.canonical_file.cmp(&b.canonical_file))
+            .then_with(|| a.canonical_line.cmp(&b.canonical_line))
     });
-    let total = candidates.len();
-    let guarded_out = corpus.guarded_out.get();
-    candidates.truncate(limit);
-    Ok((candidates, total, guarded_out))
 }
 
 /// Dedup the (symbol, canonical) pair and push. A repeated pair is dropped;

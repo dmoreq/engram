@@ -27,12 +27,53 @@ import sys
 from collections import Counter
 from pathlib import Path
 from statistics import NormalDist
-from typing import Optional
+from typing import NamedTuple, Optional
+
+EXPECTED_LEDGER = {
+    "total": 160,
+    "tune": 50,
+    "confirmation": 90,
+    "confirmation_duplicate": 60,
+    "confirmation_distinct": 30,
+    "eligible": 30,
+    "d4": 15,
+    "d3": 15,
+    "negative": 30,
+    "holdout": 20,
+}
+
+
+class EvalConfig(NamedTuple):
+    threshold: float = 0.5
+    alpha: float = 0.05
+    target_power: float = 0.8
+
+    def validate(self) -> None:
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError("threshold must be 0..1")
+        if not 0.0 < self.alpha < 1.0:
+            raise ValueError("alpha must be in (0, 1)")
+        if not 0.0 < self.target_power < 1.0:
+            raise ValueError("power must be in (0, 1)")
 
 
 def read_rows(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def validate_row_tiers(rows: list[dict]) -> None:
+    for row in rows:
+        split_name = row["split"]
+        if split_name == "confirmation":
+            if row["tier"] in {"eligible", "d4", "d3"} and row["label"] != "duplicate":
+                raise ValueError("confirmation tier rows must be duplicate")
+            if row["tier"] == "negative" and row["label"] != "distinct":
+                raise ValueError("confirmation negative rows must be distinct")
+        elif split_name == "tune" and row["tier"] != "tune":
+            raise ValueError("tune rows must use tier=tune")
+        elif split_name == "holdout" and row["tier"] != "holdout":
+            raise ValueError("holdout rows must use tier=holdout")
 
 
 def validate(path: Path) -> dict:
@@ -48,34 +89,12 @@ def validate(path: Path) -> dict:
     if len(ids) != len(rows):
         raise ValueError("pair_id values must be unique")
 
+    validate_row_tiers(rows)
     split = Counter(row["split"] for row in rows)
     confirmation = [row for row in rows if row["split"] == "confirmation"]
     confirmation_labels = Counter(row["label"] for row in confirmation)
     confirmation_tiers = Counter(row["tier"] for row in confirmation)
-    for row in rows:
-        split_name = row["split"]
-        if split_name == "confirmation":
-            if row["tier"] in {"eligible", "d4", "d3"} and row["label"] != "duplicate":
-                raise ValueError("confirmation tier rows must be duplicate")
-            if row["tier"] == "negative" and row["label"] != "distinct":
-                raise ValueError("confirmation negative rows must be distinct")
-        elif split_name == "tune" and row["tier"] != "tune":
-            raise ValueError("tune rows must use tier=tune")
-        elif split_name == "holdout" and row["tier"] != "holdout":
-            raise ValueError("holdout rows must use tier=holdout")
 
-    expected = {
-        "total": 160,
-        "tune": 50,
-        "confirmation": 90,
-        "confirmation_duplicate": 60,
-        "confirmation_distinct": 30,
-        "eligible": 30,
-        "d4": 15,
-        "d3": 15,
-        "negative": 30,
-        "holdout": 20,
-    }
     actual = {
         "total": len(rows),
         "tune": split["tune"],
@@ -88,7 +107,11 @@ def validate(path: Path) -> dict:
         "negative": confirmation_tiers["negative"],
         "holdout": split["holdout"],
     }
-    mismatches = {k: {"expected": expected[k], "actual": actual[k]} for k in expected if expected[k] != actual[k]}
+    mismatches = {
+        k: {"expected": EXPECTED_LEDGER[k], "actual": actual[k]}
+        for k in EXPECTED_LEDGER
+        if EXPECTED_LEDGER[k] != actual[k]
+    }
     if mismatches:
         raise ValueError(f"oracle ledger mismatch: {json.dumps(mismatches, sort_keys=True)}")
     if set(split) - {"tune", "confirmation", "holdout"}:
@@ -111,16 +134,13 @@ def wilson_upper(successes: int, total: int, z: float = 1.96) -> float:
     return min(1.0, (centre + margin) / denom)
 
 
-def mcnemar(
+def discordant_counts(
     confirmation: list[dict],
     predictions: dict[str, float],
     baseline: dict[str, float],
     threshold: float,
-    alpha: float,
-    target_power: float,
-) -> dict:
+) -> tuple[int, int, int]:
     b = c = missing = 0
-    normal = NormalDist()
     for row in confirmation:
         current = predictions.get(row["pair_id"])
         reference = baseline.get(row["pair_id"])
@@ -134,6 +154,17 @@ def mcnemar(
             b += 1
         elif base_correct and not model_correct:
             c += 1
+    return b, c, missing
+
+
+def mcnemar(
+    confirmation: list[dict],
+    predictions: dict[str, float],
+    baseline: dict[str, float],
+    config: EvalConfig,
+) -> dict:
+    normal = NormalDist()
+    b, c, missing = discordant_counts(confirmation, predictions, baseline, config.threshold)
     discordant = b + c
     if discordant == 0:
         return {
@@ -145,14 +176,14 @@ def mcnemar(
             "p_value": 1.0,
             "power": 0.0,
             "mdd": 1.0,
-            "alpha": alpha,
-            "target_power": target_power,
+            "alpha": config.alpha,
+            "target_power": config.target_power,
         }
     chi2 = (abs(b - c) - 1) ** 2 / discordant
     p_value = 2 * (1 - normal.cdf(math.sqrt(chi2)))
     delta = abs(b - c) / discordant
-    z_alpha = normal.inv_cdf(1 - alpha / 2)
-    z_power = normal.inv_cdf(target_power)
+    z_alpha = normal.inv_cdf(1 - config.alpha / 2)
+    z_power = normal.inv_cdf(config.target_power)
     power = normal.cdf(math.sqrt(discordant) * delta - z_alpha)
     mdd = min(1.0, (z_alpha + z_power) / math.sqrt(discordant))
     return {
@@ -164,27 +195,17 @@ def mcnemar(
         "p_value": round(p_value, 6),
         "power": round(power, 4),
         "mdd": round(mdd, 4),
-        "alpha": alpha,
-        "target_power": target_power,
+        "alpha": config.alpha,
+        "target_power": config.target_power,
     }
 
 
-def evaluate(
-    labels_path: Path,
-    predictions_path: Path,
+def confusion_counts(
+    confirmation: list[dict],
+    predictions: dict[str, float],
     threshold: float,
-    baseline_path: Optional[Path] = None,
-    alpha: float = 0.05,
-    target_power: float = 0.8,
-    split_name: str = "confirmation",
-) -> dict:
-    labels = read_rows(labels_path)
-    predictions = {
-        row["pair_id"]: float(row["confidence"]) for row in read_rows(predictions_path)
-    }
-    confirmation = [row for row in labels if row["split"] == split_name]
-    tp = fp = fn = tn = 0
-    missing = 0
+) -> tuple[int, int, int, int, int]:
+    tp = fp = fn = tn = missing = 0
     for row in confirmation:
         confidence = predictions.get(row["pair_id"])
         if confidence is None:
@@ -200,12 +221,32 @@ def evaluate(
             fn += 1
         else:
             tn += 1
+    return tp, fp, fn, tn, missing
+
+
+def evaluate(
+    labels_path: Path,
+    predictions_path: Path,
+    threshold: float = 0.5,
+    baseline_path: Optional[Path] = None,
+    alpha: float = 0.05,
+    target_power: float = 0.8,
+    split_name: str = "confirmation",
+    config: Optional[EvalConfig] = None,
+) -> dict:
+    cfg = config if config is not None else EvalConfig(threshold, alpha, target_power)
+    labels = read_rows(labels_path)
+    predictions = {
+        row["pair_id"]: float(row["confidence"]) for row in read_rows(predictions_path)
+    }
+    confirmation = [row for row in labels if row["split"] == split_name]
+    tp, fp, fn, tn, missing = confusion_counts(confirmation, predictions, cfg.threshold)
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     result = {
         "labels": str(labels_path),
         "predictions": str(predictions_path),
-        "threshold": threshold,
+        "threshold": cfg.threshold,
         "split": split_name,
         "confirmation_pairs": len(confirmation),
         "missing_predictions": missing,
@@ -221,9 +262,7 @@ def evaluate(
         baseline = {
             row["pair_id"]: float(row["confidence"]) for row in read_rows(baseline_path)
         }
-        result["mcnemar"] = mcnemar(
-            confirmation, predictions, baseline, threshold, alpha, target_power
-        )
+        result["mcnemar"] = mcnemar(confirmation, predictions, baseline, cfg)
     return result
 
 
@@ -243,20 +282,14 @@ def main() -> int:
         if args.baseline is not None and args.predictions is None:
             raise ValueError("--baseline requires --predictions")
         if args.predictions is not None:
-            if not 0.0 <= args.threshold <= 1.0:
-                raise ValueError("threshold must be 0..1")
-            if not 0.0 < args.alpha < 1.0:
-                raise ValueError("alpha must be in (0, 1)")
-            if not 0.0 < args.target_power < 1.0:
-                raise ValueError("power must be in (0, 1)")
+            config = EvalConfig(args.threshold, args.alpha, args.target_power)
+            config.validate()
             result = evaluate(
                 args.labels,
                 args.predictions,
-                args.threshold,
-                args.baseline,
-                args.alpha,
-                args.target_power,
-                args.split,
+                baseline_path=args.baseline,
+                split_name=args.split,
+                config=config,
             )
     except (OSError, ValueError) as exc:
         print(f"reuse_oracle: {exc}", file=sys.stderr)

@@ -279,7 +279,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
             KEY_PARAM,
             p_bool!("global", "Touch in the cross-project global memory store"),
         ],
-        core: false,
+        core: true,
     },
     ToolSpec {
         name: "mem_get",
@@ -288,7 +288,7 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
             KEY_PARAM,
             p_bool!("global", "Fetch from global memory store"),
         ],
-        core: false,
+        core: true,
     },
     ToolSpec {
         name: "mem_delete",
@@ -335,6 +335,24 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
         params: &[
             p_bool!("global", "Rebuild the cross-project global memory store"),
             p_bool!("embed", "Compute note embeddings through the eg-judge text model (EG_JUDGE_TEXT_MODEL)"),
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "unresolved",
+        description: "Per-file unresolved-callee counts or unresolved edge sites (candidates only)",
+        params: &[
+            p_bool!("names", "List unresolved edge sites with file:line instead of per-file counts"),
+            p_str!("path", false, "Restrict to a repo-relative file or directory prefix"),
+            LIMIT_PARAM,
+        ],
+        core: false,
+    },
+    ToolSpec {
+        name: "stats",
+        description: "Index totals: files, symbols, edges, parse errors, and sizes",
+        params: &[
+            p_str!("path", false, "Restrict counts to a repo-relative file or directory prefix"),
         ],
         core: false,
     },

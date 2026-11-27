@@ -13,6 +13,7 @@ mod invalidation;
 mod judge_batch;
 mod memory_basics;
 mod memory_doctor;
+mod memory_embed;
 mod memory_enhancements;
 mod memory_import;
 mod memory_parity;

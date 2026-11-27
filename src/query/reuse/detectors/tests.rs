@@ -16,13 +16,16 @@ fn make_test_symbol(
         qualname: qualname.to_string(),
         file_id,
         file_path: format!("src/file_{file_id}.rs"),
+        lang_family: guards::LangFamily::Rust,
         line_start: 10,
         line_end: 20,
         resolved_callees: HashSet::new(),
         all_callees: callees.iter().map(|&s| s.to_string()).collect(),
         unresolved_callees: HashSet::new(),
         callee_ids: HashSet::new(),
+        d1_callee_ids: HashSet::new(),
         deep_weights: HashMap::new(),
+        deep_total: 0.0,
         inbound_callers: callers,
         tokens: HashSet::new(),
         type_tokens: HashSet::new(),
@@ -209,7 +212,7 @@ fn probe_id(name: &str) -> i64 {
     }
 }
 
-fn deep_symbol(
+pub(super) fn deep_symbol(
     id: i64,
     qualname: &str,
     direct: &[&str],
@@ -226,6 +229,7 @@ fn deep_symbol(
     for name in second_hop {
         sym.deep_weights.entry(probe_id(name)).or_insert(0.5);
     }
+    sym.deep_total = sym.deep_weights.values().sum();
     sym
 }
 
@@ -248,7 +252,7 @@ fn deep_callee_precision_meets_the_gate() {
             2,
             deep_symbol(2, "t.canonical", candidate_direct, &[], 2, 5),
         );
-        let index = CorpusIndex::build(&symbols);
+        let index = CorpusIndex::build(&symbols, true);
         let corpus = Corpus {
             symbols: &symbols,
             index: Some(&index),
@@ -327,7 +331,8 @@ fn detector_scan_gate_on_5000_symbols() {
             }
         }
     }
-    let index = CorpusIndex::build(&symbols);
+    corpus::precompute_d1_callee_ids(&mut symbols);
+    let index = CorpusIndex::build(&symbols, false);
     let corpus = Corpus {
         symbols: &symbols,
         index: Some(&index),
@@ -406,7 +411,8 @@ fn inverted_index_preserves_detector_results() {
             }
         }
     }
-    let index = CorpusIndex::build(&symbols);
+    corpus::precompute_d1_callee_ids(&mut symbols);
+    let index = CorpusIndex::build(&symbols, false);
     let flat = Corpus {
         symbols: &symbols,
         index: None,

@@ -153,6 +153,7 @@ pub use time::{parse_time_bound, validate_window, TimeWindow};
 mod graph;
 mod guard;
 mod judge_hint;
+pub(crate) mod judge_proc;
 mod note;
 mod rank;
 mod tokens;
@@ -311,7 +312,7 @@ mod tests {
                 expires_at: 0,
                 superseded_by: None,
             },
-            lex_raw: lex,
+            lex_raw: Some(lex),
             ref_raw: r#ref,
             graph_raw: 0.0,
             sem_raw: None,
@@ -419,6 +420,23 @@ mod tests {
                 .is_ok(),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn ref_matches_target_boundary_checks() {
+        for (want, r, t) in [
+            (true, "src/query/impact.rs", "impact.rs"),
+            (true, "./a/b.rs", "a/b.rs"),
+            (true, "crate::memory::guard", "guard"),
+            (true, "Context.render", "render"),
+            (false, "src/query/my_impact.rs", "impact.rs"),
+            (false, "src/query/impact.rs", ""),
+            (false, "src/a.rs", "rs"),
+            (false, "crate::memory::guard", "memory"),
+            (false, "a.b.c", "b"),
+        ] {
+            assert_eq!(guard::ref_matches_target(r, t), want, "{r} vs {t}");
         }
     }
 }

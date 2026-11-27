@@ -251,18 +251,9 @@ fn collect_repo_candidates(
     if crate::db::reject_tracked_eg_dir(r_root).is_err() {
         return 0;
     }
-    let db_path = r_root.join(".engram").join("index.db");
-    if crate::db::reject_symlink(&r_root.join(".engram"), ".engram directory").is_err()
-        || crate::db::reject_symlink(&db_path, "index.db").is_err()
-        || !db_path.is_file()
-    {
+    let Ok(conn) = crate::db::try_open_index(r_root) else {
         return 0;
-    }
-    let conn =
-        match Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
-            Ok(c) => c,
-            Err(_) => return 0,
-        };
+    };
     let (candidates, total, _) =
         match crate::query::reuse::analyze_corpus(&conn, None, None, SAMPLE_CAP, false) {
             Ok(res) => res,

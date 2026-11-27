@@ -20,10 +20,6 @@ pub(crate) use chain::{node_str, text};
 pub(super) use dispatch::walk_children;
 use dispatch::*;
 
-pub(super) fn innermost_scope<'a>(ctx: &'a WalkCtx, module: &'a str) -> &'a str {
-    ctx.enclosing_scope(module)
-}
-
 pub(super) struct WalkCtx {
     class_stack: Vec<String>, // class/impl qualnames
     mod_stack: Vec<String>,   // inline `mod` qualnames (Rust)
@@ -45,6 +41,14 @@ impl WalkCtx {
 
     pub(super) fn scope_func(&self) -> String {
         self.func_stack.last().cloned().unwrap_or_default()
+    }
+
+    pub(super) fn alias_scope<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.func_stack.is_empty() && self.class_stack.is_empty() && self.mod_stack.is_empty() {
+            ""
+        } else {
+            self.enclosing_scope(fallback)
+        }
     }
 
     pub(super) fn parent_container(&self) -> Option<&str> {
@@ -83,6 +87,7 @@ pub(super) struct Walker<'a, 's, 'b> {
     pub(super) fx: &'b mut FileExtraction,
     pub(super) ctx: &'b mut WalkCtx,
     pub(super) work: &'b mut Vec<Step<'a>>,
+    pub(super) cursor: &'b mut tree_sitter::TreeCursor<'a>,
 }
 
 impl<'a, 's> Walker<'a, 's, '_> {
@@ -107,7 +112,7 @@ impl<'a, 's> Walker<'a, 's, '_> {
         if let Some(body) = self.node.child_by_field_name("body") {
             self.ctx.func_stack.push(spec.qualname.to_string());
             self.work.push(Step::PopFunc);
-            push_children_rev(self.work, body);
+            push_children_rev(self.work, self.cursor, body);
         }
     }
 
@@ -125,6 +130,21 @@ impl<'a, 's> Walker<'a, 's, '_> {
             qualname,
             is_test: is_test_item(self.fx, self.ctx, name),
         }
+    }
+
+    pub(super) fn push_local(&mut self, scope: &str, var: String) {
+        self.fx.bindings.locals.push((scope.to_string(), var));
+    }
+
+    pub(super) fn push_return_type(&mut self, qualname: String, chain: Vec<String>) {
+        self.fx.bindings.return_types.push((qualname, chain));
+    }
+
+    pub(super) fn push_alias(&mut self, scope: &str, bound: String, target: ImportTarget) {
+        self.fx
+            .bindings
+            .aliases
+            .push((scope.to_string(), bound, target));
     }
 }
 

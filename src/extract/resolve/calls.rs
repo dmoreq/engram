@@ -9,19 +9,33 @@ pub(super) fn resolve_call_sites(
     unresolved_per_file: &mut [usize],
     stats: &mut ExtractStats,
 ) {
+    let mut seen_type_refs: HashSet<(usize, usize)> = ctx
+        .t
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::TypeRef)
+        .filter_map(|e| e.dst_idx.map(|d| (e.src_idx, d)))
+        .collect();
     // Call sites.
     for (fi, fctx) in ctx.t.file_ctx.iter().enumerate() {
         for site in &fctx.calls {
-            let outcome = raw_resolve_call(ctx.t, fi, site);
+            let (outcome, receiver_class) = raw_resolve_call(ctx.t, fi, site);
             let src_idx = source_symbol_idx(ctx.t, fctx, site);
-            // Type-only reference (Python): a typed receiver `x.m()` depends
-            // on the class of `x`, not just on the method the call resolves
-            // to. Emit a `type_ref` edge to that class regardless of the call
-            // outcome, so the incremental dirty closure re-extracts this file
-            // when the class's branch changes — otherwise a new MRO hit (a
-            // method added on an ancestor) stays hidden behind a carried edge.
-            if let Some(edge) = type_ref_edge(ctx.t, fi, site, src_idx) {
-                ctx.t.edges.push(edge);
+            // Type-only reference: a typed receiver `x.m()` depends on the
+            // class of `x`, not just on the method the call resolves to.
+            if let Some(class_qn) = receiver_class {
+                if let Some(class_idx) = unique_class_index(ctx.t, &class_qn) {
+                    if seen_type_refs.insert((src_idx, class_idx)) {
+                        ctx.t.edges.push(NewEdge {
+                            src_idx,
+                            dst_idx: Some(class_idx),
+                            dst_name: class_qn,
+                            kind: EdgeKind::TypeRef,
+                            confidence: Confidence::Extracted,
+                            site_line: site.line,
+                        });
+                    }
+                }
             }
             match outcome {
                 Outcome::Extracted(dst) => {
@@ -116,23 +130,6 @@ pub(super) fn source_symbol_idx(t: &Tables, fctx: &FileCtx, site: &CallSite) -> 
         .unwrap_or(fctx.module_sym_idx)
 }
 
-pub(super) fn type_ref_edge(
-    t: &Tables,
-    fi: usize,
-    site: &CallSite,
-    src_idx: usize,
-) -> Option<NewEdge> {
-    let (class_qn, class_idx) = python_type_ref(t, fi, site)?;
-    Some(NewEdge {
-        src_idx,
-        dst_idx: Some(class_idx),
-        dst_name: class_qn,
-        kind: EdgeKind::TypeRef,
-        confidence: Confidence::Extracted,
-        site_line: site.line,
-    })
-}
-
 /// The class edge and, when the target is a class with a unique constructor,
 /// the constructor edge. `None` when the class itself is the constructor.
 pub(super) fn extracted_edges(t: &Tables, dst: usize) -> (String, Option<(usize, String)>) {
@@ -168,24 +165,91 @@ pub(super) fn ctor_target(t: &Tables, class_idx: usize) -> Option<usize> {
     None
 }
 
+/// Latest annotation or assignment at or before `site_line` in one scope.
+/// `include_params` treats a parameter annotation as a binding at line 0.
+pub(super) fn latest_binding<'a>(
+    fctx: &'a FileCtx,
+    scope: &str,
+    var: &str,
+    site_line: usize,
+    include_params: bool,
+) -> Option<&'a Vec<String>> {
+    if let Some(events) = fctx
+        .bindings
+        .assignments
+        .get(scope)
+        .and_then(|m| m.get(var))
+    {
+        let idx = events.partition_point(|(line, _)| *line <= site_line);
+        if idx > 0 {
+            return Some(&events[idx - 1].1);
+        }
+    }
+    if include_params {
+        if let Some(ann) = fctx.bindings.params.get(scope).and_then(|m| m.get(var)) {
+            return Some(ann);
+        }
+    }
+    None
+}
+
+/// Receiver typing at a call site: the latest annotation or assignment at or
+/// before `site_line`. The exact function scope wins; module scope is the
+/// fallback. A later assignment never changes an earlier call.
+pub(super) fn resolve_var_class(
+    t: &Tables,
+    fi: usize,
+    var: &str,
+    scope: &str,
+    scope_class: Option<&str>,
+    site_line: usize,
+    depth: usize,
+) -> Option<String> {
+    let fctx = &t.file_ctx[fi];
+    let mut scopes: Vec<(&str, bool)> = vec![(scope, true)];
+    let mut parent = scope;
+    while let Some((p, _)) = parent.rsplit_once('.') {
+        scopes.push((p, true));
+        parent = p;
+    }
+    if !scope.is_empty() {
+        scopes.push(("", true));
+    }
+    for &(s, inc_params) in &scopes {
+        if let Some(target) = latest_binding(fctx, s, var, site_line, inc_params) {
+            if target.is_empty() {
+                return None;
+            }
+            return resolve_target_class(t, fi, target, scope, scope_class, site_line, depth);
+        }
+    }
+    None
+}
+
 /// Borrowed call-site context shared by the name/attribute resolvers.
 pub(super) struct CallCtx<'a> {
     pub(super) t: &'a Tables,
     pub(super) fi: usize,
     pub(super) fctx: &'a FileCtx,
     pub(super) site: &'a CallSite,
+    pub(super) depth: usize,
 }
 
-pub(super) fn raw_resolve_call(t: &Tables, fi: usize, site: &CallSite) -> Outcome {
+pub(super) fn raw_resolve_call(
+    t: &Tables,
+    fi: usize,
+    site: &CallSite,
+) -> (Outcome, Option<String>) {
     let ctx = CallCtx {
         t,
         fi,
         fctx: &t.file_ctx[fi],
         site,
+        depth: 0,
     };
     match &site.callee {
-        Callee::Name(name) => resolve_name_callee(&ctx, name),
-        Callee::Attr(chain) => resolve_attr_callee(&ctx, chain),
+        Callee::Name(name) => (resolve_name_callee(&ctx, name), None),
+        Callee::Attr(chain) => resolve_attr_with_type_ref(&ctx, chain),
     }
 }
 
@@ -200,7 +264,7 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
     // shadows the file-wide binding for this function.
     if let Some((alias_scope, target)) = nearest_alias_scoped(ctx.fctx, &ctx.site.scope_func, name)
     {
-        if !alias_scope.is_empty() {
+        if !alias_scope.is_empty() && ctx.site.scope_mod.as_deref() != Some(alias_scope) {
             return alias_target_outcome(ctx.t, target, name).unwrap_or(Outcome::Unresolved);
         }
     }
@@ -210,20 +274,33 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
         return Outcome::Unresolved;
     }
     // 1. Local module definition.
-    if let Some(out) = bare_candidates(ctx.t.mod_child(&ctx.fctx.module, name), name) {
+    if let Some(out) = bare_candidates(ctx.t, ctx.t.mod_child(&ctx.fctx.module, name), name, false)
+    {
         return out;
     }
     // 2. Import alias map (follows re-export chains transitively).
     if let Some(out) = alias_binding_lookup(ctx, name) {
         return out;
     }
-    // Star imports: defer to each star module's top-level names. More than
-    // one star module supplying the same name is AMBIGUOUS — silently picking
-    // the first star's match manufactured edges across unrelated modules.
+    // 3. Star imports: follow re-exports transitively with idx dedup.
+    let lookup_scope = if ctx.site.scope_func.is_empty() {
+        ctx.site.scope_mod.as_deref().unwrap_or("")
+    } else {
+        ctx.site.scope_func.as_str()
+    };
     let mut star_hits: Vec<usize> = Vec::new();
-    for (m, _) in &ctx.fctx.bindings.stars {
-        if let Some(idxs) = ctx.t.mod_child(m, name) {
-            star_hits.extend_from_slice(idxs);
+    for (m, line) in &ctx.fctx.bindings.stars {
+        let star_scope = ctx.fctx.bindings.star_scope(m, *line);
+        if !scope_visible(star_scope, lookup_scope) {
+            continue;
+        }
+        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        if let Some(out) = follow_callable_binding(ctx.t, (m, name), 0, &mut seen, name) {
+            match out {
+                Outcome::Extracted(idx) if !star_hits.contains(&idx) => star_hits.push(idx),
+                Outcome::Extracted(_) | Outcome::Dropped | Outcome::Unresolved => {}
+                Outcome::Ambiguous(_) => return out,
+            }
         }
     }
     match star_hits.len() {
@@ -231,8 +308,8 @@ pub(super) fn resolve_name_callee(ctx: &CallCtx<'_>, name: &str) -> Outcome {
         1 => return Outcome::Extracted(star_hits[0]),
         _ => return Outcome::Ambiguous(name.to_string()),
     }
-    // 4. Builtin table.
-    if BUILTINS.contains(&name) {
+    // 4. Builtin table (scoped by file language).
+    if is_builtin(ctx.fctx.lang, name) {
         return Outcome::Dropped;
     }
     Outcome::Unresolved
@@ -245,7 +322,7 @@ pub(super) fn lexical_scope_lookup(ctx: &CallCtx<'_>, name: &str) -> Option<Outc
     let mut scope = ctx.site.scope_func.clone();
     while Some(scope.as_str()) != ctx.site.scope_class.as_deref() && scope != ctx.fctx.module {
         let candidate = format!("{scope}.{name}");
-        if let Some(out) = bare_candidates(ctx.t.qualname_child(&candidate), name) {
+        if let Some(out) = bare_candidates(ctx.t, ctx.t.qualname_child(&candidate), name, false) {
             return Some(out);
         }
         let Some((parent, _)) = scope.rsplit_once('.') else {
@@ -260,7 +337,13 @@ pub(super) fn lexical_scope_lookup(ctx: &CallCtx<'_>, name: &str) -> Option<Outc
 }
 
 pub(super) fn alias_binding_lookup(ctx: &CallCtx<'_>, name: &str) -> Option<Outcome> {
-    alias_target_outcome(ctx.t, file_alias(ctx.fctx, name)?, name)
+    let lookup_scope = if ctx.site.scope_func.is_empty() {
+        ctx.site.scope_mod.as_deref().unwrap_or("")
+    } else {
+        ctx.site.scope_func.as_str()
+    };
+    let (_, target) = nearest_alias_scoped(ctx.fctx, lookup_scope, name)?;
+    alias_target_outcome(ctx.t, target, name)
 }
 
 /// Shared alias resolution for the Symbol and ModuleRoot import targets:
@@ -275,7 +358,7 @@ pub(super) fn alias_target_outcome(
     match target {
         ImportTarget::Symbol { module, name: n } => {
             let mut seen: HashSet<(&str, &str)> = HashSet::new();
-            if let Some(out) = follow_binding(t, (module, n), 0, &mut seen, name) {
+            if let Some(out) = follow_callable_binding(t, (module, n), 0, &mut seen, name) {
                 return Some(out);
             }
             // Binding to a module that is not indexed at all = an
@@ -285,7 +368,9 @@ pub(super) fn alias_target_outcome(
             }
             None
         }
-        ImportTarget::ModuleRoot { path } => bare_candidates(t.mod_child(path, name), name),
+        ImportTarget::ModuleRoot { path } => {
+            bare_candidates(t, t.mod_child(path, name), name, false)
+        }
         ImportTarget::Module { .. } => None,
     }
 }
@@ -297,6 +382,8 @@ pub(super) fn resolve_target_class(
     fi: usize,
     chain: &[String],
     scope: &str,
+    scope_class: Option<&str>,
+    site_line: usize,
     depth: usize,
 ) -> Option<String> {
     if let Some(qn) = resolve_class_of_chain(t, fi, chain, scope) {
@@ -306,29 +393,30 @@ pub(super) fn resolve_target_class(
         return None;
     }
     let fctx = &t.file_ctx[fi];
-    let class_qn = t
-        .by_qualname
-        .get(scope)
-        .and_then(|v| {
-            v.iter()
-                .copied()
-                .find(|&i| is_class_kind(t.symbols[i].kind))
-        })
-        .map(|i| t.symbols[i].qualname.clone())
-        .or_else(|| {
-            scope.rsplit_once('.').and_then(|(p, _)| {
-                t.by_qualname
-                    .get(p)
-                    .and_then(|v| {
-                        v.iter()
-                            .copied()
-                            .find(|&i| is_class_kind(t.symbols[i].kind))
-                    })
-                    .map(|i| t.symbols[i].qualname.clone())
+    let class_qn = scope_class.map(str::to_string).or_else(|| {
+        t.by_qualname
+            .get(scope)
+            .and_then(|v| {
+                v.iter()
+                    .copied()
+                    .find(|&i| is_class_kind(t.symbols[i].kind))
             })
-        });
+            .map(|i| t.symbols[i].qualname.clone())
+            .or_else(|| {
+                scope.rsplit_once('.').and_then(|(p, _)| {
+                    t.by_qualname
+                        .get(p)
+                        .and_then(|v| {
+                            v.iter()
+                                .copied()
+                                .find(|&i| is_class_kind(t.symbols[i].kind))
+                        })
+                        .map(|i| t.symbols[i].qualname.clone())
+                })
+            })
+    });
     let synthetic = CallSite {
-        line: 0,
+        line: site_line,
         scope_func: scope.to_string(),
         scope_class: class_qn,
         scope_mod: None,
@@ -343,6 +431,7 @@ pub(super) fn resolve_target_class(
         fi,
         fctx,
         site: &synthetic,
+        depth: depth + 1,
     };
     let outcome = if chain.len() == 1 {
         resolve_name_callee(&ctx, &chain[0])
@@ -357,16 +446,27 @@ pub(super) fn resolve_target_class(
 
 /// MRO-aware field / `@property` type lookup for `self.field` and `obj.field`.
 pub(super) fn resolve_self_attr_type(t: &Tables, class_qn: &str, attr: &str) -> Option<String> {
-    let mut level = vec![class_qn.to_string()];
-    let mut seen: HashSet<String> = HashSet::new();
-    for _ in 0..6 {
+    if let Some(target) = t.class_fields.get(class_qn).and_then(|m| m.get(attr)) {
+        return Some(target.clone());
+    }
+    if let Some(idxs) = t.class_methods.get(class_qn).and_then(|m| m.get(attr)) {
+        if idxs.len() == 1 {
+            if let Some(ret) = t.return_types.get(&t.symbols[idxs[0]].qualname) {
+                return Some(ret.clone());
+            }
+        }
+    }
+    let bases = t.class_bases.get(class_qn)?;
+    let mut level = bases.clone();
+    let mut seen: HashSet<String> = HashSet::from([class_qn.to_string()]);
+    for _ in 0..5 {
         let mut next: Vec<String> = Vec::new();
         let mut found: Vec<String> = Vec::new();
         for qn in &level {
             if !seen.insert(qn.clone()) {
                 continue;
             }
-            if let Some(target) = t.class_fields.get(&(qn.clone(), attr.to_string())) {
+            if let Some(target) = t.class_fields.get(qn).and_then(|m| m.get(attr)) {
                 found.push(target.clone());
             } else if let Some(idxs) = t.class_methods.get(qn).and_then(|m| m.get(attr)) {
                 if idxs.len() == 1 {
@@ -386,70 +486,4 @@ pub(super) fn resolve_self_attr_type(t: &Tables, class_qn: &str, attr: &str) -> 
         }
     }
     None
-}
-
-/// Resolve fresh Python return types and `self_fields` into `Tables`,
-/// persist `symbols.return_type` and `ResolvedClassField`s, and emit `TypeRef`
-/// edges so incremental dirty-closure invalidation stays sound.
-pub(super) fn resolve_types_and_fields(t: &mut Tables) -> Vec<ResolvedClassField> {
-    let mut out_fields = Vec::new();
-    let mut type_ref_edges: Vec<NewEdge> = Vec::new();
-    for fi in 0..t.file_ctx.len() {
-        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
-        let ret_items = std::mem::take(&mut t.file_ctx[fi].bindings.return_types);
-        for (func_qn, ret_chain) in ret_items {
-            if let Some(class_qn) = resolve_class_of_chain(t, fi, &ret_chain, &func_qn) {
-                t.return_types.insert(func_qn.clone(), class_qn.clone());
-                let func_idx = t.by_qualname.get(&func_qn).and_then(|v| {
-                    v.iter()
-                        .copied()
-                        .find(|&i| t.symbols[i].file_idx == fctx_file_idx)
-                });
-                if let Some(fidx) = func_idx {
-                    t.symbols[fidx].return_type = class_qn.clone();
-                    if let Some(cidx) = unique_class_index(t, &class_qn) {
-                        type_ref_edges.push(NewEdge {
-                            src_idx: fidx,
-                            dst_idx: Some(cidx),
-                            dst_name: class_qn,
-                            kind: EdgeKind::TypeRef,
-                            confidence: Confidence::Extracted,
-                            site_line: t.symbols[fidx].line_start,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    for fi in 0..t.file_ctx.len() {
-        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
-        let mod_sym_idx = t.file_ctx[fi].module_sym_idx;
-        let sf_items = std::mem::take(&mut t.file_ctx[fi].bindings.self_fields);
-        for sf in sf_items {
-            if let Some(target_qn) = resolve_target_class(t, fi, &sf.target_dotted, &sf.class_qn, 0)
-            {
-                t.class_fields
-                    .insert((sf.class_qn.clone(), sf.field.clone()), target_qn.clone());
-                out_fields.push(ResolvedClassField {
-                    file_idx: fctx_file_idx,
-                    class_qualname: sf.class_qn.clone(),
-                    field: sf.field,
-                    target_qualname: target_qn.clone(),
-                });
-                if let Some(cidx) = unique_class_index(t, &target_qn) {
-                    let src_idx = unique_class_index(t, &sf.class_qn).unwrap_or(mod_sym_idx);
-                    type_ref_edges.push(NewEdge {
-                        src_idx,
-                        dst_idx: Some(cidx),
-                        dst_name: target_qn,
-                        kind: EdgeKind::TypeRef,
-                        confidence: Confidence::Extracted,
-                        site_line: sf.site_line,
-                    });
-                }
-            }
-        }
-    }
-    t.edges.extend(type_ref_edges);
-    out_fields
 }

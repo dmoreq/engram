@@ -63,6 +63,116 @@ def load_oracle(path: Path) -> list[dict]:
     ]
 
 
+def score_oracle_row(
+    eg: str, corpus: Path, row: dict, unresolved_names_text: str
+) -> tuple[str, dict]:
+    """Run `eg callees` for one oracle row and return `(kind, scored_row)`."""
+    symbol = row["symbol"]
+    kind = row["kind"]
+    proc = run_eg(eg, corpus, ["callees", symbol, "--limit", "1000"])
+    resolved, ambiguous = parse_callees(proc.stdout)
+
+    if kind == "resolved":
+        emitted = set(resolved)
+        wanted = set(row["expect_resolved"])
+        correct = emitted & wanted
+        return kind, {
+            "symbol": symbol,
+            "exit": proc.returncode,
+            "expected": sorted(wanted),
+            "emitted": sorted(emitted),
+            "correct": sorted(correct),
+            "false_positives": sorted(emitted - wanted),
+            "false_negatives": sorted(wanted - emitted),
+        }
+    if kind == "ambiguous":
+        expected = row["expect_ambiguous"]
+        hits = [name for name in expected if name in ambiguous]
+        return kind, {
+            "symbol": symbol,
+            "exit": proc.returncode,
+            "expected": expected,
+            "ambiguous": ambiguous,
+            "hits": hits,
+        }
+    if kind == "unresolved":
+        names = row["expect_unresolved_names"]
+        lower = (proc.stdout + proc.stderr).lower()
+        silent = proc.returncode == 1 and "unresolved" not in lower
+        names_present = [name for name in names if name in unresolved_names_text]
+        return kind, {
+            "symbol": symbol,
+            "exit": proc.returncode,
+            "expected_unresolved_names": names,
+            "names_present": names_present,
+            "silent_empty": silent,
+            "stdout": proc.stdout.strip()[:200],
+        }
+    raise ValueError(f"unknown oracle row kind: {kind}")
+
+
+def build_payload(
+    engram_version: str,
+    fixture: Path,
+    resolved_rows: list[dict],
+    ambiguous_rows: list[dict],
+    unresolved_rows: list[dict],
+) -> dict:
+    """Aggregate scored rows into the E1.2 JSON report payload."""
+    emitted_total = sum(len(row["emitted"]) for row in resolved_rows)
+    expected_total = sum(len(row["expected"]) for row in resolved_rows)
+    correct_total = sum(len(row["correct"]) for row in resolved_rows)
+    false_positives = sum(len(row["false_positives"]) for row in resolved_rows)
+    false_negatives = sum(len(row["false_negatives"]) for row in resolved_rows)
+    precision = correct_total / emitted_total if emitted_total else 0.0
+    recall = correct_total / expected_total if expected_total else 0.0
+    precision_ci = wilson(correct_total, emitted_total)
+    recall_ci = wilson(correct_total, expected_total)
+
+    ambiguous_hits = sum(1 for row in ambiguous_rows if len(row["hits"]) == len(row["expected"]))
+    silent_empty = sum(1 for row in unresolved_rows if row["silent_empty"])
+    names_present = sum(
+        1
+        for row in unresolved_rows
+        if len(row["names_present"]) == len(row["expected_unresolved_names"])
+    )
+    gate = (
+        precision >= 0.95
+        and recall >= 0.95
+        and silent_empty == 0
+        and ambiguous_hits == len(ambiguous_rows)
+    )
+    return {
+        "experiment": "E1.2",
+        "engram_version": engram_version,
+        "fixture": str(fixture),
+        "resolved": {
+            "rows": resolved_rows,
+            "emitted": emitted_total,
+            "expected": expected_total,
+            "correct": correct_total,
+            "false_positives": false_positives,
+            "false_negatives": false_negatives,
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "precision_wilson95": [round(x, 4) for x in precision_ci],
+            "recall_wilson95": [round(x, 4) for x in recall_ci],
+        },
+        "ambiguous": {
+            "rows": ambiguous_rows,
+            "hits": ambiguous_hits,
+            "total": len(ambiguous_rows),
+        },
+        "unresolved": {
+            "rows": unresolved_rows,
+            "silent_empty": silent_empty,
+            "names_present": names_present,
+            "total": len(unresolved_rows),
+        },
+        "gate": gate,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eg", required=True)
@@ -72,8 +182,7 @@ def main() -> int:
     args = parser.parse_args()
 
     fixture = Path(args.fixture)
-    oracle_path = fixture / "oracle.jsonl"
-    oracle = load_oracle(oracle_path)
+    oracle = load_oracle(fixture / "oracle.jsonl")
     version = subprocess.run(
         [args.eg, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=30
     )
@@ -86,127 +195,37 @@ def main() -> int:
             print(f"build failed: {build.stderr[-500:]}", file=sys.stderr)
             return 2
 
-        unresolved_names_proc = run_eg(args.eg, corpus, ["unresolved", "--names", "--limit", "10000"])
-        unresolved_names_text = unresolved_names_proc.stdout
+        unresolved_names_text = run_eg(
+            args.eg, corpus, ["unresolved", "--names", "--limit", "10000"]
+        ).stdout
 
-        resolved_rows: list[dict] = []
-        ambiguous_rows: list[dict] = []
-        unresolved_rows: list[dict] = []
-
+        by_kind: dict[str, list[dict]] = {"resolved": [], "ambiguous": [], "unresolved": []}
         for row in oracle:
-            symbol = row["symbol"]
-            kind = row["kind"]
-            proc = run_eg(args.eg, corpus, ["callees", symbol, "--limit", "1000"])
-            resolved, ambiguous = parse_callees(proc.stdout)
+            kind, scored = score_oracle_row(args.eg, corpus, row, unresolved_names_text)
+            by_kind[kind].append(scored)
 
-            if kind == "resolved":
-                expected = row["expect_resolved"]
-                emitted = set(resolved)
-                wanted = set(expected)
-                correct = emitted & wanted
-                resolved_rows.append(
-                    {
-                        "symbol": symbol,
-                        "exit": proc.returncode,
-                        "expected": sorted(wanted),
-                        "emitted": sorted(emitted),
-                        "correct": sorted(correct),
-                        "false_positives": sorted(emitted - wanted),
-                        "false_negatives": sorted(wanted - emitted),
-                    }
-                )
-            elif kind == "ambiguous":
-                expected = row["expect_ambiguous"]
-                hits = [name for name in expected if name in ambiguous]
-                ambiguous_rows.append(
-                    {
-                        "symbol": symbol,
-                        "exit": proc.returncode,
-                        "expected": expected,
-                        "ambiguous": ambiguous,
-                        "hits": hits,
-                    }
-                )
-            elif kind == "unresolved":
-                names = row["expect_unresolved_names"]
-                lower = (proc.stdout + proc.stderr).lower()
-                silent = proc.returncode == 1 and "unresolved" not in lower
-                names_present = [name for name in names if name in unresolved_names_text]
-                unresolved_rows.append(
-                    {
-                        "symbol": symbol,
-                        "exit": proc.returncode,
-                        "expected_unresolved_names": names,
-                        "names_present": names_present,
-                        "silent_empty": silent,
-                        "stdout": proc.stdout.strip()[:200],
-                    }
-                )
-
-        emitted_total = sum(len(row["emitted"]) for row in resolved_rows)
-        expected_total = sum(len(row["expected"]) for row in resolved_rows)
-        correct_total = sum(len(row["correct"]) for row in resolved_rows)
-        false_positives = sum(len(row["false_positives"]) for row in resolved_rows)
-        false_negatives = sum(len(row["false_negatives"]) for row in resolved_rows)
-        precision = correct_total / emitted_total if emitted_total else 0.0
-        recall = correct_total / expected_total if expected_total else 0.0
-        precision_ci = wilson(correct_total, emitted_total)
-        recall_ci = wilson(correct_total, expected_total)
-
-        ambiguous_hits = sum(1 for row in ambiguous_rows if len(row["hits"]) == len(row["expected"]))
-        silent_empty = sum(1 for row in unresolved_rows if row["silent_empty"])
-        names_present = sum(
-            1 for row in unresolved_rows if len(row["names_present"]) == len(row["expected_unresolved_names"])
+        payload = build_payload(
+            version.stdout.strip(),
+            fixture,
+            by_kind["resolved"],
+            by_kind["ambiguous"],
+            by_kind["unresolved"],
         )
-
-        gate = (
-            precision >= 0.95
-            and recall >= 0.95
-            and silent_empty == 0
-            and ambiguous_hits == len(ambiguous_rows)
-        )
-
-        payload = {
-            "experiment": "E1.2",
-            "engram_version": version.stdout.strip(),
-            "fixture": str(fixture),
-            "resolved": {
-                "rows": resolved_rows,
-                "emitted": emitted_total,
-                "expected": expected_total,
-                "correct": correct_total,
-                "false_positives": false_positives,
-                "false_negatives": false_negatives,
-                "precision": round(precision, 4),
-                "recall": round(recall, 4),
-                "precision_wilson95": [round(x, 4) for x in precision_ci],
-                "recall_wilson95": [round(x, 4) for x in recall_ci],
-            },
-            "ambiguous": {
-                "rows": ambiguous_rows,
-                "hits": ambiguous_hits,
-                "total": len(ambiguous_rows),
-            },
-            "unresolved": {
-                "rows": unresolved_rows,
-                "silent_empty": silent_empty,
-                "names_present": names_present,
-                "total": len(unresolved_rows),
-            },
-            "gate": gate,
-        }
-
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+        res = payload["resolved"]
+        amb = payload["ambiguous"]
+        unr = payload["unresolved"]
+        gate = payload["gate"]
         print(
-            f"resolved: precision={precision:.3f} recall={recall:.3f} "
-            f"tp={correct_total} fp={false_positives} fn={false_negatives}"
+            f"resolved: precision={res['precision']:.3f} recall={res['recall']:.3f} "
+            f"tp={res['correct']} fp={res['false_positives']} fn={res['false_negatives']}"
         )
         print(
-            f"ambiguous: hits={ambiguous_hits}/{len(ambiguous_rows)}; "
-            f"unresolved: silent_empty={silent_empty}/{len(unresolved_rows)} "
-            f"names_present={names_present}/{len(unresolved_rows)}"
+            f"ambiguous: hits={amb['hits']}/{amb['total']}; "
+            f"unresolved: silent_empty={unr['silent_empty']}/{unr['total']} "
+            f"names_present={unr['names_present']}/{unr['total']}"
         )
         print(f"gate={'PASS' if gate else 'FAIL'}")
 

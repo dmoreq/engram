@@ -117,7 +117,7 @@ fn impact_site_total(conn: &Connection, ctx: &ImpactCtx<'_>) -> Result<usize> {
 
 fn impact_site_rows(conn: &Connection, ctx: &ImpactCtx<'_>) -> Result<Vec<Pointer>> {
     let sql = format!(
-        "SELECT MIN(e.site_line), MIN(e.confidence), s.file_path
+        "SELECT MIN(e.site_line), MAX(e.confidence), s.file_path
          FROM edges e
          {IMPACT_DST_JOIN}
          {EDGE_SRC_JOIN}
