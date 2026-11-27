@@ -13,9 +13,10 @@ pub use self::graph::{callees, callers, GraphQueryOpts};
 pub use self::path::path;
 
 pub fn imports(ctx: &QueryCtx<'_>, file: &str, limit: usize) -> Result<QueryOutput> {
-    let QueryCtx { conn, .. } = *ctx;
+    let QueryCtx { conn, root } = *ctx;
     let limit = clamp_limit(limit)?;
-    let rel = indexed_file(conn, file)?;
+    let norm = normalize_repo_path(root, file);
+    let rel = indexed_file_opt(conn, &norm)?.ok_or_else(|| EgError::not_indexed(file))?;
     let total: usize = conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM edges e
@@ -56,11 +57,11 @@ pub fn imports(ctx: &QueryCtx<'_>, file: &str, limit: usize) -> Result<QueryOutp
 /// Resolve a query name to target ids, failing on a missing or ambiguous
 /// name. `role` labels the candidate list for the two `path` endpoints.
 fn resolve_targets(
-    conn: &Connection,
+    ctx: &QueryCtx<'_>,
     name: &str,
     role: Option<&'static str>,
 ) -> Result<(Vec<i64>, Vec<NameCandidate>)> {
-    let (ids, cands) = target_ids(conn, name)?;
+    let (ids, cands) = target_ids(ctx.conn, ctx.root, name)?;
     if ids.is_empty() {
         return Err(EgError::NoResults(symbol_not_found_msg(name)));
     }

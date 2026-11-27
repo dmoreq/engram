@@ -9,7 +9,7 @@ use super::*;
 pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery> {
     let QueryCtx { conn, .. } = *ctx;
     let limit = clamp_limit(limit)?.min(50);
-    let (ids, _) = resolve_targets(conn, name, None)?;
+    let (ids, _) = resolve_targets(ctx, name, None)?;
     let id = ids[0];
 
     let def_sql = "SELECT s.file_path, s.line_start, s.line_end, s.kind, s.qualname, s.signature
@@ -43,7 +43,16 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
     let (header, stale) = staleness_header(ctx, &files);
     let total = callers_total + callees_total;
     let shown = callers.len() + callees.len();
-    crate::journal::record_result(crate::journal::OutcomeCounts::of(shown, total), stale, 0);
+    let ambiguous = callers
+        .iter()
+        .chain(callees.iter())
+        .filter(|p| !p.tag.is_empty())
+        .count();
+    crate::journal::record_result(
+        crate::journal::OutcomeCounts::of(shown, total),
+        stale,
+        ambiguous,
+    );
 
     let mut out = vec![CONTEXT_CAVEAT.to_string()];
     if let Some(header) = header {
@@ -100,5 +109,7 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
     ));
     out.extend(callees.iter().map(|p| p.render()));
 
-    Ok(LineQuery::new(out, String::new(), shown))
+    let mut lq = LineQuery::new(out, String::new(), shown);
+    lq.truncated = shown < total;
+    Ok(lq)
 }
