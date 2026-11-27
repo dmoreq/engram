@@ -18,7 +18,7 @@ use tree_sitter::Node;
 
 use crate::parse::{Lang, ParsedFile, SOURCE_EXTENSIONS};
 
-pub const SCHEMA_VERSION: i32 = 11;
+pub const SCHEMA_VERSION: i32 = 12;
 
 #[derive(Debug, Clone, Default)]
 pub struct NewSymbol {
@@ -56,7 +56,9 @@ pub(crate) fn is_test_path(rel: &str) -> bool {
     let file_hit = (file.starts_with("test_") && file.ends_with(".py"))
         || file.ends_with("_test.py")
         || file.ends_with("_test.go")
-        || file.ends_with("_test.dart");
+        || file.ends_with("_test.dart")
+        || file.ends_with("_test.rs")
+        || file.ends_with("_tests.rs");
     // The dotted shapes matched the whole v7 path (`%.test.%`, `%.spec.%`),
     // so a directory such as `pkg.test/` is covered too.
     let dotted_hit = lower.contains(".test.") || lower.contains(".spec.");
@@ -112,6 +114,8 @@ pub struct Resolution {
     pub edges: Vec<NewEdge>,
     /// Resolved `self.field` / class-body field types for fresh files (schema v11).
     pub class_fields: Vec<ResolvedClassField>,
+    pub module_exports: Vec<ResolvedModuleExport>,
+    pub module_stars: Vec<ResolvedModuleStar>,
     /// Kept for the lib surface (integration tests assert builtin_dropped);
     /// the binary's meta total is the per-file SQL sum instead.
     #[allow(dead_code)]
@@ -121,28 +125,6 @@ pub struct Resolution {
     /// files whose unresolved names became resolvable after a change.
     pub unresolved_calls: Vec<UnresolvedSite>,
     pub unresolved_per_file: Vec<usize>,
-}
-
-/// Symbols loaded from the previous index's fast-path files.
-pub struct CarriedSymbol {
-    pub row_id: i64,
-    pub kind: SymbolKind,
-    pub name: String,
-    pub qualname: String,
-    pub module: String,
-    pub return_type: String,
-}
-
-/// Inheritance pairs read from the previous index (subclass qualname, base qualname).
-pub type CarriedInherits = Vec<(String, String)>;
-
-/// Previous-index state joined into resolution (fast path).
-#[derive(Default)]
-pub struct CarriedIndex {
-    pub symbols: Vec<CarriedSymbol>,
-    pub inherits: CarriedInherits,
-    pub class_fields: Vec<(String, String, String)>,
-    pub reexports: Vec<(String, String, i64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +365,7 @@ pub fn module_path_for(rel: &str) -> (String, bool) {
     let is_ts_pkg = SOURCE_EXTENSIONS
         .iter()
         .any(|(ext, lang)| lang.is_ts_js() && file_name.strip_suffix(ext) == Some("index"));
-    let is_rust_root = file_name == "mod.rs" || file_name == "lib.rs" || file_name == "main.rs";
+    let is_rust_root = file_name == "mod.rs" || file_name == "lib.rs";
     if is_py_pkg || is_ts_pkg || is_rust_root {
         let dir = rel
             .strip_suffix(file_name)
@@ -400,12 +382,10 @@ pub fn module_path_for(rel: &str) -> (String, bool) {
         }
         return (dir, true);
     }
-    // Strip the source extension (dotted rows in the master table; each
-    // suffix strips repeatedly, matching the historical chain behavior).
-    let mut stem = rel;
-    for (ext, _) in SOURCE_EXTENSIONS {
-        stem = stem.trim_end_matches(ext);
-    }
+    let stem = SOURCE_EXTENSIONS
+        .iter()
+        .find_map(|(ext, _)| rel.strip_suffix(ext))
+        .unwrap_or(rel);
     if stem.is_empty() {
         return ("root".to_string(), false);
     }
@@ -486,8 +466,11 @@ pub(crate) fn is_direct_child(module: &str, name: &str, qualname: &str) -> bool 
 }
 
 mod vocab;
-pub use vocab::{Confidence, EdgeKind, EdgeSiteKind, SymbolKind};
-use vocab::{BUILTINS, STDLIB_MODULES};
+use vocab::{is_builtin, is_stdlib_module};
+pub use vocab::{
+    CarriedIndex, CarriedInherits, CarriedSymbol, Confidence, EdgeKind, EdgeSiteKind,
+    ResolvedModuleExport, ResolvedModuleStar, SymbolKind,
+};
 
 /// Per-language metric tables computed once per file instead of once per
 /// callable (B2): the filtered decision kinds and the branch kinds.

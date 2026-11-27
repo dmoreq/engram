@@ -1,4 +1,5 @@
--- eg schema v11 — v10 -> v11 adds symbols.return_type and class_fields.
+-- eg schema v12 — v11 -> v12 adds module_exports and module_stars for
+-- carried barrel/star/default re-export parity, plus upgraded covering indexes.
 -- The binary opens a DB only when PRAGMA user_version equals its own
 -- compiled schema version; older AND newer both exit 5. The DB is never
 -- migrated in place.
@@ -69,4 +70,15 @@ CREATE TABLE unresolved_calls(
     dst_name TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'call',
     site_line INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE module_exports(
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    module_qualname TEXT NOT NULL,
+    exported_name TEXT NOT NULL,
+    target_sym_id INTEGER NOT NULL REFERENCES symbols(id)
+);
+CREATE TABLE module_stars(
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    module_qualname TEXT NOT NULL,
+    star_module TEXT NOT NULL
 );

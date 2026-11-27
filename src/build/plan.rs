@@ -304,21 +304,28 @@ fn plan_gap_files(
     prep: &BuildPrep,
     fe: &FreshExtract,
 ) -> Result<HashSet<String>> {
-    let old_qual_files = crate::db::symbol_qualname_files(c)?;
-    let fresh = collect_fresh_quals(fe, &prep.cls, &old_qual_files);
     let changed = changed_files(&prep.cls, &prep.old_map, &prep.by_rel);
+    let old_changed_quals = crate::db::qualnames_for_files(c, &changed)?;
+    let mut query_quals: HashSet<String> = old_changed_quals.iter().cloned().collect();
+    for fx in &fe.extractions {
+        for sym in &fx.symbols {
+            query_quals.insert(sym.qualname.clone());
+        }
+    }
+    let query_list: Vec<String> = query_quals.into_iter().collect();
+    let old_qual_files = crate::db::symbol_qualname_files_for(c, &query_list)?;
+    let fresh = collect_fresh_quals(fe, &prep.cls, &old_qual_files);
     // ANEW2: a candidate set changes when a defining file is added,
     // removed, or renamed. A shrink leaves no resolved edge for the dirty
     // closure to follow, so find cls.carried sites that still name the old
     // qualname and re-extract them.
     let mut changed_quals = fresh.duplicate_quals;
     changed_quals.extend(changed_qualnames(
-        c,
-        &changed,
+        &old_changed_quals,
         &prep.cls.carried,
         &old_qual_files,
         &fresh.files,
-    )?);
+    ));
     let mut gap = std::collections::HashSet::new();
     if !fresh.new_names.is_empty() {
         gap.extend(crate::db::gap_files_for_new_names(c, &fresh.new_names)?);
@@ -387,15 +394,14 @@ fn changed_files(
 }
 
 fn changed_qualnames(
-    c: &rusqlite::Connection,
-    changed: &[String],
+    old_changed_quals: &HashSet<String>,
     carried: &HashSet<String>,
     old_quals: &HashMap<String, HashSet<String>>,
     fresh_quals: &HashMap<String, HashSet<String>>,
-) -> Result<Vec<String>> {
+) -> Vec<String> {
     let mut out = Vec::new();
-    for q in crate::db::qualnames_for_files(c, changed)? {
-        let Some(old_files) = old_quals.get(&q) else {
+    for q in old_changed_quals {
+        let Some(old_files) = old_quals.get(q) else {
             continue;
         };
         let mut new_files: std::collections::HashSet<&str> = old_files
@@ -403,12 +409,12 @@ fn changed_qualnames(
             .filter(|p| carried.contains(*p))
             .map(String::as_str)
             .collect();
-        if let Some(files) = fresh_quals.get(&q) {
+        if let Some(files) = fresh_quals.get(q) {
             new_files.extend(files.iter().map(String::as_str));
         }
         if new_files.len() != old_files.len() || new_files.iter().any(|p| !old_files.contains(*p)) {
-            out.push(q);
+            out.push(q.clone());
         }
     }
-    Ok(out)
+    out
 }

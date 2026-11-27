@@ -40,16 +40,43 @@ pub fn load_carried(old: &Connection, rels: &HashSet<String>) -> Result<CarriedI
         inherits: load_carried_inherits(old, &rel_params)?,
         class_fields: load_carried_class_fields(old, &rel_params)?,
         reexports: load_carried_reexports(old, &rel_params)?,
+        module_stars: load_carried_stars(old, &rel_params)?,
     })
+}
+
+/// Targeted version of `symbol_qualname_files` for incremental gap healing:
+/// only queries the qualnames touched by fresh or changed files.
+pub fn symbol_qualname_files_for(
+    conn: &Connection,
+    qualnames: &[String],
+) -> Result<HashMap<String, HashSet<String>>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    if qualnames.is_empty() {
+        return Ok(out);
+    }
+    for_each_chunk(conn, qualnames, |conn, placeholders, chunk| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT qualname, file_path FROM symbols WHERE qualname IN ({placeholders})"
+        ))?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+        while let Some(r) = rows.next()? {
+            let qualname: String = r.get(0)?;
+            let path: String = r.get(1)?;
+            out.entry(qualname).or_default().insert(path);
+        }
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 fn load_carried_symbols(old: &Connection, rel_params: &[&str]) -> Result<Vec<CarriedSymbol>> {
     let mut symbols = Vec::new();
+    let mut mod_cache: HashMap<String, String> = HashMap::new();
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
-            "SELECT s.id, s.kind, s.name, s.qualname, f.path, s.return_type
-             FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE f.path IN ({placeholders})"
+            "SELECT s.id, s.kind, s.name, s.qualname, s.file_path, s.return_type
+             FROM symbols s
+             WHERE s.file_path IN ({placeholders})"
         ))?;
         let mut part = stmt.query(rusqlite::params_from_iter(chunk.iter().copied()))?;
         while let Some(r) = part.next()? {
@@ -58,7 +85,10 @@ fn load_carried_symbols(old: &Connection, rel_params: &[&str]) -> Result<Vec<Car
                 continue;
             };
             let path: String = r.get(4)?;
-            let (module, _) = crate::extract::module_path_for(&path);
+            let module = mod_cache
+                .entry(path)
+                .or_insert_with_key(|p| crate::extract::module_path_for(p).0)
+                .clone();
             symbols.push(CarriedSymbol {
                 row_id: r.get(0)?,
                 kind,
@@ -107,15 +137,11 @@ fn load_carried_reexports(
     let mut reexports = Vec::new();
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
-            "SELECT ss.qualname, e.dst_name, e.dst_id
-             FROM edges e
-             JOIN symbols ss ON ss.id = e.src_id
-             JOIN files f ON f.id = ss.file_id
-             WHERE e.kind = '{}' AND ss.kind = '{}' AND e.dst_id IS NOT NULL
-               AND f.path IN ({placeholders})
-             ORDER BY e.id",
-            EdgeKind::Imports.as_str(),
-            SymbolKind::Module.as_str()
+            "SELECT me.module_qualname, me.exported_name, me.target_sym_id
+             FROM module_exports me
+             JOIN files f ON f.id = me.file_id
+             WHERE f.path IN ({placeholders})
+             ORDER BY me.rowid"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
@@ -125,14 +151,32 @@ fn load_carried_reexports(
             ))
         })?;
         for row in rows {
-            let (mod_qn, dst_name, dst_id) = row?;
-            if let Some(exported) = dst_name.rsplit('.').next() {
-                reexports.push((mod_qn, exported.to_string(), dst_id));
-            }
+            reexports.push(row?);
         }
         Ok(())
     })?;
     Ok(reexports)
+}
+
+fn load_carried_stars(old: &Connection, rel_params: &[&str]) -> Result<Vec<(String, String)>> {
+    let mut stars = Vec::new();
+    for_each_chunk(old, rel_params, |old, placeholders, chunk| {
+        let mut stmt = old.prepare(&format!(
+            "SELECT ms.module_qualname, ms.star_module
+             FROM module_stars ms
+             JOIN files f ON f.id = ms.file_id
+             WHERE f.path IN ({placeholders})
+             ORDER BY ms.rowid"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            stars.push(row?);
+        }
+        Ok(())
+    })?;
+    Ok(stars)
 }
 
 fn load_carried_inherits(old: &Connection, rel_params: &[&str]) -> Result<Vec<(String, String)>> {
@@ -143,12 +187,21 @@ fn load_carried_inherits(old: &Connection, rel_params: &[&str]) -> Result<Vec<(S
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
             "SELECT e.id, s.qualname, e.dst_name
-             FROM edges e JOIN symbols s ON s.id = e.src_id
+             FROM edges e
+             JOIN symbols s ON s.id = e.src_id
+             JOIN symbols ds ON ds.id = e.dst_id
              JOIN files f ON f.id = s.file_id
-             WHERE e.kind = '{}' AND e.dst_name IS NOT NULL
+             WHERE e.kind = '{}'
+               AND e.dst_id IS NOT NULL
+               AND e.confidence = '{}'
+               AND NOT (s.kind = '{}' AND ds.kind IN ('{}', '{}'))
                AND f.path IN ({placeholders})
              ORDER BY e.id",
-            EdgeKind::Inherits.as_str()
+            EdgeKind::Inherits.as_str(),
+            Confidence::Extracted.as_str(),
+            SymbolKind::Class.as_str(),
+            SymbolKind::Trait.as_str(),
+            SymbolKind::Interface.as_str(),
         ))?;
         let pairs = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
             Ok((
@@ -222,7 +275,18 @@ pub fn carry_forward_unchanged(
            AND (dst_id IS NULL OR dst_id IN (SELECT id FROM symbols));
          INSERT INTO unresolved_calls(file_id, dst_name, kind, site_line)
          SELECT file_id, dst_name, kind, site_line FROM olddb.unresolved_calls
-         WHERE file_id IN (SELECT id FROM files);",
+         WHERE file_id IN (SELECT id FROM files);
+         INSERT INTO module_exports(file_id, module_qualname, exported_name, target_sym_id)
+         SELECT file_id, module_qualname, exported_name, target_sym_id
+         FROM olddb.module_exports
+         WHERE file_id IN (SELECT id FROM files)
+           AND target_sym_id IN (SELECT id FROM symbols);
+         INSERT INTO module_stars(file_id, module_qualname, star_module)
+         SELECT file_id, module_qualname, star_module
+         FROM olddb.module_stars WHERE file_id IN (SELECT id FROM files);
+         INSERT INTO symbols_fts(rowid, text)
+         SELECT fts.rowid, fts.text FROM olddb.symbols_fts fts
+         WHERE fts.rowid IN (SELECT id FROM symbols);",
     )?;
     Ok(())
 }
@@ -312,6 +376,47 @@ pub fn insert_class_fields(
     Ok(())
 }
 
+/// Insert resolved module exports for fresh files (schema v12).
+pub fn insert_module_exports(
+    conn: &Connection,
+    exports: &[(usize, &str, &str, i64)],
+    file_ids: &[i64],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO module_exports(file_id, module_qualname, exported_name, target_sym_id)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for &(file_idx, mod_qn, exported, target_id) in exports {
+        stmt.execute(rusqlite::params![
+            file_ids[file_idx],
+            mod_qn,
+            exported,
+            target_id
+        ])?;
+    }
+    Ok(())
+}
+
+/// Insert resolved module star re-exports for fresh files (schema v12).
+pub fn insert_module_stars(
+    conn: &Connection,
+    stars: &[crate::extract::ResolvedModuleStar],
+    file_ids: &[i64],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO module_stars(file_id, module_qualname, star_module)
+         VALUES (?1, ?2, ?3)",
+    )?;
+    for s in stars {
+        stmt.execute(rusqlite::params![
+            file_ids[s.file_idx],
+            s.module_qualname.as_str(),
+            s.star_module.as_str()
+        ])?;
+    }
+    Ok(())
+}
+
 /// Fully resolved edge row: endpoint ids already mapped (fresh -> inserted id,
 /// carried -> previous row id).
 #[derive(Debug)]
@@ -351,36 +456,40 @@ pub fn insert_edge_rows(conn: &Connection, rows: &[EdgeRow<'_>]) -> Result<()> {
 /// bm25 ranks identity matches above signature-only matches now that signatures
 /// carry full parameter lists. Shared by the SELECT and in-memory paths so the
 /// indexed bytes cannot drift.
-fn fts_text(qualname: &str, name: &str, path: &str, signature: &str) -> String {
-    format!(
-        "{q} {q} {n} {n} {p} {s}",
-        q = crate::extract::split_ident(qualname),
-        n = crate::extract::split_ident(name),
-        p = crate::extract::split_ident(path),
-        s = crate::extract::split_ident(signature)
-    )
+fn write_fts_text(buf: &mut String, qualname: &str, name: &str, path: &str, signature: &str) {
+    use std::fmt::Write;
+    buf.clear();
+    let q = crate::extract::split_ident(qualname);
+    let n = crate::extract::split_ident(name);
+    let p = crate::extract::split_ident(path);
+    let s = crate::extract::split_ident(signature);
+    let _ = write!(buf, "{q} {q} {n} {n} {p} {s}");
 }
 
 pub fn populate_symbols_fts(conn: &Connection) -> Result<()> {
-    // Stream symbol rows straight into the FTS insert: no bulk Vec keeps the
-    // whole symbol corpus (text included) on the heap during a build.
+    // Stream fresh symbol rows straight into the FTS insert (carried rows
+    // were already copied from olddb.symbols_fts in carry_forward_unchanged).
+    let max_carried_id: i64 =
+        conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM symbols_fts", [], |r| {
+            r.get(0)
+        })?;
     let mut ins = conn.prepare("INSERT INTO symbols_fts(rowid, text) VALUES (?1, ?2)")?;
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.qualname, s.name, f.path, s.signature
-         FROM symbols s JOIN files f ON f.id = s.file_id
-         ORDER BY s.id",
+        "SELECT id, qualname, name, file_path, signature
+         FROM symbols
+         WHERE id > ?1
+         ORDER BY id",
     )?;
-    let mut rows = stmt.query([])?;
+    let mut buf = String::new();
+    let mut rows = stmt.query([max_carried_id])?;
     while let Some(r) = rows.next()? {
         let id: i64 = r.get(0)?;
         let qualname = r.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?;
         let name = r.get_ref(2)?.as_str().map_err(rusqlite::Error::from)?;
         let path = r.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
         let signature = r.get_ref(4)?.as_str().map_err(rusqlite::Error::from)?;
-        ins.execute(rusqlite::params![
-            id,
-            fts_text(qualname, name, path, signature)
-        ])?;
+        write_fts_text(&mut buf, qualname, name, path, signature);
+        ins.execute(rusqlite::params![id, buf.as_str()])?;
     }
     Ok(())
 }

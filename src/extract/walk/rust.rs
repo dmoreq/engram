@@ -18,6 +18,7 @@ pub(super) fn record_rust_let(
     let Some(var) = pattern_name(pattern, src) else {
         return;
     };
+    let line = node.start_position().row + 1;
     if let Some(ty) = node.child_by_field_name("type") {
         push_param_type(
             fx,
@@ -28,6 +29,7 @@ pub(super) fn record_rust_let(
         return;
     }
     let Some(value) = node.child_by_field_name("value") else {
+        push_assignment(fx, var, Vec::new(), ctx, line);
         return;
     };
     let value = {
@@ -40,10 +42,8 @@ pub(super) fn record_rust_let(
         }
         v
     };
-    let Some(chain) = rust_constructor_target(value, src, ctx) else {
-        return;
-    };
-    push_assignment(fx, var, chain, ctx, node.start_position().row + 1);
+    let chain = rust_constructor_target(value, src, ctx).unwrap_or_default();
+    push_assignment(fx, var, chain, ctx, line);
 }
 
 /// Constructor-shaped Rust value: `Foo::new()`, `Self::new()`, or a struct
@@ -111,6 +111,8 @@ pub(super) fn has_test_attr(node: Node<'_>, src: &[u8]) -> bool {
                 if t.contains("#[test]")
                     || t.contains("#[cfg(test)]")
                     || t.contains("::test]")
+                    || t.contains("::test(")
+                    || t.contains("cfg(all(test")
                     || t.contains("rstest")
                 {
                     return true;
@@ -164,9 +166,15 @@ pub(super) fn record_macro_calls(
         return;
     };
     let line = node.start_position().row + 1;
-    for callee in scan_macro_call_names(&text(tree, src)) {
+    for callee in scan_macro_call_names(node_str(tree, src)) {
         let callee = if callee.contains("::") {
-            Callee::Attr(callee.split("::").map(str::to_string).collect())
+            let mut chain: Vec<String> = callee.split("::").map(str::to_string).collect();
+            match chain.first().map(String::as_str) {
+                Some("self") => chain[0] = "self::".to_string(),
+                Some("super") => chain[0] = "super::".to_string(),
+                _ => {}
+            }
+            Callee::Attr(chain)
         } else {
             Callee::Name(callee)
         };
@@ -290,15 +298,10 @@ pub(super) fn impl_type_name(node: Node<'_>, src: &[u8]) -> String {
     fn nominal(t: Node<'_>, src: &[u8]) -> Option<String> {
         match t.kind() {
             "type_identifier" => Some(text(t, src)),
-            "generic_type" => {
-                let mut c = t.walk();
-                for ch in t.named_children(&mut c) {
-                    if ch.kind() == "type_identifier" {
-                        return Some(text(ch, src));
-                    }
-                }
-                None
-            }
+            "generic_type" => t
+                .child_by_field_name("type")
+                .or_else(|| t.named_child(0))
+                .and_then(|inner| nominal(inner, src)),
             "reference_type" => t
                 .child_by_field_name("type")
                 .and_then(|inner| nominal(inner, src)),
@@ -320,7 +323,7 @@ pub(super) use super::rust_use::*;
 pub(super) fn visit_rust_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     match w.node.kind() {
         "function_item" | "function_signature_item" => visit_function_item(w),
-        "struct_item" | "enum_item" => define_class_symbol(w, SymbolKind::Class),
+        "struct_item" | "enum_item" | "type_item" => define_class_symbol(w, SymbolKind::Class),
         "trait_item" => define_class_symbol(w, SymbolKind::Trait),
         "impl_item" => visit_impl_item(w),
         "mod_item" => {
@@ -331,25 +334,22 @@ pub(super) fn visit_rust_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
             }
         }
         "use_declaration" => {
-            let scope = w
-                .ctx
-                .parent_container()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| w.fx.module.clone());
-            record_use_decl(w.node, w.src, w.fx, &scope);
-            push_children_rev(w.work, w.node);
+            let module_scope = w.ctx.enclosing_scope(&w.fx.module).to_string();
+            let alias_scope = w.ctx.alias_scope(&w.fx.module).to_string();
+            record_use_decl(w.node, w.src, w.fx, &module_scope, &alias_scope);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "let_declaration" => {
             record_rust_let(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "macro_invocation" => {
             record_macro_calls(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         "assignment_expression" => {
             record_reassignment(w.node, w.src, w.fx, w.ctx);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         _ => return false,
     }
@@ -379,26 +379,32 @@ fn visit_inline_mod<'a>(w: &mut Walker<'a, '_, '_>) {
         }
         w.work.push(Step::PopMod);
         w.work.push(Step::RestoreTest(was_test_scope));
-        push_children_rev(w.work, body);
+        push_children_rev(w.work, w.cursor, body);
     }
 }
 
 fn visit_rust_mod_item<'a>(w: &mut Walker<'a, '_, '_>) {
     if let Some(name_node) = w.node.child_by_field_name("name") {
         let name = text(name_node, w.src);
-        let scope = w
+        let parent = w
             .ctx
-            .class_stack
-            .last()
-            .cloned()
-            .unwrap_or_else(|| w.fx.module.clone());
-        let path = if w.ctx.class_stack.is_empty() && w.fx.crate_root.as_deref() == Some("") {
+            .parent_container()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if w.fx.module == "main" || w.fx.module.ends_with(".main") {
+                    w.fx.crate_root.clone().unwrap_or_default()
+                } else {
+                    w.fx.module.clone()
+                }
+            });
+        let path = if parent.is_empty() {
             name.clone()
         } else {
-            format!("{scope}.{name}")
+            format!("{parent}.{name}")
         };
+        let alias_scope = w.ctx.alias_scope(&w.fx.module).to_string();
         w.fx.bindings.aliases.push((
-            String::new(),
+            alias_scope,
             name,
             ImportTarget::ModuleRoot { path: path.clone() },
         ));
@@ -407,14 +413,15 @@ fn visit_rust_mod_item<'a>(w: &mut Walker<'a, '_, '_>) {
             path,
         ));
     }
-    push_children_rev(w.work, w.node);
+    push_children_rev(w.work, w.cursor, w.node);
 }
 
 fn visit_function_item<'a>(w: &mut Walker<'a, '_, '_>) {
-    let kind = if w.ctx.class_stack.is_empty() {
-        SymbolKind::Function
-    } else {
+    let parent_qn = w.ctx.enclosing_scope(&w.fx.module);
+    let kind = if w.ctx.class_stack.last().map(|s| s.as_str()) == Some(parent_qn) {
         SymbolKind::Method
+    } else {
+        SymbolKind::Function
     };
     define_function(w, kind);
 }
@@ -439,7 +446,7 @@ fn visit_impl_item<'a>(w: &mut Walker<'a, '_, '_>) {
     }
     w.ctx.class_stack.push(qualname);
     w.work.push(Step::PopClass);
-    push_children_rev(w.work, w.node);
+    push_children_rev(w.work, w.cursor, w.node);
 }
 
 #[cfg(test)]

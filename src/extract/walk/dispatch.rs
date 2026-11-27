@@ -16,12 +16,20 @@ pub(crate) enum Step<'a> {
 }
 
 /// Queue `node`'s children for visiting in source order (reversed push).
-pub(super) fn push_children_rev<'a>(work: &mut Vec<Step<'a>>, node: Node<'a>) {
-    let mut cursor = node.walk();
-    let children: Vec<_> = node.children(&mut cursor).collect();
-    for child in children.into_iter().rev() {
+pub(super) fn push_children_rev<'a>(
+    work: &mut Vec<Step<'a>>,
+    cursor: &mut tree_sitter::TreeCursor<'a>,
+    node: Node<'a>,
+) {
+    if node.child_count() == 0 {
+        return;
+    }
+    let base = work.len();
+    cursor.reset(node);
+    for child in node.children(cursor) {
         work.push(Step::Visit(child));
     }
+    work[base..].reverse();
 }
 
 /// Entry point for one subtree. The traversal is heap-bound: `run_steps` owns
@@ -36,11 +44,18 @@ pub(crate) fn walk_children(
     ctx: &mut WalkCtx,
 ) {
     let mut work: Vec<Step<'_>> = Vec::new();
-    push_children_rev(&mut work, node);
-    run_steps(&mut work, src, fx, ctx);
+    let mut cursor = node.walk();
+    push_children_rev(&mut work, &mut cursor, node);
+    run_steps(&mut work, &mut cursor, src, fx, ctx);
 }
 
-fn run_steps<'a>(work: &mut Vec<Step<'a>>, src: &[u8], fx: &mut FileExtraction, ctx: &mut WalkCtx) {
+fn run_steps<'a>(
+    work: &mut Vec<Step<'a>>,
+    cursor: &mut tree_sitter::TreeCursor<'a>,
+    src: &[u8],
+    fx: &mut FileExtraction,
+    ctx: &mut WalkCtx,
+) {
     while let Some(step) = work.pop() {
         match step {
             Step::Visit(node) => {
@@ -50,6 +65,7 @@ fn run_steps<'a>(work: &mut Vec<Step<'a>>, src: &[u8], fx: &mut FileExtraction, 
                     fx: &mut *fx,
                     ctx: &mut *ctx,
                     work: &mut *work,
+                    cursor: &mut *cursor,
                 };
                 visit_node(&mut w);
             }
@@ -83,7 +99,7 @@ fn visit_node<'a>(w: &mut Walker<'a, '_, '_>) {
     }
     match w.node.kind() {
         "call" | "call_expression" => visit_call(w),
-        _ => push_children_rev(w.work, w.node),
+        _ => push_children_rev(w.work, w.cursor, w.node),
     }
 }
 
@@ -115,7 +131,7 @@ pub(super) fn define_class_symbol<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKi
     if let Some(body) = w.node.child_by_field_name("body") {
         w.ctx.class_stack.push(qualname);
         w.work.push(Step::PopClass);
-        push_children_rev(w.work, body);
+        push_children_rev(w.work, w.cursor, body);
     }
 }
 
@@ -163,19 +179,20 @@ pub(super) fn is_test_item(fx: &FileExtraction, ctx: &WalkCtx, name: &str) -> bo
 fn visit_call<'a>(w: &mut Walker<'a, '_, '_>) {
     record_call(w.node, w.src, w.fx, w.ctx);
     let ts_test_call = matches!(w.fx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript)
-        && matches!(
-            w.node
-                .child_by_field_name("function")
-                .map(|f| node_str(f, w.src)),
-            Some("describe" | "it" | "test" | "suite")
-        );
+        && w.node
+            .child_by_field_name("function")
+            .map(|f| node_str(f, w.src))
+            .is_some_and(|callee| {
+                let root = callee.split('.').next().unwrap_or(callee);
+                matches!(root, "describe" | "it" | "test" | "suite")
+            });
     if ts_test_call {
         let was_test_scope = w.ctx.test_scope;
         w.ctx.test_scope = true;
         w.work.push(Step::RestoreTest(was_test_scope));
-        push_children_rev(w.work, w.node);
+        push_children_rev(w.work, w.cursor, w.node);
     } else {
-        push_children_rev(w.work, w.node);
+        push_children_rev(w.work, w.cursor, w.node);
     }
 }
 
@@ -238,6 +255,16 @@ pub(super) fn define_function<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKind) 
     let mut spec = w.callable_spec(kind, &name, &qualname);
     if w.fx.lang == Lang::Rust && rust::has_test_attr(w.node, w.src) {
         spec.is_test = true;
+    }
+    if let Some(rt) = w.node.child_by_field_name("return_type") {
+        let ty = if w.fx.lang == Lang::Rust {
+            unwrap_ref_type(rt)
+        } else {
+            rt
+        };
+        if let Some(chain) = type_dotted_chain(ty, w.src) {
+            w.fx.bindings.return_types.push((qualname.clone(), chain));
+        }
     }
     w.push_callable(&spec);
     bind_default_export(w, &name);

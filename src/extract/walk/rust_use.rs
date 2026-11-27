@@ -8,6 +8,7 @@ pub(super) struct UseTreeCtx<'a> {
     src: &'a [u8],
     prefix: &'a [String],
     scope: &'a str,
+    alias_scope: &'a str,
     crate_root: Option<&'a str>,
     line: usize,
 }
@@ -17,7 +18,13 @@ pub(super) struct UseTreeCtx<'a> {
 /// candidates. `crate::` maps to the file's top-level directory, `self::` to
 /// the current module scope, and `super::` to its parent. Plain paths are
 /// external crates in the 2018 edition and emit no edge.
-pub(super) fn record_use_decl(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, scope: &str) {
+pub(super) fn record_use_decl(
+    node: Node<'_>,
+    src: &[u8],
+    fx: &mut FileExtraction,
+    scope: &str,
+    alias_scope: &str,
+) {
     let Some(arg) = node.child_by_field_name("argument") else {
         return;
     };
@@ -26,6 +33,7 @@ pub(super) fn record_use_decl(node: Node<'_>, src: &[u8], fx: &mut FileExtractio
         src,
         prefix: &[],
         scope,
+        alias_scope,
         crate_root: crate_root.as_deref(),
         line: node.start_position().row + 1,
     };
@@ -77,9 +85,19 @@ fn emit_scoped_use_list(node: Node<'_>, ctx: UseTreeCtx<'_>, fx: &mut FileExtrac
             .collect();
         match segs.first().map(String::as_str) {
             Some(first) if !matches!(first, "crate" | "self" | "super") => {
-                let mut out = vec![fx.module.clone()];
-                out.extend(segs);
-                Some(out)
+                let is_local_mod = fx.bindings.aliases.iter().any(|(_, alias, target)| {
+                    alias == first && matches!(target, ImportTarget::ModuleRoot { .. })
+                }) || fx
+                    .symbols
+                    .iter()
+                    .any(|s| s.kind == SymbolKind::Module && s.name == first);
+                if is_local_mod {
+                    let mut out = vec![fx.module.clone()];
+                    out.extend(segs);
+                    Some(out)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -148,7 +166,7 @@ pub(super) fn emit_use_leaf(
         name.clone(),
     ));
     fx.bindings.aliases.push((
-        ctx.scope.to_string(),
+        ctx.alias_scope.to_string(),
         alias.unwrap_or_else(|| name.clone()),
         ImportTarget::Symbol {
             module,
@@ -174,8 +192,18 @@ fn emit_module_leaf(
     if !module_leaf {
         return false;
     }
-    fx.import_edges
-        .push(ImportEdgeCandidate::module(ctx.line, qn.clone()));
+    if let Some((name, parent)) = full.split_last() {
+        if !marker_only && !parent.is_empty() {
+            fx.import_edges.push(ImportEdgeCandidate::symbol(
+                ctx.line,
+                parent.join("."),
+                name.clone(),
+            ));
+        } else {
+            fx.import_edges
+                .push(ImportEdgeCandidate::module(ctx.line, qn.clone()));
+        }
+    }
     let binding = alias.clone().or_else(|| {
         // Bare `use self;` binds nothing; `use a::b::{self}` binds `b` so
         // scoped self imports keep their module alias.
@@ -189,13 +217,13 @@ fn emit_module_leaf(
         if let Some((name, parent)) = full.split_last() {
             if parent.is_empty() {
                 fx.bindings.aliases.push((
-                    ctx.scope.to_string(),
+                    ctx.alias_scope.to_string(),
                     binding,
                     ImportTarget::ModuleRoot { path: qn },
                 ));
             } else {
                 fx.bindings.aliases.push((
-                    ctx.scope.to_string(),
+                    ctx.alias_scope.to_string(),
                     binding,
                     ImportTarget::Symbol {
                         module: parent.join("."),

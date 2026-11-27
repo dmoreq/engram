@@ -25,7 +25,9 @@ pub(super) fn index_parent_module(t: &mut Tables, idx: usize, module: &str) {
         // Rust inline `mod` scopes it as a method.
         Some((parent, Some(SymbolKind::Module))) => {
             t.by_mod_name
-                .entry((parent, name.to_string()))
+                .entry(parent)
+                .or_default()
+                .entry(name.to_string())
                 .or_default()
                 .push(idx);
         }
@@ -38,13 +40,17 @@ pub(super) fn index_parent_module(t: &mut Tables, idx: usize, module: &str) {
                 .map(|(p, _)| p.to_string())
                 .unwrap_or_default();
             t.by_mod_name
-                .entry((parent, name.to_string()))
+                .entry(parent)
+                .or_default()
+                .entry(name.to_string())
                 .or_default()
                 .push(idx);
         }
         _ if direct_child && kind != SymbolKind::Method => {
             t.by_mod_name
-                .entry((module.to_string(), name.to_string()))
+                .entry(module.to_string())
+                .or_default()
+                .entry(name.to_string())
                 .or_default()
                 .push(idx);
         }
@@ -147,4 +153,42 @@ pub(super) fn emit_inherit_edge(
         site_line,
     });
     None
+}
+
+/// MRO walk, level by level: fast-path level 0 with `&str` (zero allocs when
+/// the class defines the method or has no bases); BFS up to 6 levels otherwise.
+pub(super) fn mro_outcome(t: &Tables, class_qn: &str, method: &str) -> Outcome {
+    if let Some(idxs) = t.class_methods.get(class_qn).and_then(|m| m.get(method)) {
+        return match idxs.len() {
+            1 => Outcome::Extracted(idxs[0]),
+            0 => Outcome::Unresolved,
+            _ => Outcome::Ambiguous(format!("{class_qn}.{method}")),
+        };
+    }
+    let Some(bases) = t.class_bases.get(class_qn) else {
+        return Outcome::Unresolved;
+    };
+    let mut level = bases.clone();
+    let mut seen: HashSet<String> = HashSet::from([class_qn.to_string()]);
+    for _ in 0..5 {
+        let mut next: Vec<String> = Vec::new();
+        let mut found: Vec<usize> = Vec::new();
+        for qn in &level {
+            if !seen.insert(qn.clone()) {
+                continue;
+            }
+            if let Some(idxs) = t.class_methods.get(qn).and_then(|m| m.get(method)) {
+                found.extend_from_slice(idxs);
+            } else if let Some(bases) = t.class_bases.get(qn) {
+                next.extend(bases.iter().cloned());
+            }
+        }
+        match found.len() {
+            1 => return Outcome::Extracted(found[0]),
+            0 if next.is_empty() => return Outcome::Unresolved,
+            0 => level = next,
+            _ => return Outcome::Ambiguous(format!("{class_qn}.{method}")),
+        }
+    }
+    Outcome::Unresolved
 }

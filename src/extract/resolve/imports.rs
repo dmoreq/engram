@@ -85,12 +85,8 @@ impl ImportEmitter<'_> {
             Edge(Option<usize>, Confidence),
             Fallback,
         }
-        let decision = match self
-            .t
-            .by_mod_name
-            .get(&(module.to_string(), name.to_string()))
-        {
-            Some(dsts) if dsts.is_empty() => Decision::Skip,
+        let decision = match self.t.mod_child(module, name) {
+            Some([]) => Decision::Skip,
             Some(dsts) if dsts.len() > 1 => Decision::Edge(None, Confidence::Ambiguous),
             Some(dsts) => match dsts.first() {
                 Some(&dst) => Decision::Edge(Some(dst), Confidence::Extracted),
@@ -129,7 +125,11 @@ impl ImportEmitter<'_> {
                             Some(Outcome::Ambiguous(_)) => {
                                 self.push_edge(None, &dst_name, Confidence::Ambiguous, line);
                             }
-                            _ => self.push_unresolved(&dst_name, line),
+                            _ => {
+                                if !is_stdlib_module(self.t.file_ctx[self.fi].lang, module) {
+                                    self.push_unresolved(&dst_name, line);
+                                }
+                            }
                         }
                     }
                 }
@@ -179,7 +179,7 @@ impl ImportEmitter<'_> {
                     self.push_edge(None, path, Confidence::Ambiguous, site_line);
                 }
             }
-        } else {
+        } else if !is_stdlib_module(self.t.file_ctx[self.fi].lang, path) {
             self.push_unresolved(path, site_line);
         }
     }
@@ -276,22 +276,4 @@ pub(super) fn reconcile_python_imports(t: &mut Tables) {
             .contains(&(e.site_line, e.dst_name.to_string()));
         !parent_candidate || !module_children.contains(&key) || symbol_children.contains(&key)
     });
-}
-
-/// Python typed receiver: the class of `x` in `x.m()`, when it resolves.
-/// Emitting a `type_ref` edge keeps the incremental dirty closure honest even
-/// when the call itself resolves through an inherited method.
-pub(super) fn python_type_ref(t: &Tables, fi: usize, site: &CallSite) -> Option<(String, usize)> {
-    if t.file_ctx[fi].lang != Lang::Python {
-        return None;
-    }
-    let Callee::Attr(parts) = &site.callee else {
-        return None;
-    };
-    if parts.len() < 2 {
-        return None;
-    }
-    let class_qn = resolve_var_class(t, fi, &parts[0], &site.scope_func, site.line)?;
-    let class_idx = unique_class_index(t, &class_qn)?;
-    Some((class_qn, class_idx))
 }

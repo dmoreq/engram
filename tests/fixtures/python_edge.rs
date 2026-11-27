@@ -355,6 +355,7 @@ fn tier2_carried_index_preserves_return_types_fields_and_reexports() {
         inherits: vec![],
         class_fields: vec![("base.CarriedBase".into(), "r".into(), "base.Ranker".into())],
         reexports: vec![("pkg".into(), "Ranker".into(), 2)],
+        module_stars: vec![],
     };
     let app_src = "from base import CarriedBase, make_ranker\nimport pkg\n\nclass Sub(CarriedBase):\n    def run(self):\n        x = make_ranker()\n        x.rank()\n        self.r.rank()\n        self.prop.rank()\n        pkg.Ranker.rank()\n";
     let parsed = parse_source(app_src.as_bytes(), Lang::Python).unwrap();
@@ -374,5 +375,28 @@ fn tier2_carried_index_preserves_return_types_fields_and_reexports() {
         rank_lines,
         vec![7, 8, 9, 10],
         "carried return_type, class_fields, @property, and reexports must resolve: {rank_lines:?}"
+    );
+}
+
+#[test]
+fn resolve_target_class_chained_factory_respects_site_line() {
+    let src = "class B:\n    def run(self):\n        pass\n\nclass A:\n    def make_b(self) -> B:\n        return B()\n\ndef make_a() -> A:\n    return A()\n\ndef flow():\n    a = make_a()\n    b = a.make_b()\n    b.run()\n    b = unknown()\n    b.run()\n";
+    let p = parse_source(src.as_bytes(), Lang::Python).unwrap();
+    let fx = extract_file(0, "chain.py", src.as_bytes(), &p);
+    let res = resolve(vec![fx], Default::default());
+    let run_lines: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "chain.B.run"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    assert_eq!(
+        run_lines,
+        vec![15],
+        "chained factory b = a.make_b() resolves b.run() at line 15 and drops after unknown() at line 17: {run_lines:?}"
     );
 }

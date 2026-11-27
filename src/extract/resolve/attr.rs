@@ -4,34 +4,50 @@
 use super::*;
 
 pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcome {
+    resolve_attr_with_type_ref(ctx, chain).0
+}
+
+pub(super) fn resolve_attr_with_type_ref(
+    ctx: &CallCtx<'_>,
+    chain: &[String],
+) -> (Outcome, Option<String>) {
     if chain.len() < 2 {
-        return Outcome::Unresolved;
+        return (Outcome::Unresolved, None);
     }
     // The method name is the final segment: `Outer.Inner.m()` must resolve
     // `m`, not the nested-class penultimate segment.
-    let method = chain.last().unwrap().clone();
+    let method = chain.last().unwrap();
     // self/cls (Python) and this (TS) inside a class body.
-    if let Some(out) = resolve_receiver_method(ctx, chain, &method) {
-        return out;
+    if let Some(out) = resolve_receiver_method(ctx, chain, method) {
+        return (out, None);
     }
+    let var_class = resolve_var_class(
+        ctx.t,
+        ctx.fi,
+        &chain[0],
+        &ctx.site.scope_func,
+        ctx.site.scope_class.as_deref(),
+        ctx.site.line,
+        ctx.depth,
+    );
     // Receiver typing takes precedence over module interpretation
     // (Amendment 7b): a local binding shadows a same-named module.
-    if let Some(out) = receiver_typing(ctx, chain, &method) {
-        return out;
+    if let Some(out) = receiver_typing(ctx, chain, method, var_class.as_deref()) {
+        return (out, var_class);
     }
     // A local binding shadows a module even in longer attribute chains.
     if is_local_binding(ctx.fctx, ctx.site, &chain[0]) {
-        return Outcome::Unresolved;
+        return (Outcome::Unresolved, None);
     }
     // Class-attribute call: Class.m(...) or pkg.Class.m(...).
-    if let Some(out) = class_path_lookup(ctx, chain, &method) {
-        return out;
+    if let Some(out) = class_path_lookup(ctx, chain, method) {
+        return (out, None);
     }
     // Rust path keywords. `Self::assoc()` resolves through the
     // enclosing impl target; `self::f()`/`super::f()` walk the module
     // tree from the current or parent module.
     if let Some(out) = resolve_rust_keyword_path(ctx, chain) {
-        return out;
+        return (out, None);
     }
     // Module-qualified call through the alias map / module tree. An external
     // origin module arrives as Dropped; the same-file fallback below stays
@@ -39,7 +55,7 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
     // EXTRACTED edges.
     let out = module_chain_outcome(ctx.t, ctx.fi, chain, &ctx.site.scope_func);
     if !matches!(out, Outcome::Unresolved | Outcome::Dropped) {
-        return out;
+        return (out, None);
     }
     // Unknown Rust receiver: fall back to a same-file method name only
     // when it is unique. Ubiquitous trait/stdlib names never fall
@@ -49,10 +65,10 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
         if let extracted @ Outcome::Extracted(_) =
             rust_unknown_receiver_outcome(ctx.t, ctx.fi, &chain[1])
         {
-            return extracted;
+            return (extracted, None);
         }
     }
-    out
+    (out, None)
 }
 
 /// A typed local receiver shadows a same-named module even when the method
@@ -61,17 +77,12 @@ pub(super) fn receiver_typing(
     ctx: &CallCtx<'_>,
     chain: &[String],
     method: &str,
+    base_class: Option<&str>,
 ) -> Option<Outcome> {
     if chain.len() < 2 {
         return None;
     }
-    let mut cur_class = resolve_var_class(
-        ctx.t,
-        ctx.fi,
-        &chain[0],
-        &ctx.site.scope_func,
-        ctx.site.line,
-    )?;
+    let mut cur_class = base_class?.to_string();
     for field in &chain[1..chain.len() - 1] {
         cur_class = resolve_self_attr_type(ctx.t, &cur_class, field)?;
     }
@@ -108,6 +119,14 @@ pub(super) fn class_path_lookup(
             if !matches!(out, Outcome::Unresolved) {
                 return Some(out);
             }
+            // Rust `Enum::Variant(...)`: resolve PascalCase variant calls to the enum symbol.
+            if ctx.fctx.lang == Lang::Rust
+                && method.chars().next().is_some_and(|c| c.is_uppercase())
+            {
+                if let Some(idx) = unique_class_index(ctx.t, &class_qn) {
+                    return Some(Outcome::Extracted(idx));
+                }
+            }
         }
     }
     None
@@ -132,7 +151,7 @@ pub(super) fn resolve_receiver_method(
         if chain.len() == 2 {
             return Some(mro_outcome(ctx.t, class_qn, method));
         }
-        if chain.len() >= 3 && chain[0] == "self" {
+        if chain.len() >= 3 && (chain[0] == "self" || chain[0] == "this") {
             let mut cur_class = class_qn.clone();
             for field in &chain[1..chain.len() - 1] {
                 let Some(next_class) = resolve_self_attr_type(ctx.t, &cur_class, field) else {
@@ -193,7 +212,7 @@ pub(super) fn resolve_rust_keyword_path(ctx: &CallCtx<'_>, chain: &[String]) -> 
                 break;
             }
         }
-        return Some(module_scoped_call(ctx.t, &module, rest));
+        return Some(module_scoped_call(ctx.t, ctx.fctx.lang, &module, rest));
     }
     // Rust crate::path::call — map crate:: to the crate root dir.
     if chain[0] == "crate" {
@@ -298,8 +317,8 @@ pub(super) fn rust_unknown_receiver_outcome(t: &Tables, fi: usize, method: &str)
 /// Module-qualified call from `self::`/`super::`. The parent directory may
 /// not have its own module symbol (src/ layout without mod.rs), so a direct
 /// qualname lookup is the fallback after the module tree walk.
-pub(super) fn module_scoped_call(t: &Tables, module: &str, rest: &[String]) -> Outcome {
-    let out = chain_from_module(t, module.to_string(), rest);
+pub(super) fn module_scoped_call(t: &Tables, lang: Lang, module: &str, rest: &[String]) -> Outcome {
+    let out = chain_from_module(t, lang, module.to_string(), rest);
     if !matches!(out, Outcome::Unresolved) {
         return out;
     }
@@ -360,10 +379,6 @@ pub(super) fn nearest_alias_scoped<'a>(
     best.map(|(binding_scope, target)| (binding_scope.as_str(), target))
 }
 
-pub(super) fn file_alias<'a>(fctx: &'a FileCtx, name: &str) -> Option<&'a ImportTarget> {
-    nearest_alias_scoped(fctx, "", name).map(|(_, target)| target)
-}
-
 /// A parameter or local variable in the current or an enclosing function
 /// shadows module and file-level bindings. Python class scope is not lexical.
 pub(super) fn is_local_binding(fctx: &FileCtx, site: &CallSite, name: &str) -> bool {
@@ -382,14 +397,23 @@ pub(super) fn is_local_binding(fctx: &FileCtx, site: &CallSite, name: &str) -> b
     }
     let mut scope = site.scope_func.as_str();
     while !scope.is_empty() && scope != fctx.module {
-        let key = (scope.to_string(), name.to_string());
-        if fctx.bindings.locals.contains(&key) {
+        if fctx
+            .bindings
+            .locals
+            .get(scope)
+            .is_some_and(|s| s.contains(name))
+        {
             return true;
         }
         // An assignment shadows only from its own line onward; a later
         // assignment must not erase an earlier valid bare call.
-        if let Some(events) = fctx.bindings.assignments.get(&key) {
-            if events.iter().any(|(line, _)| *line <= site.line) {
+        if let Some(events) = fctx
+            .bindings
+            .assignments
+            .get(scope)
+            .and_then(|m| m.get(name))
+        {
+            if events.first().is_some_and(|(line, _)| *line <= site.line) {
                 return true;
             }
         }
