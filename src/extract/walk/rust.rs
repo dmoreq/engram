@@ -391,7 +391,10 @@ fn visit_rust_mod_item<'a>(w: &mut Walker<'a, '_, '_>) {
             .parent_container()
             .map(str::to_string)
             .unwrap_or_else(|| {
-                if w.fx.module == "main" || w.fx.module.ends_with(".main") {
+                if w.fx.module == "main"
+                    || w.fx.module.ends_with(".main")
+                    || (w.fx.module == "lib" && w.fx.crate_root.as_deref() == Some(""))
+                {
                     w.fx.crate_root.clone().unwrap_or_default()
                 } else {
                     w.fx.module.clone()

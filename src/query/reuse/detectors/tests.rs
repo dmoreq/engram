@@ -212,7 +212,7 @@ fn probe_id(name: &str) -> i64 {
     }
 }
 
-fn deep_symbol(
+pub(super) fn deep_symbol(
     id: i64,
     qualname: &str,
     direct: &[&str],
@@ -497,32 +497,4 @@ fn d3_emits_no_measured_overlap() {
         assert!(cand.overlap_pct.is_none(), "D3 carries no percentage");
         assert_eq!(cand.sort_rank(), 90);
     }
-}
-
-#[test]
-fn deep_callee_budget_is_deterministic() {
-    let mut picked = Vec::new();
-    for _ in 0..8 {
-        let mut symbols = HashMap::new();
-        let target = deep_symbol(10, "m.target", &["a", "b", "c"], &[], 10, 0);
-        let c1 = deep_symbol(1, "m.alpha", &["a", "b", "c"], &[], 1, 3);
-        let c2 = deep_symbol(2, "m.beta", &["a", "b", "c"], &[], 2, 3);
-        symbols.insert(10, target);
-        symbols.insert(1, c1);
-        symbols.insert(2, c2);
-        let corpus = Corpus {
-            symbols: &symbols,
-            index: None,
-            df_all_excl: None,
-            deep_callee: true,
-            guarded_out: Cell::new(0),
-            deep_budget: Cell::new(1),
-        };
-        let cand = find_best_d1(&symbols[&10], &corpus).unwrap();
-        picked.push(cand.canonical);
-    }
-    assert!(
-        picked.iter().all(|c| c == "m.alpha"),
-        "budget=1 must deterministically pick file_1 (m.alpha): {picked:?}"
-    );
 }

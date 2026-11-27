@@ -25,12 +25,16 @@ fn schema_compatible(old: &Connection) -> bool {
     let req = [
         ("symbols", "file_path"),
         ("symbols", "is_test"),
+        ("symbols", "return_type"),
         ("unresolved_calls", "site_line"),
         ("unresolved_calls", "kind"),
     ];
     req.iter()
         .all(|(t, c)| column_present(old, t, c).unwrap_or(false))
         && object_exists(old, "table", "symbols_fts")
+        && object_exists(old, "table", "class_fields")
+        && object_exists(old, "table", "module_exports")
+        && object_exists(old, "table", "module_stars")
         && meta_get(old, meta_keys::GRAMMAR_VERSION).as_deref() == Some(GRAMMAR_VERSION)
         && meta_get(old, meta_keys::SIGNATURE_VERSION).as_deref() == Some(SIGNATURE_VERSION)
         && meta_get(old, meta_keys::METRICS_VERSION).as_deref() == Some(METRICS_VERSION)
@@ -144,20 +148,6 @@ pub fn dirty_closure(old: &Connection, changed: &[String]) -> Result<HashSet<Str
         frontier = next;
     }
     Ok(dirty)
-}
-
-/// Old symbol qualnames grouped by the files that declare them. Used to detect
-/// a newly added duplicate candidate, not just a brand-new name.
-pub fn symbol_qualname_files(conn: &Connection) -> Result<HashMap<String, HashSet<String>>> {
-    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut stmt =
-        conn.prepare("SELECT s.qualname, f.path FROM symbols s JOIN files f ON f.id = s.file_id")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    for r in rows {
-        let (qualname, path) = r?;
-        out.entry(qualname).or_default().insert(path);
-    }
-    Ok(out)
 }
 
 /// Qualnames declared by the given old-index files. Bounds candidate

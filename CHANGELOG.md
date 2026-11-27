@@ -14,6 +14,32 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [1.2.0] - 2026-11-27
+
+### Added
+- `eg search` now uses tiered matching (`phrase -> AND* -> OR*`), falling back to `OR*` only when `AND*` yields zero hits, reducing single-token noise and false capping while evaluating caller counts only on the bounded result page.
+- `eg audit` `quality.empty_results` now tracks `exit 1` (`NoResults`) misses across navigation, `search`, and `mem_query`, and `performance.p95` measures `exit 0` invocations gated on at least 20 latency samples.
+- `eg mcp` caches read-only SQLite handles keyed by `(path, dev, ino, mtime_ns, len)` and evicts cached handles automatically before `build` and memory writes.
+- Index schema advances to `v12` (and extraction revision `5`) to persist `module_exports` and `module_stars` across incremental carry-forward (preserving TypeScript barrels, default exports, aliased re-exports, and star re-exports) alongside covering indexes on `unresolved_calls`, `edges`, and `symbols`.
+- Extraction and resolution now scope builtins and stdlib tables per language (Python, Rust prelude, TypeScript/JavaScript globals), support TypeScript `nested_type_identifier`, `export * from` barrels, bare `.`/`..` imports, `| null`/`undefined` unwrapping, qualified generic bases, Rust `type_item` and TypeScript `type_alias_declaration`/`enum_declaration`, and `Enum::Variant(...)` calls.
+
+### Changed
+- Consolidated memory-reference validation into a single exact-first `db::resolve_ref_detail` helper shared across `mem_query`, `audit`, and `dashboard`; unified path normalization into `normalize_repo_path`.
+- Consolidated `eg-judge` binary/model discovery and bounded child execution into a single shared helper; expanded `eg reuse --judge` eligibility to `Low` and `Provisional` candidates across detectors plus `D3` (excluding `High`), matching the `finalize` tip.
+- `eg usage` and `eg dashboard` now accumulate per-call `reuse` token savings instead of re-pricing aggregate counts; `journal::finalize` skips rotation locking and directory/mode calls on routine appends.
+- `mem_query` hybrid ranking drops the `GRAPH_LEX_RAW = 10.0` sentinel distortion, normalizes BM25 per store, gates `embed_text` on actual embedding presence, and assigns neutral `0.5` to unembedded candidates instead of disabling semantic reranking at <100% coverage.
+- `eg reuse` skips repo-wide `new_file_walk` on file/symbol scopes, gates `CorpusIndex` on target count, uses zero-allocation `LangFamily` and `RAW_CLIENTS` matching, honors path scope in `--coverage`, and applies stoplists symmetrically in `--propose`.
+- Incremental `eg build` scopes `symbol_qualname_files` to changed qualnames, carries `olddb.symbols_fts` rows for unchanged files, short-circuits `syntax_stats` when `!root.has_error()`, eliminates per-node `Vec`/`TreeCursor` allocations in `push_children_rev`, and dispatches extraction dynamically by descending file size.
+
+### Fixed
+- Fixed `eg path <file>:<line> <target>` out-of-bounds panic and `pointer_span_ids` outer-container selection (now orders innermost non-module span first).
+- Fixed `callees_transitive` positive-ID collision (`COALESCE(ds.id, -e.id)`), cycle amplification, and double CTE execution.
+- Fixed `symbols_directory` rejecting extensionless directories named `ts`, `py`, `js`, or `rs`, and replaced unindexed `substr(...)` scans with indexed range predicates.
+- Fixed `child.rs` >16 KiB stdout pipe deadlock and `coprocess.rs` wedged dead session / batch abort handling for `eg-judge`.
+- Fixed Rust top-level `use` alias scoping (respecting local shadowing and module-scope calls), `emit_scoped_use_list` external-crate path fabrication, `src/lib.rs` vs `src/main.rs` module qualname collision, and `load_carried_inherits` incremental MRO parity.
+- Fixed `ref_matches_target` matching file extensions and middle module segments, `graph_expand` non-determinism and unescaped `LIKE` queries, `secret.rs` prose false positives, `mem_export` Markdown `created_at` omission, `mem_reindex --embed` incremental backfill, and read-only compatibility on un-migrated v1 memory stores.
+- Fixed `eg monitor` ephemeral filtering and Arrow-key `ESC` quit, dashboard `shown: null` and `mem_reindex` classification, `Allowlist` O(log N) lookup, and `journal::finalize` / `doctor` / `audit` N+1 SQL queries.
+
 ## [1.1.2] - 2026-11-27
 
 ### Added

@@ -103,19 +103,11 @@ fn judge_batch_reviews_two_pairs_and_passes_the_recipe() {
 #[cfg(unix)]
 #[test]
 fn judge_noop_note_when_nothing_is_judgeable() {
-    // An exact clone sits at 100% overlap, outside the 45-75 band, so the
-    // judge has nothing to arbitrate and says so instead of staying silent.
+    // When no candidate passes judge eligibility, the judge has nothing to
+    // arbitrate and says so instead of staying silent.
     let repo = temp_repo("reuse-judge-noop");
-    write(
-        &repo,
-        "a.py",
-        "def parse_token(token: str):\n    return token.strip()\n",
-    );
-    write(
-        &repo,
-        "b.py",
-        "def parse_token(token: str):\n    return token.strip()\n",
-    );
+    write(&repo, "a.py", "def alpha_one():\n    return 1\n");
+    write(&repo, "b.py", "def beta_two():\n    return 2\n");
     build(&repo);
     let bin = install_stub(&repo, LINE_STUB);
 
