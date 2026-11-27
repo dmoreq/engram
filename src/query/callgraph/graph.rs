@@ -5,7 +5,6 @@ use super::frame::{
     callee_empty_reason, direct_callees, direct_callers, transitive_page, TransitivePlan,
 };
 use super::*;
-use crate::db::EDGE_SRC_FILE_JOIN;
 
 /// Shared traversal knobs for `callers`/`callees` (mirrors `ImpactOpts`).
 pub struct GraphQueryOpts {
@@ -16,20 +15,20 @@ pub struct GraphQueryOpts {
 /// Shared `callers`/`callees` prologue: clamp the knobs and resolve the
 /// target name once. Returns the clamped limit/depth and the target symbol ids.
 fn prepare_graph_query(
-    conn: &Connection,
+    ctx: &QueryCtx<'_>,
     name: &str,
     opts: GraphQueryOpts,
 ) -> Result<(usize, usize, Vec<i64>)> {
     let GraphQueryOpts { limit, depth } = opts;
     let limit = clamp_limit(limit)?;
     let depth = depth.clamp(1, crate::query::MAX_DEPTH);
-    let (ids, _) = resolve_targets(conn, name, None)?;
+    let (ids, _) = resolve_targets(ctx, name, None)?;
     Ok((limit, depth, ids))
 }
 
 pub fn callers(ctx: &QueryCtx<'_>, name: &str, opts: GraphQueryOpts) -> Result<QueryOutput> {
     let QueryCtx { conn, .. } = *ctx;
-    let (limit, depth, ids) = prepare_graph_query(conn, name, opts)?;
+    let (limit, depth, ids) = prepare_graph_query(ctx, name, opts)?;
     if depth > 1 {
         return callers_transitive(ctx, &ids, limit, depth);
     }
@@ -107,10 +106,10 @@ fn callers_transitive_sql(ids_len: usize) -> (String, String) {
     );
     let select = format!(
         "SELECT e.site_line AS line, e.confidence AS confidence,
-                f.path AS path, s.qualname AS qn, r.d + 1 AS lvl
+                s.file_path AS path, s.qualname AS qn, r.d + 1 AS lvl
          FROM reached r
          JOIN edges e ON e.dst_id = r.sym
-         {EDGE_SRC_FILE_JOIN}
+         JOIN symbols s ON s.id = e.src_id
          WHERE e.kind = '{}' AND r.d < ?{d2}
            AND NOT EXISTS (
                SELECT 1 FROM reach r2 WHERE r2.sym = e.src_id AND r2.d <= r.d
@@ -123,7 +122,7 @@ fn callers_transitive_sql(ids_len: usize) -> (String, String) {
 
 pub fn callees(ctx: &QueryCtx<'_>, name: &str, opts: GraphQueryOpts) -> Result<QueryOutput> {
     let QueryCtx { conn, .. } = *ctx;
-    let (limit, depth, ids) = prepare_graph_query(conn, name, opts)?;
+    let (limit, depth, ids) = prepare_graph_query(ctx, name, opts)?;
     if depth > 1 {
         return callees_transitive(ctx, &ids, limit, depth);
     }
@@ -150,7 +149,7 @@ fn callees_transitive(
         limit,
         TransitivePlan {
             sql: (cte, select),
-            order_by: "path, line, qn",
+            order_by: "lvl, path, line, qn",
             caveat: None,
         },
         || callee_empty_reason(conn, ids),
@@ -182,7 +181,8 @@ fn transitive_sql(ids_len: usize) -> (String, String) {
              UNION
              SELECT e.dst_id, r.d + 1 FROM edges e JOIN reach r ON e.src_id = r.sym
              WHERE e.kind = '{}' AND e.dst_id IS NOT NULL AND r.d < ?{d}
-         )",
+         ),
+         reached(sym, d) AS (SELECT sym, MIN(d) FROM reach GROUP BY sym)",
         EdgeKind::Calls.as_str(),
         d = 1 + ids_len
     );
@@ -194,24 +194,63 @@ fn transitive_sql(ids_len: usize) -> (String, String) {
         .join(", ");
     let select = format!(
         "SELECT MIN(COALESCE(ds.line_start, e.site_line)) AS line, MAX(e.confidence) AS confidence,
-                COALESCE(df.path, f.path) AS path, COALESCE(ds.qualname, e.dst_name) AS qn,
+                COALESCE(ds.file_path, s.file_path) AS path, COALESCE(ds.qualname, e.dst_name) AS qn,
                 MIN(r.d) + 1 AS lvl
-         FROM reach r
+         FROM reached r
          -- CROSS JOIN + WHERE lets SQLite drive from the recursive set and
          -- use edges_src, instead of scanning the whole edge table (R7).
          CROSS JOIN edges e
-         {EDGE_SRC_FILE_JOIN}
+         JOIN symbols s ON s.id = e.src_id
          LEFT JOIN symbols ds ON ds.id = e.dst_id
-         LEFT JOIN files df ON df.id = ds.file_id
          WHERE e.src_id = r.sym AND e.kind = '{}' AND r.d < ?{d2}
            -- A call cycle would otherwise list a seed as its own callee.
            AND COALESCE(ds.id, 0) NOT IN ({seed_refs})
          -- One row per destination: the strongest confidence wins over a
          -- duplicate line row when two edges of different confidence reach
-         -- the same symbol. Dst-less edges group per edge id.
-         GROUP BY COALESCE(ds.id, e.id)",
+         -- the same symbol. Dst-less edges group by negated edge id to avoid
+         -- colliding with positive symbol ids.
+         GROUP BY COALESCE(ds.id, -e.id)",
         EdgeKind::Calls.as_str(),
         d2 = 2 + ids_len
     );
     (cte, select)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callees_transitive_does_not_collide_dst_id_with_edge_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER DEFAULT 0, mtime INTEGER DEFAULT 0, content_hash INTEGER DEFAULT 0);
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT, file_id INTEGER, file_path TEXT, line_start INTEGER, line_end INTEGER);
+             CREATE TABLE edges (id INTEGER PRIMARY KEY, src_id INTEGER, dst_id INTEGER, dst_name TEXT, kind TEXT, confidence TEXT, site_line INTEGER);
+             CREATE TABLE unresolved_calls (file_id INTEGER, dst_name TEXT, kind TEXT, site_line INTEGER);
+             INSERT INTO files (id, path) VALUES (1, 'a.py');
+             INSERT INTO symbols VALUES (1, 'function', 'entry', 'a.entry', 1, 'a.py', 1, 5);
+             INSERT INTO symbols VALUES (2, 'function', 'helper', 'a.helper', 1, 'a.py', 6, 10);
+             INSERT INTO edges VALUES (1, 1, 2, 'helper', 'calls', 'resolved', 2);
+             INSERT INTO edges VALUES (2, 1, NULL, 'ext_fn', 'calls', 'resolved', 3);",
+        )
+        .unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let out = callees(
+            &ctx,
+            "a.entry",
+            GraphQueryOpts {
+                limit: 10,
+                depth: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.total, 2,
+            "resolved dst_id=2 and dst-less edge_id=2 must not collide"
+        );
+    }
 }

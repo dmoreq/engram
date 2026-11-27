@@ -2,7 +2,6 @@
 //! transitive count-then-page loaders that both directions reuse.
 
 use super::*;
-use crate::db::EDGE_SRC_FILE_JOIN;
 use crate::extract::EdgeSiteKind;
 
 /// Count-then-bounded-fetch frame shared by the direct caller/callee loads:
@@ -21,8 +20,8 @@ fn count_then_page(
         conn.query_row(count_sql, rusqlite::params_from_iter(params.iter()), |r| {
             r.get::<_, i64>(0)
         })? as usize;
-    if total == 0 {
-        return Ok((Vec::new(), 0));
+    if total == 0 || limit == 0 {
+        return Ok((Vec::new(), total));
     }
     params.push(rusqlite::types::Value::from(limit as i64));
     let mut stmt = conn.prepare(page_sql)?;
@@ -74,25 +73,42 @@ where
     let mut params = id_params(ids);
     params.push(rusqlite::types::Value::from(depth as i64));
     params.push(rusqlite::types::Value::from(depth as i64));
-    let count_sql = format!("{cte} SELECT COUNT(*) FROM ({select})");
-    let total: usize =
-        conn.query_row(&count_sql, rusqlite::params_from_iter(params.iter()), |r| {
-            r.get::<_, i64>(0)
-        })? as usize;
-    if total == 0 {
-        return Err(EgError::NoResults(empty_detail()?));
+    if limit == 0 {
+        let count_sql = format!("{cte} SELECT COUNT(*) FROM ({select})");
+        let total: usize =
+            conn.query_row(&count_sql, rusqlite::params_from_iter(params.iter()), |r| {
+                r.get::<_, i64>(0)
+            })? as usize;
+        if total == 0 {
+            return Err(EgError::NoResults(empty_detail()?));
+        }
+        let mut out = collect_output(ctx, std::iter::empty(), 0, total)?;
+        if let Some(caveat) = caveat {
+            prepend_header(&mut out, &caveat);
+        }
+        return Ok(out);
     }
-    // Bounded materialization: the closure result is counted above and
-    // fetched with LIMIT, never fully collected.
+    // Single recursive CTE execution: COUNT(*) OVER () computes total rows
+    // before LIMIT without running the closure twice.
     let sql = format!(
-        "{cte} {select} ORDER BY {order_by} LIMIT ?{limit_param}",
+        "{cte} SELECT *, COUNT(*) OVER () AS total_count FROM ({select}) ORDER BY {order_by} LIMIT ?{limit_param}",
         limit_param = ids.len() + 3
     );
     let mut stmt = conn.prepare(&sql)?;
-    // The display limit binds after the two depth-cap parameters.
     params.push(rusqlite::types::Value::from(limit as i64));
-    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), map)?;
-    let mut out = collect_output(ctx, rows, limit, total)?;
+    let mut total: Option<usize> = None;
+    let mut pointers = Vec::new();
+    let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+    while let Some(r) = rows.next()? {
+        if total.is_none() {
+            total = Some(r.get::<_, i64>(5)? as usize);
+        }
+        pointers.push(map(r)?);
+    }
+    let Some(total) = total else {
+        return Err(EgError::NoResults(empty_detail()?));
+    };
+    let mut out = collect_output(ctx, pointers.into_iter().map(Ok), limit, total)?;
     if let Some(caveat) = caveat {
         prepend_header(&mut out, &caveat);
     }
@@ -112,12 +128,11 @@ pub(super) fn direct_callers(
         EdgeKind::Calls.as_str()
     );
     let page_sql = format!(
-        "SELECT e.site_line, e.confidence, f.path, s.qualname
+        "SELECT e.site_line, e.confidence, s.file_path, s.qualname
          FROM edges e
-         {EDGE_SRC_FILE_JOIN}
-         LEFT JOIN symbols ds ON ds.id = e.dst_id
+         JOIN symbols s ON s.id = e.src_id
          WHERE e.dst_id IN ({placeholders}) AND e.kind = '{}'
-         ORDER BY f.path, e.site_line, s.qualname, s.line_start, e.confidence LIMIT ?{limit_param}",
+         ORDER BY s.file_path, e.site_line, s.qualname, s.line_start, e.confidence LIMIT ?{limit_param}",
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );
@@ -133,7 +148,7 @@ pub(super) fn direct_callees(
 ) -> Result<(Vec<Pointer>, usize)> {
     let placeholders = crate::db::sql_placeholders(ids.len());
     let count_sql = format!(
-        "SELECT COUNT(DISTINCT COALESCE(ds.id, -(1000000 + e.id)))
+        "SELECT COUNT(DISTINCT COALESCE(ds.id, -e.id))
          FROM edges e LEFT JOIN symbols ds ON ds.id = e.dst_id
          WHERE e.src_id IN ({placeholders}) AND e.kind = '{}'",
         EdgeKind::Calls.as_str()
@@ -141,14 +156,13 @@ pub(super) fn direct_callees(
     let page_sql = format!(
         "SELECT MIN(COALESCE(ds.line_start, e.site_line)) AS line,
                 MAX(e.confidence) AS confidence,
-                MAX(COALESCE(df.path, f.path)) AS path,
+                MAX(COALESCE(ds.file_path, s.file_path)) AS path,
                 COALESCE(ds.qualname, e.dst_name) AS qn
          FROM edges e
-         {EDGE_SRC_FILE_JOIN}
+         JOIN symbols s ON s.id = e.src_id
          LEFT JOIN symbols ds ON ds.id = e.dst_id
-         LEFT JOIN files df ON df.id = ds.file_id
          WHERE e.src_id IN ({placeholders}) AND e.kind = '{}'
-         GROUP BY COALESCE(ds.id, -(1000000 + e.id))
+         GROUP BY COALESCE(ds.id, -e.id)
          ORDER BY path, line, qn LIMIT ?{limit_param}",
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
@@ -216,7 +230,7 @@ fn unresolved_names_in(
 fn symbol_file(conn: &Connection, ids: &[i64]) -> Option<String> {
     ids.iter().find_map(|id| {
         conn.query_row(
-            "SELECT f.path FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+            "SELECT s.file_path FROM symbols s WHERE s.id = ?1",
             [*id],
             |r| r.get::<_, String>(0),
         )

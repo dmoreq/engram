@@ -23,39 +23,89 @@ impl TraversalState {
     }
 }
 
-/// Seed the BFS with depth-1 records; detailed mode also fills the frontier
-/// and visited set.
+/// Seed the BFS with depth-1 records and the initial frontier in one query.
 fn seed_impact(conn: &Connection, ctx: &ImpactCtx<'_>, state: &mut TraversalState) -> Result<()> {
-    direct_impact_records(conn, ctx, &mut state.records)?;
+    state.visited = file_symbol_ids(conn, ctx.rel)?.into_iter().collect();
+    let kind_sql = ctx.kind_sql;
+    let sql = format!(
+        "SELECT e.src_id, MIN(e.site_line), s.file_path
+         FROM edges e
+         {IMPACT_DST_JOIN}
+         {EDGE_SRC_JOIN}
+         WHERE ds.file_path = ?1 AND e.kind IN ({kind_sql})
+         GROUP BY e.src_id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([ctx.rel], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (src_id, line, path) = row?;
+        state.records.insert(ImpactRecord {
+            path,
+            depth: 1,
+            line,
+        });
+        if state.visited.insert(src_id) {
+            state.frontier.push(src_id);
+        }
+    }
     Ok(())
 }
 
 /// Expand deeper levels until the cap, an empty frontier, or the known file count.
 fn walk_levels(conn: &Connection, ctx: &ImpactCtx<'_>, state: &mut TraversalState) -> Result<bool> {
     let total_files = impact_source_files(conn, ctx)?;
-    let mut truncated = false;
     for d in 2..=ctx.depth {
-        if state.records.len() >= total_files {
-            break;
-        }
-        if state.frontier.is_empty() && state.visited.is_empty() {
-            let (frontier, visited) = direct_impact_frontier(conn, ctx)?;
-            state.frontier = frontier;
-            state.visited = visited;
+        if state.records.len() >= total_files || state.frontier.is_empty() {
+            return Ok(false);
         }
         let next = level_impact(conn, ctx, state, d)?;
         if next.is_empty() {
-            break;
-        }
-        // Only claim a depth cap when files are still missing: reaching the
-        // max depth with the full file set already recorded is exhaustive,
-        // not truncated.
-        if d == ctx.depth && state.records.len() < total_files {
-            truncated = true;
+            return Ok(false);
         }
         state.frontier = next;
     }
-    Ok(truncated)
+    if state.records.len() < total_files && !state.frontier.is_empty() {
+        return has_unvisited_in_edge(conn, ctx, &state.frontier, &state.visited);
+    }
+    Ok(false)
+}
+
+fn has_unvisited_in_edge(
+    conn: &Connection,
+    ctx: &ImpactCtx<'_>,
+    frontier: &[i64],
+    visited: &HashSet<i64>,
+) -> Result<bool> {
+    let kind_sql = ctx.kind_sql;
+    let mut found = false;
+    crate::db::for_each_chunk(conn, frontier, |conn, placeholders, chunk| {
+        if found {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT DISTINCT e.src_id FROM edges e
+             WHERE e.dst_id IN ({placeholders}) AND e.kind IN ({kind_sql})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params = id_params(chunk);
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            r.get::<_, i64>(0)
+        })?;
+        for r in rows {
+            if !visited.contains(&r?) {
+                found = true;
+                break;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// Depth > 1: reverse BFS. R1 is the exact depth-1 edge set; deeper levels
@@ -130,64 +180,9 @@ fn impact_source_files(conn: &Connection, ctx: &ImpactCtx<'_>) -> Result<usize> 
     )? as usize)
 }
 
-fn direct_impact_records(
-    conn: &Connection,
-    ctx: &ImpactCtx<'_>,
-    records: &mut ImpactTop,
-) -> Result<()> {
-    let kind_sql = ctx.kind_sql;
-    let sql = format!(
-        "SELECT MIN(e.site_line), MIN(e.kind), s.file_path, MIN(s.qualname), MIN(s.kind)
-         FROM edges e
-         {IMPACT_DST_JOIN}
-         {EDGE_SRC_JOIN}
-         WHERE ds.file_path = ?1 AND e.kind IN ({kind_sql})
-         GROUP BY s.file_path"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([ctx.rel], |r| {
-        Ok(ImpactRecord {
-            path: r.get(2)?,
-            depth: 1,
-            line: r.get(0)?,
-            kind: r.get(1)?,
-            qualname: r.get(3)?,
-            src_kind: r.get(4)?,
-        })
-    })?;
-    for row in rows {
-        records.insert(row?);
-    }
-    Ok(())
-}
-
-fn direct_impact_frontier(
-    conn: &Connection,
-    ctx: &ImpactCtx<'_>,
-) -> Result<(Vec<i64>, HashSet<i64>)> {
-    let kind_sql = ctx.kind_sql;
-    let mut visited: HashSet<i64> = file_symbol_ids(conn, ctx.rel)?.into_iter().collect();
-    let sql = format!(
-        "SELECT DISTINCT e.src_id FROM edges e
-         {IMPACT_DST_JOIN}
-         WHERE ds.file_path = ?1 AND e.kind IN ({kind_sql})"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut frontier = Vec::new();
-    for id in stmt.query_map([ctx.rel], |r| r.get::<_, i64>(0))? {
-        let id = id?;
-        if visited.insert(id) {
-            frontier.push(id);
-        }
-    }
-    Ok((frontier, visited))
-}
-
-/// The six columns both BFS-level SELECTs return, in `impact_level_row`
-/// order: the frontier source id, then the five `ImpactRecord` fields. One
-/// source for the column list and its binding keeps the two statements from
-/// drifting apart.
-const IMPACT_LEVEL_COLUMNS: &str = "e.src_id, e.site_line, e.kind, s.file_path, s.qualname, s.kind";
+/// The three columns the BFS-level SELECT returns, in `impact_level_row`
+/// order: frontier source id, site line, and source file path.
+const IMPACT_LEVEL_COLUMNS: &str = "e.src_id, e.site_line, s.file_path";
 
 /// Map one BFS-level row: the frontier source id plus its `ImpactRecord`.
 /// Column order must match `IMPACT_LEVEL_COLUMNS`.
@@ -195,12 +190,9 @@ fn impact_level_row(r: &rusqlite::Row<'_>, depth: usize) -> rusqlite::Result<(i6
     Ok((
         r.get::<_, i64>(0)?,
         ImpactRecord {
-            path: r.get(3)?,
+            path: r.get(2)?,
             depth,
             line: r.get(1)?,
-            kind: r.get(2)?,
-            qualname: r.get(4)?,
-            src_kind: r.get(5)?,
         },
     ))
 }
@@ -246,18 +238,13 @@ fn level_impact(
 }
 
 /// One settled impact record: the representative row kept for one file path.
-/// Named fields replace the positional 6-tuple so a SELECT column reorder
-/// cannot silently misbind the `ImpactTop` comparison and render inputs.
-/// Field order mirrors the retired tuple, so the derived `Ord` keeps the
-/// lexicographic order `BinaryHeap` relied on (paths are distinct in the heap).
+/// Field order keeps the lexicographic order `BinaryHeap` relies on (paths
+/// are distinct in the heap).
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
 struct ImpactRecord {
     path: String,
     depth: usize,
     line: i64,
-    kind: String,
-    qualname: String,
-    src_kind: String,
 }
 
 /// Symbol ids defined by one indexed file (the impact BFS seed set).
@@ -267,7 +254,7 @@ fn file_symbol_ids(conn: &Connection, rel: &str) -> Result<Vec<i64>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-/// Exact distinct-path map with the earliest (depth, line) record per path.
+/// Exact distinct-path map with the earliest `(depth, line)` record per path.
 /// SQL returns unordered rows; BFS depth increases monotonically, so replace
 /// only when a same-depth row has a smaller site line. Output selection is a
 /// bounded heap, avoiding a full ORDER BY over every inbound edge.
@@ -289,20 +276,9 @@ impl ImpactTop {
     }
 
     fn insert(&mut self, record: ImpactRecord) {
-        // Depth and site line are the primary key. On an exact tie, compare
-        // stable semantic fields so the representative does not depend on
-        // SQL row order or rowid/file-id assignment.
         let replace = match self.seen.get(&record.path) {
             None => true,
-            Some(old) => {
-                (
-                    record.depth,
-                    record.line,
-                    &record.kind,
-                    &record.qualname,
-                    &record.src_kind,
-                ) < (old.depth, old.line, &old.kind, &old.qualname, &old.src_kind)
-            }
+            Some(old) => (record.depth, record.line) < (old.depth, old.line),
         };
         if replace {
             self.seen.insert(record.path.clone(), record);
@@ -336,40 +312,28 @@ mod tests {
         first.insert(ImpactRecord {
             path: "p".into(),
             depth: 1,
-            line: 5,
-            kind: "imports".into(),
-            qualname: "q".into(),
-            src_kind: "function".into(),
+            line: 10,
         });
         first.insert(ImpactRecord {
             path: "p".into(),
             depth: 1,
             line: 5,
-            kind: "calls".into(),
-            qualname: "q".into(),
-            src_kind: "function".into(),
         });
         let (_, records) = first.finish();
-        assert_eq!(records[0].kind, "calls");
+        assert_eq!(records[0].line, 5);
 
         let mut second = ImpactTop::new(10);
         second.insert(ImpactRecord {
             path: "p".into(),
             depth: 1,
             line: 5,
-            kind: "calls".into(),
-            qualname: "q".into(),
-            src_kind: "function".into(),
         });
         second.insert(ImpactRecord {
             path: "p".into(),
             depth: 1,
-            line: 5,
-            kind: "imports".into(),
-            qualname: "q".into(),
-            src_kind: "function".into(),
+            line: 10,
         });
         let (_, records) = second.finish();
-        assert_eq!(records[0].kind, "calls");
+        assert_eq!(records[0].line, 5);
     }
 }

@@ -15,8 +15,8 @@ use super::*;
 pub fn path(ctx: &QueryCtx<'_>, from: &str, to: &str, depth: usize) -> Result<LineQuery> {
     let QueryCtx { conn, .. } = *ctx;
     let depth = depth.clamp(1, crate::query::MAX_DEPTH);
-    let (from_id, from_qn) = resolve_endpoint(conn, from, "from")?;
-    let (to_id, to_qn) = resolve_endpoint(conn, to, "to")?;
+    let (from_id, from_qn) = resolve_endpoint(ctx, from, "from")?;
+    let (to_id, to_qn) = resolve_endpoint(ctx, to, "to")?;
     if from_id == to_id {
         return Err(EgError::NoResults(format!(
             "'{}' and '{}' resolve to the same symbol",
@@ -47,10 +47,10 @@ pub fn path(ctx: &QueryCtx<'_>, from: &str, to: &str, depth: usize) -> Result<Li
     render_path(ctx, &chain_ids, &hop_sites)
 }
 
-/// Resolve one `path` endpoint (bare or dotted name) to its single symbol id
-/// and display qualname.
-fn resolve_endpoint(conn: &Connection, name: &str, role: &'static str) -> Result<(i64, String)> {
-    let (ids, cands) = resolve_targets(conn, name, Some(role))?;
+/// Resolve one `path` endpoint (bare, dotted, or `file:line`) to its single
+/// symbol id and display qualname.
+fn resolve_endpoint(ctx: &QueryCtx<'_>, name: &str, role: &'static str) -> Result<(i64, String)> {
+    let (ids, cands) = resolve_targets(ctx, name, Some(role))?;
     Ok((ids[0], cands[0].2.clone()))
 }
 
@@ -183,14 +183,45 @@ fn path_bfs(conn: &Connection, from_id: i64, to_id: i64, depth: usize) -> Result
     if !frontier.is_empty() && d == depth {
         // Cap-truncation probe: an unvisited out-neighbor of any node at the
         // maximum distance means a longer path may exist.
-        let grouped = path_level_edges(conn, &frontier)?;
-        for neighbors in grouped.values() {
-            if neighbors.iter().any(|&(_, w)| !parent.contains_key(&w)) {
-                return Ok(PathSearch::CapTruncated);
-            }
+        if has_unvisited_out_edge(conn, &frontier, &parent)? {
+            return Ok(PathSearch::CapTruncated);
         }
     }
     Ok(PathSearch::Exhausted)
+}
+
+/// Probe whether any node in `frontier` has an unvisited resolved call
+/// out-neighbor, reading only `edges.dst_id`.
+fn has_unvisited_out_edge(
+    conn: &Connection,
+    frontier: &[i64],
+    parent: &std::collections::HashMap<i64, (i64, i64)>,
+) -> Result<bool> {
+    let mut found = false;
+    crate::db::for_each_chunk(conn, frontier, |conn, placeholders, chunk| {
+        if found {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT DISTINCT e.dst_id FROM edges e
+             WHERE e.kind = '{}' AND e.dst_id IS NOT NULL
+               AND e.src_id IN ({placeholders})",
+            EdgeKind::Calls.as_str()
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params = id_params(chunk);
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            r.get::<_, i64>(0)
+        })?;
+        for r in rows {
+            if !parent.contains_key(&r?) {
+                found = true;
+                break;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// Out-edges of one BFS frontier, grouped per source and sorted by the pinned
@@ -250,4 +281,33 @@ fn reconstruct_chain(
         chain_ids,
         hop_sites,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_with_file_line_endpoint_does_not_panic() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER DEFAULT 0, mtime INTEGER DEFAULT 0, content_hash INTEGER DEFAULT 0);
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT, file_id INTEGER, file_path TEXT, line_start INTEGER, line_end INTEGER);
+             CREATE TABLE edges (id INTEGER PRIMARY KEY, src_id INTEGER, dst_id INTEGER, dst_name TEXT, kind TEXT, confidence TEXT, site_line INTEGER);
+             INSERT INTO files (id, path) VALUES (1, 'src/a.py');
+             INSERT INTO symbols VALUES (1, 'function', 'caller', 'src.a.caller', 1, 'src/a.py', 1, 5);
+             INSERT INTO symbols VALUES (2, 'function', 'callee', 'src.a.callee', 1, 'src/a.py', 7, 10);
+             INSERT INTO edges VALUES (1, 1, 2, 'callee', 'calls', 'resolved', 3);",
+        )
+        .unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let out = path(&ctx, "src/a.py:3", "src.a.callee", 4).unwrap();
+        assert!(out
+            .lines
+            .iter()
+            .any(|l| l.contains("src.a.caller -> src.a.callee (1 hops)")));
+    }
 }
