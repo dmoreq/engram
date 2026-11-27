@@ -3,8 +3,7 @@
 
 use super::*;
 
-/// Fast path gate: a usable previous index under the SAME schema AND grammar
-/// versions (any mismatch disables the fast path for the whole build).
+/// Fast path gate: usable previous index under the same schema & grammar versions.
 pub fn probe_old(root: &Path) -> Result<Option<Connection>> {
     reject_symlink(&eg_dir(root), ".engram directory")?;
     let old_path = db_path(root);
@@ -12,52 +11,29 @@ pub fn probe_old(root: &Path) -> Result<Option<Connection>> {
     if !old_path.exists() {
         return Ok(None);
     }
-    let old = match Connection::open_with_flags(&old_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(c) => c,
-        Err(_) => return Ok(None),
-    };
-    if !schema_compatible(&old) {
+    let Ok(old) = Connection::open_with_flags(&old_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return Ok(None);
-    }
-    Ok(Some(old))
+    };
+    Ok(schema_compatible(&old).then_some(old))
 }
 
-/// The read-only fast path needs the current version stamp, every required
-/// column, the FTS table, and the grammar/signature/metrics manifest versions.
 fn schema_compatible(old: &Connection) -> bool {
-    let version: i32 = match old.query_row("PRAGMA user_version", [], |r| r.get(0)) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    if version != SCHEMA_VERSION {
+    let Ok(SCHEMA_VERSION) = old.query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
+    else {
         return false;
-    }
-    // Require every v10 column before enabling the fast path;
-    // otherwise fall back to a full fresh build.
-    let required_columns = [
+    };
+    let req = [
         ("symbols", "file_path"),
         ("symbols", "is_test"),
         ("unresolved_calls", "site_line"),
         ("unresolved_calls", "kind"),
     ];
-    for (table, column) in required_columns {
-        if !column_present(old, table, column).unwrap_or(false) {
-            return false;
-        }
-    }
-    if !object_exists(old, "table", "symbols_fts") {
-        return false;
-    }
-    if meta_get(old, meta_keys::GRAMMAR_VERSION).as_deref() != Some(GRAMMAR_VERSION) {
-        return false;
-    }
-    if meta_get(old, meta_keys::SIGNATURE_VERSION).as_deref() != Some(SIGNATURE_VERSION) {
-        return false;
-    }
-    if meta_get(old, meta_keys::METRICS_VERSION).as_deref() != Some(METRICS_VERSION) {
-        return false;
-    }
-    true
+    req.iter()
+        .all(|(t, c)| column_present(old, t, c).unwrap_or(false))
+        && object_exists(old, "table", "symbols_fts")
+        && meta_get(old, meta_keys::GRAMMAR_VERSION).as_deref() == Some(GRAMMAR_VERSION)
+        && meta_get(old, meta_keys::SIGNATURE_VERSION).as_deref() == Some(SIGNATURE_VERSION)
+        && meta_get(old, meta_keys::METRICS_VERSION).as_deref() == Some(METRICS_VERSION)
 }
 
 /// Fallible `sqlite_master` probe: distinguishes "absent" from "probe failed".
@@ -111,9 +87,9 @@ pub fn old_files(old: &Connection) -> Result<HashMap<String, FileStat>> {
             Ok((
                 r.get::<_, String>(0)?,
                 FileStat {
-                    mtime: r.get::<_, i64>(1)?,
-                    size: r.get::<_, i64>(2)?,
-                    content_hash: r.get::<_, i64>(3)?,
+                    mtime: r.get(1)?,
+                    size: r.get(2)?,
+                    content_hash: r.get(3)?,
                 },
             ))
         })?
@@ -261,17 +237,7 @@ pub fn gap_files_for_new_names(
     if new_qualnames.is_empty() {
         return Ok(HashSet::new());
     }
-    // Match by last segment: an unresolved `b.foo` heals when any newly
-    // added qualname ends in `foo` (bare-name collisions in the old index
-    // must not hide the new symbol — R6 review finding). `dst == seg` or
-    // `dst` ends with `.seg` is exactly "the last segment is `seg`"; the two
-    // GLOB arms share one numbered parameter per segment. GLOB is
-    // case-sensitive, matching the Rust set membership it replaced.
-    //
-    // SQLite's default binary-tree depth limit (`SQLITE_MAX_EXPR_DEPTH`) is
-    // 1000. Each segment generates 2 `OR` terms, so a batch of 100 segments
-    // creates at most 200 `OR` terms, maintaining a 5x safety margin against
-    // expression-tree-overflow errors.
+    // `SQLITE_MAX_EXPR_DEPTH` is 1000; 100 segments * 2 OR terms stays safely below it.
     let mut segments: Vec<String> = new_qualnames
         .iter()
         .map(|q| glob_literal(q.rsplit('.').next().unwrap_or(q)))
@@ -281,36 +247,22 @@ pub fn gap_files_for_new_names(
     const GLOB_OR_CHUNK: usize = 100;
     let mut out = HashSet::new();
     for chunk in segments.chunks(GLOB_OR_CHUNK) {
-        // Parameter ?N is referenced twice: once for the exact match, once
-        // for the `*.<segment>` suffix match.
         let last_segment = (1..=chunk.len())
             .map(|n| format!("dst_name GLOB ?{n} OR dst_name GLOB '*.' || ?{n}"))
             .collect::<Vec<_>>()
             .join(" OR ");
         let edge_sql = format!(
-            "SELECT DISTINCT f.path
-             FROM edges e
-             JOIN symbols s ON s.id = e.src_id
-             JOIN files f ON f.id = s.file_id
-             WHERE e.kind IN {kinds} AND e.confidence = '{ambiguous}'
-               AND ({last_segment})",
-            kinds = edge_kinds_sql(),
-            ambiguous = Confidence::Ambiguous.as_str()
+            "SELECT DISTINCT f.path FROM edges e JOIN symbols s ON s.id = e.src_id JOIN files f ON f.id = s.file_id
+             WHERE e.kind IN {kinds} AND e.confidence = '{ambiguous}' AND ({last_segment})",
+            kinds = edge_kinds_sql(), ambiguous = Confidence::Ambiguous.as_str()
         );
         collect_gap_paths(old, &edge_sql, chunk, &mut out)?;
-        let unresolved_sql = format!(
-            "SELECT DISTINCT f.path
-             FROM unresolved_calls u JOIN files f ON f.id = u.file_id
-             WHERE {last_segment}"
-        );
+        let unresolved_sql = format!("SELECT DISTINCT f.path FROM unresolved_calls u JOIN files f ON f.id = u.file_id WHERE {last_segment}");
         collect_gap_paths(old, &unresolved_sql, chunk, &mut out)?;
     }
     Ok(out)
 }
 
-/// Collect the first-column rows of one chunked gap query (`f.path` or
-/// `s.qualname`) into `out`, so the filter stays inside SQLite instead of
-/// materializing every matched row into memory.
 fn collect_gap_paths(
     conn: &Connection,
     sql: &str,
@@ -318,31 +270,17 @@ fn collect_gap_paths(
     out: &mut HashSet<String>,
 ) -> Result<()> {
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+    for row in stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
         r.get::<_, String>(0)
-    })?;
-    for row in rows {
+    })? {
         out.insert(row?);
     }
     Ok(())
 }
 
-/// Source-side join `edges e -> symbols s -> files f`, the single rendering
-/// shared by the import-scoping, stats, and dirty-closure SQL so the join
-/// aliases have one home.
 pub(crate) const EDGE_SRC_FILE_JOIN: &str =
     "JOIN symbols s ON s.id = e.src_id JOIN files f ON f.id = s.file_id";
-
-/// Resolved-caller subquery for the outer symbol `s` — the single definition
-/// of "number of callers", shared by search ranking and reuse calibration.
-pub(crate) const CALLER_COUNT_SQL: &str =
-    "(SELECT COUNT(DISTINCT e.src_id) FROM edges e JOIN symbols src ON src.id = e.src_id \
-      WHERE e.dst_id = s.id AND e.kind = 'calls' AND e.src_id != s.id \
-      AND src.is_test = s.is_test)";
-
-/// Quoted edge-kind SQL literals joined with commas — the one renderer for
-/// every `kind IN (...)` fragment built from the enum, so a new kind joins
-/// the vocabulary in a single place.
+pub(crate) const CALLER_COUNT_SQL: &str = "(SELECT COUNT(DISTINCT e.src_id) FROM edges e JOIN symbols src ON src.id = e.src_id WHERE e.dst_id = s.id AND e.kind = 'calls' AND e.src_id != s.id AND src.is_test = s.is_test)";
 pub(crate) fn edge_kind_sql(kinds: &[EdgeKind]) -> String {
     kinds
         .iter()
@@ -350,11 +288,6 @@ pub(crate) fn edge_kind_sql(kinds: &[EdgeKind]) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
-
-/// Edge kinds counted as references by the dead-code and gap-heal queries,
-/// rendered from the enum as one shared SQL fragment so a new edge kind joins
-/// the reference set in one place (`db.rs` and `query/analysis.rs` both
-/// interpolate it).
 pub(crate) fn edge_kinds_sql() -> String {
     format!(
         "({})",
@@ -362,7 +295,7 @@ pub(crate) fn edge_kinds_sql() -> String {
             EdgeKind::Calls,
             EdgeKind::Imports,
             EdgeKind::Inherits,
-            EdgeKind::TypeRef,
+            EdgeKind::TypeRef
         ])
     )
 }
@@ -373,10 +306,55 @@ pub(crate) fn edge_kinds_sql() -> String {
 /// both `mem query` (service) and the reuse allowlist (query) can call it
 /// downward instead of one of them reaching sideways or upward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefStatus {
+pub enum RefStatus {
     Valid,
     Modified,
     Broken,
+    Unverified,
+}
+
+impl RefStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::Modified => "modified",
+            Self::Broken => "broken",
+            Self::Unverified => "unverified",
+        }
+    }
+    pub fn is_verified(self) -> bool {
+        matches!(self, Self::Valid | Self::Modified)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRef {
+    pub status: RefStatus,
+    pub kind: &'static str,
+    pub detail: String,
+    pub mtime_secs: Option<i64>,
+}
+
+impl ResolvedRef {
+    /// Re-evaluate freshness against a different note `anchor` without re-querying.
+    pub fn with_anchor(&self, anchor: i64) -> Self {
+        let status = match (self.status, self.mtime_secs) {
+            (RefStatus::Valid | RefStatus::Modified, Some(mtime)) => {
+                if mtime > anchor {
+                    RefStatus::Modified
+                } else {
+                    RefStatus::Valid
+                }
+            }
+            _ => self.status,
+        };
+        Self {
+            status,
+            kind: self.kind,
+            detail: self.detail.clone(),
+            mtime_secs: self.mtime_secs,
+        }
+    }
 }
 
 /// Check whether `r` is a safe repo-relative regular file under `root` (not
@@ -423,6 +401,74 @@ pub(crate) fn check_ref_status(
     check_ref_status_with_root(index_conn, None, r, anchor)
 }
 
+/// Resolve one `--refs` token against `index_conn` and optional `root`,
+/// returning status, kind (`"file"`, `"symbol"`, `"path"`), and location detail.
+pub fn resolve_ref_detail(
+    index_conn: Option<&Connection>,
+    root: Option<&Path>,
+    r: &str,
+    anchor: i64,
+) -> ResolvedRef {
+    let from_mtime = |kind: &'static str, detail: String, mtime_secs: i64| ResolvedRef {
+        status: if mtime_secs > anchor {
+            RefStatus::Modified
+        } else {
+            RefStatus::Valid
+        },
+        kind,
+        detail,
+        mtime_secs: Some(mtime_secs),
+    };
+    let Some(iconn) = index_conn else {
+        if let Some((size, mtime_secs)) = root.and_then(|repo_root| check_disk_ref(repo_root, r)) {
+            return from_mtime("file", format!("{r} ({size} bytes)"), mtime_secs);
+        }
+        return ResolvedRef {
+            status: RefStatus::Unverified,
+            kind: "path",
+            detail: String::new(),
+            mtime_secs: None,
+        };
+    };
+    let query_file = |sql: &str, param: &str| -> Option<(String, i64, i64)> {
+        iconn
+            .prepare_cached(sql)
+            .ok()?
+            .query_row(rusqlite::params![param], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .ok()
+    };
+    if let Some((path, size, mtime_nanos)) = query_file("SELECT path, size, mtime FROM files WHERE path = ?1 LIMIT 1", r)
+        .or_else(|| query_file("SELECT path, size, mtime FROM files WHERE path LIKE ?1 ESCAPE '\\' ORDER BY mtime DESC, path ASC LIMIT 1", &format!("%/{}", like_escape(r))))
+    {
+        return from_mtime("file", format!("{path} ({size} bytes)"), mtime_nanos / 1_000_000_000);
+    }
+    if let Ok(mut stmt) = iconn.prepare_cached(
+        "SELECT f.path, s.line_start, s.line_end, f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
+         WHERE s.qualname = ?1 OR s.name = ?1 ORDER BY f.mtime DESC, s.qualname, s.file_path LIMIT 1",
+    ) {
+        if let Ok((fp, ls, le, mtime_nanos)) = stmt.query_row(rusqlite::params![r], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+        }) {
+            return from_mtime("symbol", format!("{fp}:{ls}-{le}"), mtime_nanos / 1_000_000_000);
+        }
+    }
+    if let Some((size, mtime_secs)) = root.and_then(|repo_root| check_disk_ref(repo_root, r)) {
+        return from_mtime("file", format!("{r} ({size} bytes)"), mtime_secs);
+    }
+    ResolvedRef {
+        status: RefStatus::Broken,
+        kind: "path",
+        detail: String::new(),
+        mtime_secs: None,
+    }
+}
+
 /// Like [`check_ref_status`], but falls back to an on-disk regular-file check
 /// under `root` when `index.db` `files` and `symbols` lookups miss.
 pub(crate) fn check_ref_status_with_root(
@@ -431,53 +477,5 @@ pub(crate) fn check_ref_status_with_root(
     r: &str,
     anchor: i64,
 ) -> RefStatus {
-    // `_`/`%` in a ref must stay literals (a deleted `foo_bar.rs` must never
-    // "match" `src/fooXbar.rs`), and the winner over the exact-or-suffix
-    // candidates must be deterministic (exact path first, then newest mtime,
-    // then path) because rowid order differs between fresh and incremental
-    // builds. The symbol arm orders the same way (newest mtime first, then
-    // qualname, then path): same-named symbols in different files must anchor
-    // on the newest one under both build modes, so a `Valid` verdict is
-    // proven against every match.
-    let file_check: rusqlite::Result<(String, i64)> = index_conn.query_row(
-        "SELECT path, mtime FROM files
-         WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
-         ORDER BY (path = ?1) DESC, mtime DESC, path ASC LIMIT 1",
-        rusqlite::params![r, format!("%/{}", like_escape(r))],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
-    if let Ok((_path, mtime_nanos)) = file_check {
-        return if (mtime_nanos / 1_000_000_000) > anchor {
-            RefStatus::Modified
-        } else {
-            RefStatus::Valid
-        };
-    }
-
-    let sym_check: rusqlite::Result<i64> = index_conn.query_row(
-        "SELECT f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
-         WHERE s.qualname = ?1 OR s.name = ?1
-         ORDER BY f.mtime DESC, s.qualname, s.file_path LIMIT 1",
-        rusqlite::params![r],
-        |row| row.get(0),
-    );
-    if let Ok(mtime_nanos) = sym_check {
-        return if (mtime_nanos / 1_000_000_000) > anchor {
-            RefStatus::Modified
-        } else {
-            RefStatus::Valid
-        };
-    }
-
-    if let Some(repo_root) = root {
-        if let Some((_size, mtime_secs)) = check_disk_ref(repo_root, r) {
-            return if mtime_secs > anchor {
-                RefStatus::Modified
-            } else {
-                RefStatus::Valid
-            };
-        }
-    }
-
-    RefStatus::Broken
+    resolve_ref_detail(Some(index_conn), root, r, anchor).status
 }

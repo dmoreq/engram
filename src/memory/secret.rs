@@ -54,13 +54,25 @@ fn run_len(text: &str, start: usize, allowed: impl Fn(char) -> bool, min: usize)
 
 fn has_openai_key(text: &str) -> bool {
     text.match_indices("sk-").any(|(idx, _)| {
-        boundary(text, idx)
-            && run_len(
-                text,
-                idx + 3,
-                |c| c.is_ascii_alphanumeric() || c == '-' || c == '_',
-                16,
-            )
+        if !boundary(text, idx) {
+            return false;
+        }
+        let run: String = text[idx + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if run.len() < 16 {
+            return false;
+        }
+        // Snake/kebab prose (`sk-learn-pipeline-config`) carries `-` or `_`;
+        // require digit/uppercase entropy for those shapes while preserving
+        // detection of pure-alphanumeric keys.
+        if run.contains('-') || run.contains('_') {
+            run.chars()
+                .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+        } else {
+            true
+        }
     })
 }
 
@@ -181,12 +193,18 @@ fn has_bearer_token(text: &str) -> bool {
         if offset == 0 {
             continue;
         }
-        if run_len(
-            &lower,
-            idx + "bearer".len() + offset,
-            |c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '+' | '/' | '-'),
-            20,
-        ) {
+        let start = idx + "bearer".len() + offset;
+        let run: String = text[start..]
+            .chars()
+            .take_while(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '+' | '/' | '-')
+            })
+            .collect();
+        if run.len() >= 20
+            && run
+                .chars()
+                .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+        {
             return true;
         }
     }
@@ -200,16 +218,22 @@ fn has_database_url(text: &str) -> bool {
         "postgresql://",
         "mysql://",
         "mongodb://",
+        "mongodb+srv://",
         "redis://",
         "rediss://",
         "mariadb://",
+        "amqp://",
+        "amqps://",
     ] {
         for (idx, _) in lower.match_indices(scheme) {
             if !boundary(&lower, idx) {
                 continue;
             }
             let rest = &lower[idx + scheme.len()..];
-            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            let authority = rest
+                .split(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+                .next()
+                .unwrap_or("");
             let Some((userinfo, _host)) = authority.rsplit_once('@') else {
                 continue;
             };
@@ -265,7 +289,7 @@ mod tests {
         );
         let pem = format!("-----BEGIN {} PRIVATE KEY-----", "RSA");
         let slack = format!("xoxb-{}", "1".repeat(12));
-        let bearer = format!("Bearer {}", "a".repeat(24));
+        let bearer = format!("Bearer a1B2{}", "c".repeat(20));
         let database = "postgres://user:pass@localhost/db";
 
         for (text, label) in [
@@ -372,7 +396,33 @@ mod tests {
 
     #[test]
     fn bearer_is_case_insensitive() {
-        let text = format!("bearer {}", "a".repeat(24));
+        let text = format!("bearer a1B2{}", "c".repeat(20));
         assert_eq!(suspected_secret(&text), Some("bearer-token"));
+    }
+
+    #[test]
+    fn snake_kebab_prose_and_extra_db_schemes() {
+        // Snake/kebab prose without digit/uppercase entropy must not trigger.
+        assert_eq!(suspected_secret("sk-learn_pipeline_configuration"), None);
+        assert_eq!(suspected_secret("sk-my-kebab-prose-identifier"), None);
+        assert_eq!(suspected_secret("bearer token_with_snake_case_words"), None);
+        assert_eq!(
+            suspected_secret("Bearer some-kebab-prose-string-here"),
+            None
+        );
+
+        // Extra schemes + whitespace-terminated authority.
+        assert_eq!(
+            suspected_secret("mongodb+srv://app:s3cret@cluster.example/db"),
+            Some("database-url")
+        );
+        assert_eq!(
+            suspected_secret("amqps://svc:s3cret@mq.example"),
+            Some("database-url")
+        );
+        assert_eq!(
+            suspected_secret("postgres://host/db then user:pass@later"),
+            None
+        );
     }
 }

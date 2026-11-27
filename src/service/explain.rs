@@ -38,10 +38,13 @@ pub(super) fn build(
             labels.push(format!("tag {}", truncate(&tag, 40)));
         }
         if index_present && candidate.graph_raw > 0.0 {
-            let depth = (-candidate.graph_raw.log2()).round().clamp(1.0, 3.0) as i32;
+            let depth = (-candidate.graph_raw.log2()).round().clamp(0.0, 3.0) as i32;
             labels.push(format!("graph depth {depth}"));
         }
-        let age_days = (now - candidate.row.created_at).max(0) / 86_400;
+        if candidate.sem_raw.is_some() {
+            labels.push("semantic match".to_string());
+        }
+        let age_days = (now - candidate.row.anchor()).max(0) / 86_400;
         labels.push(format!("age {age_days}d"));
         map.insert((candidate.is_global, candidate.row.id), labels.join("; "));
     }
@@ -51,12 +54,12 @@ pub(super) fn build(
 fn matching_ref(candidate: &Candidate, query: &BTreeSet<String>, legacy: bool) -> Option<String> {
     candidate.row.refs.split_whitespace().find_map(|reference| {
         let tokens: BTreeSet<String> = if legacy {
-            crate::memory::mem_tokens_legacy(reference)
+            crate::memory::mem_ref_tag_tokens_legacy(reference, "")
         } else {
             crate::memory::mem_ref_tokens(reference)
-        }
-        .into_iter()
-        .collect();
+                .into_iter()
+                .collect()
+        };
         (!tokens.is_disjoint(query)).then(|| reference.to_string())
     })
 }
@@ -104,7 +107,7 @@ mod tests {
                 expires_at: 0,
                 superseded_by: None,
             },
-            lex_raw: 1.0,
+            lex_raw: Some(1.0),
             ref_raw: 0.5,
             graph_raw,
             sem_raw: None,
