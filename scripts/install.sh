@@ -166,15 +166,29 @@ eg_bin = os.path.expanduser("~/.cargo/bin/eg")
 repo_root = os.getcwd()
 skill_source = os.path.join(repo_root, "skills", "engram-first", "SKILL.md")
 
+judge_bin = os.environ.get("EG_JUDGE_BIN") or os.path.expanduser("~/.cargo/bin/eg-judge")
+judge_model = os.environ.get("EG_JUDGE_MODEL") or os.path.expanduser("~/.engram/judge/model")
+judge_env = {}
+if os.path.isfile(judge_bin) and os.access(judge_bin, os.X_OK):
+    judge_env["EG_JUDGE_BIN"] = judge_bin
+    if os.path.isdir(judge_model):
+        judge_env["EG_JUDGE_MODEL"] = judge_model
+
+def mcp_stdio_entry(base):
+    entry = dict(base)
+    if judge_env:
+        entry["env"] = dict(judge_env)
+    return entry
+
 rule_marker = "- **Code Navigation Invariant**:"
 rule_text = (
     "- **Code Navigation Invariant**:\n"
     "  When locating callers, callees, the impact of a change, the call route between two symbols, "
-    "a symbol's surroundings, a file's imports, or searching existing helpers, query `eg` (prefer MCP `engram` when configured, else CLI `eg`) "
+    "a symbol's surroundings, a file's imports, or searching existing helpers, query `eg` (prefer MCP `engram` tools when configured, else CLI `eg`) "
     "first before reading entire source files or running broad greps. Verify pointed lines directly.\n"
-    "  - **Pre-Task**: Run targeted `mem_query` (`terms` / `--ref` with `--limit 5`, or `--limit 10` for broad recall) as the first command of a session; cite any matching decision or gotcha, and verify + `mem_touch` any `[stale-ref]` note before relying on it.\n"
-    "  - **Pre-Write / Post-Edit**: Run `eg search '<terms>'` before implementing helpers; run `eg reuse <edited_files> --judge` after edits to prevent duplicate functions, and record `reuse-allow/<target>-><canonical>` for intentional exceptions.\n"
-    "  - **Staleness & Post-Fix**: Run `eg build` immediately when a query warns about stale files; run `eg mem write <key> --kind gotcha --refs \"<code_path>\" --body ...` before the task ends; reuse the same key to supersede.\n"
+    "  - **Pre-Task**: Call `mem_query` (`{\"terms\": \"...\", \"limit\": 5}`, `{\"ref\": \"...\"}`, or `{\"all\": true, \"limit\": 10}`; CLI: `eg mem query \"<terms>\" --limit 5`) first; cite matching decisions/gotchas, and verify + `mem_touch` (`{\"key\": \"...\"}`; CLI: `eg mem touch <key>`) any `[stale-ref]` note before relying on it.\n"
+    "  - **Pre-Write / Post-Edit**: Call `search` (`{\"terms\": \"...\"}`; CLI: `eg search '<terms>'`) and `reuse` (`{\"propose\": \"<signature>\", \"callees\": [...]} `; CLI: `eg reuse --propose \"<signature>\"`) before authoring helpers; after edits, call `reuse` (`{\"paths\": [\"<edited_files>\"], \"judge\": true}`; CLI: `eg reuse <edited_files> --judge`) and record `reuse-allow/<target>-><canonical>` via `mem_write` (`confirm: true`) for intentional exceptions.\n"
+    "  - **Staleness & Post-Fix**: Call `build` (`{}`; CLI: `eg build`) immediately when a query warns about stale files; call `mem_write` (`{\"key\": \"...\", \"kind\": \"gotcha\", \"refs\": \"<code_path>\", \"body\": \"...\"}`; CLI: `eg mem write <key> --kind gotcha --refs \"<code_path>\" --body ...`) before the task ends; reuse the same key to supersede.\n"
 )
 
 def update_json_file(path, updater_fn):
@@ -247,8 +261,9 @@ print("1. Antigravity:")
 gemini_config = os.path.expanduser("~/.gemini/config/mcp_config.json")
 def update_gemini(data):
     servers = data.setdefault("mcpServers", {})
-    if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"]:
-        servers["engram"] = {"command": eg_bin, "args": ["mcp", "--all-tools"]}
+    desired = mcp_stdio_entry({"command": eg_bin, "args": ["mcp", "--all-tools"]})
+    if servers.get("engram") != desired:
+        servers["engram"] = desired
         return True
     return False
 if update_json_file(gemini_config, update_gemini):
@@ -337,6 +352,10 @@ if os.path.exists(grok_dir):
                 'args = ["mcp", "--all-tools"]\n'
                 "enabled = true\n"
             )
+            if judge_env:
+                mcp_block += "[mcp_servers.engram.env]\n"
+                for k, v in judge_env.items():
+                    mcp_block += f'{k} = "{v}"\n'
             with open(grok_toml, "a", encoding="utf-8") as f:
                 f.write(mcp_block)
             print("  ├─ Added engram to ~/.grok/config.toml")
@@ -356,12 +375,13 @@ if os.path.exists(zcode_dir):
     def update_zcode(data):
         mcp = data.setdefault("mcp", {})
         servers = mcp.setdefault("servers", {})
-        if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"] or servers["engram"].get("type") != "stdio":
-            servers["engram"] = {
-                "type": "stdio",
-                "command": eg_bin,
-                "args": ["mcp", "--all-tools"]
-            }
+        desired = mcp_stdio_entry({
+            "type": "stdio",
+            "command": eg_bin,
+            "args": ["mcp", "--all-tools"],
+        })
+        if servers.get("engram") != desired:
+            servers["engram"] = desired
             return True
         return False
     if os.path.exists(os.path.dirname(zcode_cfg)):
@@ -381,11 +401,12 @@ if os.path.exists(opencode_dir):
     def update_opencode(data):
         mcp = data.setdefault("mcp", {})
         servers = mcp.setdefault("servers", {})
-        if "engram" not in servers or servers["engram"].get("command") != [eg_bin, "mcp", "--all-tools"]:
-            servers["engram"] = {
-                "type": "local",
-                "command": [eg_bin, "mcp", "--all-tools"]
-            }
+        desired = mcp_stdio_entry({
+            "type": "local",
+            "command": [eg_bin, "mcp", "--all-tools"],
+        })
+        if servers.get("engram") != desired:
+            servers["engram"] = desired
             return True
         return False
     if update_json_file(opencode_json, update_opencode):
@@ -426,8 +447,9 @@ if os.path.exists(claude_json):
     print("6. Claude Code (CLI):")
     def update_claude_cli(data):
         servers = data.setdefault("mcpServers", {})
-        if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"]:
-            servers["engram"] = {"command": eg_bin, "args": ["mcp", "--all-tools"]}
+        desired = mcp_stdio_entry({"command": eg_bin, "args": ["mcp", "--all-tools"]})
+        if servers.get("engram") != desired:
+            servers["engram"] = desired
             return True
         return False
     if update_json_file(claude_json, update_claude_cli):
@@ -445,8 +467,9 @@ if os.path.exists(claude_desktop_dir):
     claude_cfg = os.path.join(claude_desktop_dir, "claude_desktop_config.json")
     def update_claude_desktop(data):
         servers = data.setdefault("mcpServers", {})
-        if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"]:
-            servers["engram"] = {"command": eg_bin, "args": ["mcp", "--all-tools"]}
+        desired = mcp_stdio_entry({"command": eg_bin, "args": ["mcp", "--all-tools"]})
+        if servers.get("engram") != desired:
+            servers["engram"] = desired
             return True
         return False
     update_json_file(claude_cfg, update_claude_desktop)
@@ -466,6 +489,10 @@ if os.path.exists(codex_dir):
                 'args = ["mcp", "--all-tools"]\n'
                 "enabled = true\n"
             )
+            if judge_env:
+                mcp_block += "[mcp_servers.engram.env]\n"
+                for k, v in judge_env.items():
+                    mcp_block += f'{k} = "{v}"\n'
             with open(codex_toml, "a", encoding="utf-8") as f:
                 f.write(mcp_block)
             print("  ├─ Added engram to ~/.codex/config.toml")

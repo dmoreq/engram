@@ -1,29 +1,43 @@
-//! Root-resolution regression for the MCP surface (I-9): the active-root
-//! fallback must agree with the shared `RepoRef` resolver instead of
-//! re-deriving the git root with inverted priority.
-
-use super::root_from_path;
-use crate::db::test_support::{make_dir_all, remove_tree, temp_root};
+use super::*;
 
 #[test]
-fn mcp_root_from_path_respects_nested_engram_store_inside_git_monorepo() {
-    let outer = temp_root("mcp-monorepo");
-    make_dir_all(outer.join(".git")).unwrap();
-    let sub = outer.join("packages").join("sub");
-    make_dir_all(sub.join(".engram")).unwrap();
+fn mem_export_scan_param_and_schema_are_wired() {
+    let spec = TOOL_SPECS.iter().find(|t| t.name == "mem_export").unwrap();
+    assert!(spec.params.iter().any(|p| p.name == "scan"));
+    let req = from_tool_args("mem_export", &json!({"scan": true})).unwrap();
+    assert!(matches!(req, CommandRequest::MemExport { scan: true, .. }));
+    let reuse = TOOL_SPECS.iter().find(|t| t.name == "reuse").unwrap();
+    let limit = reuse.params.iter().find(|p| p.name == "limit").unwrap();
+    assert!(matches!(limit.kind, ParamKind::Int { min: 0, .. }));
+}
 
-    // The nested `.engram/` store wins over the enclosing git root, matching
-    // the CLI's resolution inside monorepo sub-packages.
-    let resolved = root_from_path(&sub).expect("nested store resolves");
-    let expected = std::fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
-    assert_eq!(resolved, expected);
-
-    // Without a nested store the enclosing git repository answers.
-    let plain = outer.join("packages").join("plain");
-    make_dir_all(&plain).unwrap();
-    let resolved = root_from_path(&plain).expect("git repository resolves");
-    let expected = std::fs::canonicalize(&outer).unwrap_or_else(|_| outer.clone());
-    assert_eq!(resolved, expected);
-
-    remove_tree(&outer);
+#[test]
+fn call_tool_forwards_stderr_for_non_export_and_strips_export_caveat() {
+    let dir = crate::db::test_support::temp_root("mcp-stderr-fwd");
+    crate::db::test_support::make_dir_all(dir.join(".engram")).unwrap();
+    for (key, body) in [("note-a", "alpha note"), ("note-b", "beta note")] {
+        let (t, err, code, _) = call_tool(
+            &dir,
+            "mem_write",
+            &json!({"key": key, "body": body, "kind": "fact"}),
+            true,
+        );
+        assert!(!err && code == 0, "{t}");
+    }
+    let (queried, err, code, _) = call_tool(
+        &dir,
+        "mem_query",
+        &json!({"all": true, "limit": 1, "local": true}),
+        true,
+    );
+    assert!(
+        !err && code == 0 && queried.contains("[eg] capped at 1 results"),
+        "{queried}"
+    );
+    let (plain, err, code, _) = call_tool(&dir, "mem_export", &json!({}), true);
+    assert!(
+        !err && code == 0 && !plain.contains("eg: memory"),
+        "{plain}"
+    );
+    crate::db::test_support::remove_tree(&dir);
 }

@@ -246,3 +246,57 @@ fn mcp_client_info_sets_agent_identity() {
 
     let _ = fs::remove_dir_all(&repo);
 }
+
+#[test]
+fn mcp_root_override_targets_other_repo_without_sticking() {
+    let repo_a = fixture("mcp-root-a");
+    let repo_b = fixture("mcp-root-b");
+    fs::write(
+        repo_b.join("extra_b.py"),
+        "def quuxyzzy():\n    return 42\n",
+    )
+    .unwrap();
+    assert_eq!(
+        eg_cmd(&repo_a).arg("build").output().unwrap().status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        eg_cmd(&repo_b).arg("build").output().unwrap().status.code(),
+        Some(0)
+    );
+
+    let mut srv = spawn(&repo_a);
+    let _ = rpc(
+        &mut srv,
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}),
+    );
+    // Call targeting repo_b via `root` override.
+    let call_b = rpc(
+        &mut srv,
+        2,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"terms": "quuxyzzy", "root": repo_b.to_string_lossy()}
+        }),
+    );
+    assert_eq!(call_b["result"]["isError"], false, "{call_b}");
+    assert!(call_b["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("quuxyzzy"));
+
+    // Subsequent call without `root` still targets repo_a (not stuck on repo_b).
+    let call_a = rpc(
+        &mut srv,
+        3,
+        "tools/call",
+        json!({"name": "search", "arguments": {"terms": "quuxyzzy"}}),
+    );
+    assert_eq!(call_a["result"]["isError"], true, "{call_a}");
+
+    let _ = fs::remove_dir_all(&repo_a);
+    let _ = fs::remove_dir_all(&repo_b);
+}

@@ -125,7 +125,6 @@ struct CachedIndex {
 static MCP_INDEX_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CachedIndex>>> =
     std::sync::OnceLock::new();
 
-#[allow(dead_code)]
 pub struct CachedConnection {
     stamp: McpIndexStamp,
     conn: Option<Connection>,
@@ -154,7 +153,6 @@ impl Drop for CachedConnection {
 
 /// Process-local read-only `Connection` cache for `eg mcp`, validated by
 /// `(PathBuf, dev, ino, mtime_ns, len)` via `symlink_metadata`.
-#[allow(dead_code)]
 pub fn open_cached_for_mcp(root: &Path) -> Result<CachedConnection> {
     reject_tracked_eg_dir(root)?;
     reject_symlink(&eg_dir(root), ".engram directory")?;
@@ -191,7 +189,6 @@ pub fn open_cached_for_mcp(root: &Path) -> Result<CachedConnection> {
 
 /// Evict the cached MCP index connection (all or for a specific root) before
 /// `build` or memory mutations.
-#[allow(dead_code)]
 pub fn evict_mcp_cache(root: Option<&Path>) {
     let Some(cell) = MCP_INDEX_CACHE.get() else {
         return;

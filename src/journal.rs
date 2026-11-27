@@ -181,13 +181,11 @@ pub(crate) fn finalize_repo(repo: Option<&crate::repo::RepoRef>, exit_code: i32,
     if let Some(root) = root {
         append_line(&usage_log_path(root), &line_str);
     }
-    if let Ok(global_log) = crate::db::global_usage_log_path() {
-        if let Some(parent) = global_log.parent() {
-            let should_append = if crate::db::global_dir_overridden() {
-                parent.is_dir()
-            } else {
-                true
-            };
+    if !liveness::repo_is_ephemeral(&repo_path) {
+        if let Ok(global_log) = crate::db::global_usage_log_path() {
+            let should_append = global_log
+                .parent()
+                .is_some_and(|p| !crate::db::global_dir_overridden() || p.is_dir());
             if should_append {
                 append_line(&global_log, &line_str);
             }

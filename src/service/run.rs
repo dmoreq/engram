@@ -13,6 +13,7 @@ pub(super) fn run(
             force,
             max_parse_error_rate,
         } => {
+            crate::db::evict_mcp_cache(root_arg);
             let (line, stderr, shown) =
                 crate::build::run_build(root_arg, *force, *max_parse_error_rate)?;
             Ok(ArmOut {
@@ -54,14 +55,14 @@ pub(super) fn run(
         }
         CommandRequest::MemWrite { .. } => run_mem_write(req, root_arg, surface),
         CommandRequest::MemTouch { .. } => run_mem_touch(req, root_arg),
-        CommandRequest::MemQuery { .. } => run_mem_query(req, root_arg),
-        CommandRequest::MemGet { .. } => run_mem_get(req, root_arg),
+        CommandRequest::MemQuery { .. } => run_mem_query(req, root_arg, surface),
+        CommandRequest::MemGet { .. } => run_mem_get(req, root_arg, surface),
         CommandRequest::MemDelete { .. } => run_mem_delete(req, root_arg),
         CommandRequest::MemGc { .. } => run_mem_gc(req, root_arg),
-        CommandRequest::MemExport { .. } => run_mem_export(req, root_arg),
+        CommandRequest::MemExport { .. } => run_mem_export(req, root_arg, surface),
         CommandRequest::MemImport { .. } => run_mem_import(req, root_arg, surface),
         CommandRequest::MemReindex { .. } => run_mem_reindex(req, root_arg),
-        _ => run_query(req, root_arg),
+        _ => run_query(req, root_arg, surface),
     }
 }
 
@@ -135,11 +136,6 @@ fn validate_reuse_args(
         None if !callees.is_empty() => {
             return Err(EgError::Usage("--callees requires --propose".to_string()));
         }
-        None if !coverage.is_empty() && !paths.is_empty() => {
-            return Err(EgError::Usage(
-                "--coverage cannot be combined with paths".to_string(),
-            ));
-        }
         None => {}
     }
     Ok(())
@@ -202,7 +198,7 @@ fn execute_reuse(
 }
 
 /// Index-only query arms: graph traversal, analysis, and inventory.
-fn run_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
+fn run_query(req: &CommandRequest, root_arg: Option<&Path>, surface: Surface) -> Result<ArmOut> {
     if let CommandRequest::Reuse {
         paths,
         limit,
@@ -222,7 +218,7 @@ fn run_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
             coverage,
         )?;
     }
-    let (root, conn) = open_query(root_arg)?;
+    let (root, conn) = open_query_for_surface(root_arg, surface)?;
     let ctx = crate::query::QueryCtx {
         conn: &conn,
         root: &root,

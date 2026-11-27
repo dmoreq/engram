@@ -26,7 +26,6 @@ struct CachedMemory {
 
 static MCP_MEMORY_CACHE: OnceLock<Mutex<Vec<CachedMemory>>> = OnceLock::new();
 
-#[allow(dead_code)]
 pub struct CachedMemoryConnection {
     stamp: McpIndexStamp,
     conn: Option<Connection>,
@@ -82,7 +81,6 @@ fn memory_stamp_for(root: Option<&Path>) -> Result<McpIndexStamp> {
 
 /// Process-local read-only `memory.db` connection cache for `eg mcp`.
 /// `Some(root)` opens the local store; `None` opens the global store.
-#[allow(dead_code)]
 pub fn open_cached_memory_for_mcp(root: Option<&Path>) -> Result<CachedMemoryConnection> {
     let stamp = memory_stamp_for(root)?;
     let cell = MCP_MEMORY_CACHE.get_or_init(|| Mutex::new(Vec::new()));
@@ -106,7 +104,6 @@ pub fn open_cached_memory_for_mcp(root: Option<&Path>) -> Result<CachedMemoryCon
 }
 
 /// Evict cached MCP memory connections (all when `None`, or local store for `Some(root)`).
-#[allow(dead_code)]
 pub fn evict_memory_mcp_cache(root: Option<&Path>) {
     let Some(cell) = MCP_MEMORY_CACHE.get() else {
         return;

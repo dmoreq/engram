@@ -258,3 +258,29 @@ fn judge_missing_binary_degrades_with_one_note() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stderr.matches("judge unavailable").count(), 1, "{stderr}");
 }
+
+#[test]
+fn cli_reuse_paths_with_coverage_succeeds() {
+    let repo = temp_repo("reuse-paths-cov");
+    write(
+        &repo,
+        "mod_a.py",
+        "class Widget:\n    def render(self):\n        return 1\n",
+    );
+    write(
+        &repo,
+        "mod_b.py",
+        "class Widget:\n    def render(self):\n        return 2\n",
+    );
+    build(&repo);
+    let out = eg(&repo)
+        .args(["reuse", "mod_a.py", "--coverage", "class,unresolved,tests"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

@@ -350,7 +350,6 @@ impl ResolvedRef {
 mod refs;
 #[allow(unused_imports)]
 pub(crate) use refs::{check_disk_ref, check_ref_status, check_ref_status_with_root};
-#[allow(unused_imports)]
 pub use refs::{resolve_ref_detail, resolve_ref_detail_with_canon};
 
 #[cfg(test)]
