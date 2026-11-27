@@ -226,19 +226,10 @@ pub struct ProposalRunArgs {
 
 /// Run `eg reuse` across the whole repository or specified paths.
 pub fn run_reuse(ctx: &QueryCtx<'_>, args: ReuseRunArgs) -> Result<crate::query::LineQuery> {
-    let opts = ReuseOpts::new(
-        args.paths,
-        args.limit,
-        args.deep_callee,
-        args.min_confidence,
-        args.explain,
-    )?
-    .with_show_suppressed(args.show_suppressed)
-    .with_coverage(&args.coverage)?
-    .with_judge(args.judge);
+    let opts = ReuseOpts::from_run_args(args)?;
     let scope = target::resolve_scope(ctx, &opts.paths)?;
     let report = analyze_corpus_with(ctx, &opts, &scope)?;
-    finalize::finalize(ctx, report, &opts)
+    finalize::finalize(report, &opts)
 }
 
 /// Phase 2 proposal entry point. Paths are rejected by the caller; the repo
@@ -247,19 +238,10 @@ pub fn run_reuse_proposal(
     ctx: &QueryCtx<'_>,
     args: ProposalRunArgs,
 ) -> Result<crate::query::LineQuery> {
-    let opts = ReuseOpts::new_proposal(
-        args.signature,
-        args.callees,
-        args.limit,
-        args.deep_callee,
-        args.min_confidence,
-        args.explain,
-    )?
-    .with_show_suppressed(args.show_suppressed)
-    .with_judge(args.judge);
+    let opts = ReuseOpts::from_proposal_args(args)?;
     let scope = target::resolve_scope(ctx, &[])?;
     let report = analyze_corpus_with(ctx, &opts, &scope)?;
-    finalize::finalize(ctx, report, &opts)
+    finalize::finalize(report, &opts)
 }
 
 /// Analysis entry point: load the corpus, run guards/detectors or the

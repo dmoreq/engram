@@ -322,7 +322,7 @@ pub(super) use super::rust_use::*;
 
 pub(super) fn visit_rust_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     match w.node.kind() {
-        "function_item" | "function_signature_item" => visit_function_item(w),
+        "function_item" | "function_signature_item" => define_scoped_function(w),
         "struct_item" | "enum_item" | "type_item" => define_class_symbol(w, SymbolKind::Class),
         "trait_item" => define_class_symbol(w, SymbolKind::Trait),
         "impl_item" => visit_impl_item(w),
@@ -417,16 +417,6 @@ fn visit_rust_mod_item<'a>(w: &mut Walker<'a, '_, '_>) {
         ));
     }
     push_children_rev(w.work, w.cursor, w.node);
-}
-
-fn visit_function_item<'a>(w: &mut Walker<'a, '_, '_>) {
-    let parent_qn = w.ctx.enclosing_scope(&w.fx.module);
-    let kind = if w.ctx.class_stack.last().map(|s| s.as_str()) == Some(parent_qn) {
-        SymbolKind::Method
-    } else {
-        SymbolKind::Function
-    };
-    define_function(w, kind);
 }
 
 fn visit_impl_item<'a>(w: &mut Walker<'a, '_, '_>) {

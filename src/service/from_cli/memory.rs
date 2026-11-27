@@ -3,8 +3,9 @@
 
 use crate::cli::MemAction;
 use crate::error::Result;
+use crate::journal::JournalArgs;
 use crate::service::scope::StoreScope;
-use crate::service::CommandRequest;
+use crate::service::{mem_query_args, mem_write_args, CommandRequest};
 
 impl CommandRequest {
     /// Memory subcommands. `write`/`query`/`export` destructure through their
@@ -100,17 +101,11 @@ impl CommandRequest {
             unreachable!("mem_query_request called with a non-query action")
         };
         StoreScope::from_flags(local, global)?;
-        let window = crate::memory::TimeWindow {
-            since: since
-                .as_deref()
-                .map(|r| crate::memory::parse_time_bound(r, "mem query", "--since"))
-                .transpose()?,
-            until: until
-                .as_deref()
-                .map(|r| crate::memory::parse_time_bound(r, "mem query", "--until"))
-                .transpose()?,
-        };
-        crate::memory::validate_window(&window, "mem query")?;
+        let window = crate::memory::time::parse_time_window(
+            since.as_deref(),
+            until.as_deref(),
+            "mem query",
+        )?;
         Ok(CommandRequest::MemQuery {
             terms,
             all,
@@ -141,17 +136,11 @@ impl CommandRequest {
         else {
             unreachable!("mem_export_request called with a non-export action")
         };
-        let window = crate::memory::TimeWindow {
-            since: since
-                .as_deref()
-                .map(|r| crate::memory::parse_time_bound(r, "mem export", "--since"))
-                .transpose()?,
-            until: until
-                .as_deref()
-                .map(|r| crate::memory::parse_time_bound(r, "mem export", "--until"))
-                .transpose()?,
-        };
-        crate::memory::validate_window(&window, "mem export")?;
+        let window = crate::memory::time::parse_time_window(
+            since.as_deref(),
+            until.as_deref(),
+            "mem export",
+        )?;
         Ok(CommandRequest::MemExport {
             format,
             limit,
@@ -160,5 +149,47 @@ impl CommandRequest {
             until: window.until,
             scan,
         })
+    }
+
+    pub(super) fn mem_journal_args(&self) -> JournalArgs {
+        match self {
+            CommandRequest::MemWrite { .. } => mem_write_args(self),
+            CommandRequest::MemQuery { .. } => mem_query_args(self),
+            CommandRequest::MemTouch { key, global }
+            | CommandRequest::MemGet { key, global }
+            | CommandRequest::MemDelete { key, global } => {
+                vec![("key", key.clone()), ("global", global.to_string())]
+            }
+            CommandRequest::MemGc { global } => vec![("global", global.to_string())],
+            CommandRequest::MemReindex { global, embed } => {
+                vec![("global", global.to_string()), ("embed", embed.to_string())]
+            }
+            CommandRequest::MemExport {
+                format,
+                limit,
+                global,
+                since,
+                until,
+                scan,
+            } => vec![
+                ("format", format.clone().unwrap_or_default()),
+                ("limit", limit.map_or_else(String::new, |n| n.to_string())),
+                ("global", global.to_string()),
+                ("since", since.map_or_else(String::new, |n| n.to_string())),
+                ("until", until.map_or_else(String::new, |n| n.to_string())),
+                ("scan", scan.to_string()),
+            ],
+            CommandRequest::MemImport {
+                format,
+                force,
+                global,
+                ..
+            } => vec![
+                ("format", format.clone().unwrap_or_default()),
+                ("force", force.to_string()),
+                ("global", global.to_string()),
+            ],
+            _ => unreachable!("mem_journal_args called with a non-memory request"),
+        }
     }
 }

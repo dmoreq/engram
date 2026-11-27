@@ -22,7 +22,17 @@ use sse::stream_sse_events;
 
 static INDEX_HTML: &str = include_str!("assets/index.html");
 static STYLE_CSS: &str = include_str!("assets/style.css");
-static APP_JS: &str = include_str!("assets/app.js");
+static APP_JS: &str = concat!(
+    include_str!("assets/core.js"),
+    "\n",
+    include_str!("assets/overview.js"),
+    "\n",
+    include_str!("assets/telemetry.js"),
+    "\n",
+    include_str!("assets/reuse.js"),
+    "\n",
+    include_str!("assets/memory.js"),
+);
 static FAVICON_SVG: &str = include_str!("assets/favicon.svg");
 static LOGO_SVG: &str = include_str!("assets/logo.svg");
 static LOGO_LIGHT_SVG: &str = include_str!("assets/logo-light.svg");
@@ -75,9 +85,7 @@ pub fn serve_dashboard(
             .ok_or_else(|| EgError::Usage("--local needs a repository root".to_string()))?;
         // Local mode reads and displays this repo's journal; refuse a tracked
         // or symlinked confinement directory before opening any panel.
-        crate::db::reject_symlink(&crate::db::eg_dir(r), ".engram directory")?;
         crate::db::reject_unsafe_journal(r)?;
-        crate::db::reject_tracked_eg_dir(r)?;
         crate::journal::usage_log_path(r)
     } else {
         db::global_usage_log_path().unwrap_or_else(|_| PathBuf::from("usage.log"))
@@ -233,24 +241,29 @@ fn send_json(
     Ok(true)
 }
 
+pub(super) struct ServerCtx<'a> {
+    pub(super) root: Option<&'a Path>,
+    pub(super) log_path: &'a Path,
+    pub(super) global: bool,
+}
+
 fn serve_api_route(
     stream: &mut TcpStream,
     path: &str,
-    log_path: &Path,
-    root: Option<&Path>,
-    global: bool,
+    ctx: &ServerCtx<'_>,
     is_head: bool,
 ) -> std::io::Result<bool> {
     match path {
         "/api/summary" | "/api/metrics" => {
-            let entries = read_entries(log_path, global);
+            let entries = read_entries(ctx.log_path, ctx.global);
             let summary = data::compute_summary(&entries);
             send_json(stream, &summary, is_head)
         }
         "/api/reuse" => {
-            let entries = read_entries(log_path, global);
-            let (candidates, summary, prewrite) = data::collect_reuse_candidates(root, &entries)
-                .unwrap_or_else(|_| (Vec::new(), serde_json::json!({}), Vec::new()));
+            let entries = read_entries(ctx.log_path, ctx.global);
+            let (candidates, summary, prewrite) =
+                data::collect_reuse_candidates(ctx.root, &entries)
+                    .unwrap_or_else(|_| (Vec::new(), serde_json::json!({}), Vec::new()));
             let payload = serde_json::json!({
                 "candidates": candidates,
                 "summary": summary,
@@ -259,8 +272,8 @@ fn serve_api_route(
             send_json(stream, &payload, is_head)
         }
         "/api/memories" => {
-            let entries = read_entries(log_path, global);
-            let payload = data::collect_memories(root, &entries).unwrap_or_else(|e| {
+            let entries = read_entries(ctx.log_path, ctx.global);
+            let payload = data::collect_memories(ctx.root, &entries).unwrap_or_else(|e| {
                 serde_json::json!({
                     "schema_version": 2, "notes": [], "degraded": true,
                     "errors": [{ "store": "-", "stage": "collect", "message": e.to_string() }]
@@ -278,9 +291,7 @@ fn local_gate(root: Option<&Path>, global: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(root) = root {
-        crate::db::reject_symlink(&crate::db::eg_dir(root), ".engram directory")?;
         crate::db::reject_unsafe_journal(root)?;
-        crate::db::reject_tracked_eg_dir(root)?;
     }
     Ok(())
 }
@@ -291,6 +302,11 @@ pub fn handle_client(
     root: Option<&Path>,
     global: bool,
 ) -> std::io::Result<()> {
+    let ctx = ServerCtx {
+        root,
+        log_path,
+        global,
+    };
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     // A response write to a half-dead client must never wedge the worker:
     // bounded writes for every route, not just the SSE stream.
@@ -314,7 +330,7 @@ pub fn handle_client(
     }
     // Local mode is revalidated per request: a session can become tracked
     // after startup, and the captured log path must not keep serving it.
-    if let Err(err) = local_gate(root, global) {
+    if let Err(err) = local_gate(ctx.root, ctx.global) {
         let body = format!("{err}\n");
         send_response(
             &mut stream,
@@ -327,7 +343,7 @@ pub fn handle_client(
     }
 
     if method == "POST" && path == "/api/memory/touch" {
-        return touch::handle_memory_touch(&mut stream, root, log_path, global, &req);
+        return touch::handle_memory_touch(&mut stream, &ctx, &req);
     }
 
     if method != "GET" && method != "HEAD" {
@@ -343,7 +359,7 @@ pub fn handle_client(
         return Ok(());
     }
 
-    if serve_api_route(&mut stream, path, log_path, root, global, is_head)? {
+    if serve_api_route(&mut stream, path, &ctx, is_head)? {
         return Ok(());
     }
 
@@ -360,7 +376,7 @@ pub fn handle_client(
             stream.write_all(header.as_bytes())?;
             return stream.flush();
         }
-        return stream_sse_events(&mut stream, log_path, root, global);
+        return stream_sse_events(&mut stream, ctx.log_path, ctx.root, ctx.global);
     }
 
     let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";

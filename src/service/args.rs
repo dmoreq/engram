@@ -161,6 +161,14 @@ fn unknown_tool(tool: &str) -> EgError {
 
 pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandRequest> {
     let a = ArgReader(args);
+    if tool.starts_with("mem_") {
+        from_mem_tool(tool, &a)
+    } else {
+        from_graph_tool(tool, &a)
+    }
+}
+
+fn from_graph_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
     match tool {
         "build" => Ok(CommandRequest::Build {
             force: a.b_spec(tool, "force")?,
@@ -212,37 +220,53 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             outline: a.b_spec(tool, "outline")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
-        "reuse" => {
-            if let Some(v) = a.0.get("limit").filter(|v| !v.is_null()) {
-                let limit = v.as_u64().ok_or_else(|| {
-                    EgError::Usage(format!(
-                        "argument 'limit' must be a non-negative integer, got {v}"
-                    ))
-                })?;
-                // 0 is the count-only convention (summary totals, no rows).
-                if limit > 100 {
-                    return Err(EgError::Usage("limit must be 0..=100".to_string()));
-                }
-            }
-            Ok(CommandRequest::Reuse {
-                paths: a.str_array("paths")?,
-                limit: a.n_spec(tool, "limit", crate::query::DEFAULT_REUSE_LIMIT)?,
-                deep_callee: a.b_spec(tool, "deep_callee")?,
-                min_confidence: a
-                    .s_opt_spec(tool, "min_confidence")?
-                    .unwrap_or_else(|| "low".to_string()),
-                propose: a.s_opt_spec(tool, "propose")?,
-                callees: a.str_array("callees")?,
-                explain: a.b_spec(tool, "explain")?,
-                show_suppressed: a.b_spec(tool, "show_suppressed")?,
-                coverage: a.str_array("coverage")?,
-                judge: a.b_spec(tool, "judge")?,
-            })
-        }
+        "reuse" => parse_reuse_tool(tool, a),
         "search" => Ok(CommandRequest::Search {
             terms: a.req("terms")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
+        "unresolved" => Ok(CommandRequest::Unresolved {
+            names: a.b_spec(tool, "names")?,
+            path: a.s_opt_spec(tool, "path")?,
+            limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
+        }),
+        "stats" => Ok(CommandRequest::Stats {
+            path: a.s_opt_spec(tool, "path")?,
+        }),
+        _ => Err(unknown_tool(tool)),
+    }
+}
+
+fn parse_reuse_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
+    if let Some(v) = a.0.get("limit").filter(|v| !v.is_null()) {
+        let limit = v.as_u64().ok_or_else(|| {
+            EgError::Usage(format!(
+                "argument 'limit' must be a non-negative integer, got {v}"
+            ))
+        })?;
+        // 0 is the count-only convention (summary totals, no rows).
+        if limit > 100 {
+            return Err(EgError::Usage("limit must be 0..=100".to_string()));
+        }
+    }
+    Ok(CommandRequest::Reuse {
+        paths: a.str_array("paths")?,
+        limit: a.n_spec(tool, "limit", crate::query::DEFAULT_REUSE_LIMIT)?,
+        deep_callee: a.b_spec(tool, "deep_callee")?,
+        min_confidence: a
+            .s_opt_spec(tool, "min_confidence")?
+            .unwrap_or_else(|| "low".to_string()),
+        propose: a.s_opt_spec(tool, "propose")?,
+        callees: a.str_array("callees")?,
+        explain: a.b_spec(tool, "explain")?,
+        show_suppressed: a.b_spec(tool, "show_suppressed")?,
+        coverage: a.str_array("coverage")?,
+        judge: a.b_spec(tool, "judge")?,
+    })
+}
+
+fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
+    match tool {
         "mem_write" => Ok(CommandRequest::MemWrite {
             key: a.req("key")?,
             body: a.req("body")?,
@@ -266,30 +290,25 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             let local = a.b_spec(tool, "local")?;
             let global = a.b_spec(tool, "global")?;
             super::scope::StoreScope::from_flags(local, global)?;
-            let window = crate::memory::TimeWindow {
-                since: a
-                    .s_opt_spec(tool, "since")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem query", "--since"))
-                    .transpose()?,
-                until: a
-                    .s_opt_spec(tool, "until")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem query", "--until"))
-                    .transpose()?,
-            };
-            crate::memory::validate_window(&window, "mem query")?;
+            let since = a.s_opt_spec(tool, "since")?;
+            let until = a.s_opt_spec(tool, "until")?;
+            let window = crate::memory::time::parse_time_window(
+                since.as_deref(),
+                until.as_deref(),
+                "mem query",
+            )?;
+            let terms = a
+                .s_opt_spec(tool, "terms")?
+                .map(|t| {
+                    if t.trim().is_empty() {
+                        vec![t]
+                    } else {
+                        t.split_whitespace().map(str::to_string).collect()
+                    }
+                })
+                .unwrap_or_default();
             Ok(CommandRequest::MemQuery {
-                terms: a
-                    .s_opt_spec(tool, "terms")?
-                    .map(|t| {
-                        if t.trim().is_empty() {
-                            vec![t]
-                        } else {
-                            t.split_whitespace().map(str::to_string).collect()
-                        }
-                    })
-                    .unwrap_or_default(),
+                terms,
                 all: a.b_spec(tool, "all")?,
                 kind: crate::memory::parse_kind_filter(
                     "mem query",
@@ -325,19 +344,13 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             global: a.b_spec(tool, "global")?,
         }),
         "mem_export" => {
-            let window = crate::memory::TimeWindow {
-                since: a
-                    .s_opt_spec(tool, "since")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem export", "--since"))
-                    .transpose()?,
-                until: a
-                    .s_opt_spec(tool, "until")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem export", "--until"))
-                    .transpose()?,
-            };
-            crate::memory::validate_window(&window, "mem export")?;
+            let since = a.s_opt_spec(tool, "since")?;
+            let until = a.s_opt_spec(tool, "until")?;
+            let window = crate::memory::time::parse_time_window(
+                since.as_deref(),
+                until.as_deref(),
+                "mem export",
+            )?;
             Ok(CommandRequest::MemExport {
                 format: a.s_opt_spec(tool, "format")?,
                 limit: a.n_opt_spec(tool, "limit")?,
@@ -356,14 +369,6 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         "mem_reindex" => Ok(CommandRequest::MemReindex {
             global: a.b_spec(tool, "global")?,
             embed: a.b_spec(tool, "embed")?,
-        }),
-        "unresolved" => Ok(CommandRequest::Unresolved {
-            names: a.b_spec(tool, "names")?,
-            path: a.s_opt_spec(tool, "path")?,
-            limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
-        }),
-        "stats" => Ok(CommandRequest::Stats {
-            path: a.s_opt_spec(tool, "path")?,
         }),
         _ => Err(unknown_tool(tool)),
     }

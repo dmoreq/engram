@@ -187,9 +187,6 @@ fn home_dir() -> Result<String> {
             )
         })
 }
-fn ensure_global_eg_dir(path: &Path) -> Result<()> {
-    crate::db::ensure_global_dir(path)
-}
 pub fn global_memory_db_path() -> Result<PathBuf> {
     Ok(global_eg_dir()?.join("memory.db"))
 }
@@ -256,7 +253,7 @@ pub fn open_memory(loc: StoreLocation<'_>, mode: StoreMode) -> Result<Connection
             }
             StoreMode::Store => {
                 let dir = global_eg_dir()?;
-                ensure_global_eg_dir(&dir)?;
+                crate::db::ensure_global_dir(&dir)?;
                 let path = global_memory_store_path()?;
                 open_memory_conn_path(&path, true, || no_global_memory_error(&path))
             }

@@ -10,6 +10,27 @@ pub(crate) fn node_str<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
 
+/// Comments never carry signature structure; skip them wholesale so a
+/// decorated declaration or a brace inside a comment cannot truncate the scan.
+fn skip_comment(src: &[u8], end: usize, stop: usize, python: bool) -> Option<usize> {
+    let b = src[end];
+    if (b == b'/' && end + 1 < stop && src[end + 1] == b'/') || (b == b'#' && python) {
+        let mut cur = end;
+        while cur < stop && src[cur] != b'\n' {
+            cur += 1;
+        }
+        return Some(cur);
+    }
+    if b == b'/' && end + 1 < stop && src[end + 1] == b'*' {
+        let mut cur = end + 2;
+        while cur + 1 < stop && !(src[cur] == b'*' && src[cur + 1] == b'/') {
+            cur += 1;
+        }
+        return Some((cur + 2).min(stop));
+    }
+    None
+}
+
 /// One-line signature (Amendments 12a and 18): capture the declaration
 /// header, continue across line wraps inside a parameter list, stop at the
 /// body delimiter (`{`, `;`, or Python `:`), collapse whitespace, and cap
@@ -23,30 +44,11 @@ pub(super) fn signature_of(node: Node<'_>, src: &[u8]) -> String {
     let mut end = start;
     let mut prev_non_space: u8 = 0;
     while end < stop {
+        if let Some(next) = skip_comment(src, end, stop, python) {
+            end = next;
+            continue;
+        }
         let b = src[end];
-        // Comments never carry signature structure; skip them wholesale so a
-        // decorated declaration or a brace inside a comment cannot truncate
-        // the scan early.
-        if b == b'/' && end + 1 < stop && src[end + 1] == b'/' {
-            while end < stop && src[end] != b'\n' {
-                end += 1;
-            }
-            continue;
-        }
-        if b == b'/' && end + 1 < stop && src[end + 1] == b'*' {
-            end += 2;
-            while end + 1 < stop && !(src[end] == b'*' && src[end + 1] == b'/') {
-                end += 1;
-            }
-            end = (end + 2).min(stop);
-            continue;
-        }
-        if b == b'#' && python {
-            while end < stop && src[end] != b'\n' {
-                end += 1;
-            }
-            continue;
-        }
         match b {
             b'(' | b'[' => depth += 1,
             b')' | b']' => depth -= 1,

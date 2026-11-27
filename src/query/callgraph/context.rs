@@ -3,6 +3,33 @@
 use super::frame::{direct_callees, direct_callers};
 use super::*;
 
+struct DefRow {
+    path: String,
+    line: i64,
+    line_end: i64,
+    kind: String,
+    qualname: String,
+    signature: String,
+    return_type: String,
+}
+
+fn load_definition(conn: &Connection, id: i64) -> Result<DefRow> {
+    let def_sql = "SELECT s.file_path, s.line_start, s.line_end, s.kind, s.qualname, s.signature, s.return_type
+                   FROM symbols s WHERE s.id = ?1";
+    conn.query_row(def_sql, [id], |r| {
+        Ok(DefRow {
+            path: r.get(0)?,
+            line: r.get(1)?,
+            line_end: r.get(2)?,
+            kind: r.get(3)?,
+            qualname: r.get(4)?,
+            signature: r.get(5)?,
+            return_type: r.get(6)?,
+        })
+    })
+    .map_err(Into::into)
+}
+
 /// One-call symbol context (Amendment 17): definition line with signature,
 /// direct callers, and direct callees — replaces composing callers/callees/
 /// symbols for "what does this symbol do and who uses it" questions.
@@ -12,33 +39,12 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
     let (ids, _) = resolve_targets(ctx, name, None)?;
     let id = ids[0];
 
-    let def_sql = "SELECT s.file_path, s.line_start, s.line_end, s.kind, s.qualname, s.signature, s.return_type
-                   FROM symbols s WHERE s.id = ?1";
-    let (def_path, def_line, def_end, kind, qualname, signature, return_type): (
-        String,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        String,
-    ) = conn.query_row(def_sql, [id], |r| {
-        Ok((
-            r.get(0)?,
-            r.get(1)?,
-            r.get(2)?,
-            r.get(3)?,
-            r.get(4)?,
-            r.get(5)?,
-            r.get(6)?,
-        ))
-    })?;
-
+    let def = load_definition(conn, id)?;
     let (callers, callers_total) = direct_callers(conn, &[id], limit)?;
     let (callees, callees_total) = direct_callees(conn, &[id], limit)?;
 
     let mut files = BTreeSet::new();
-    files.insert(def_path.clone());
+    files.insert(def.path.clone());
     files.extend(callers.iter().map(|p| p.file.clone()));
     files.extend(callees.iter().map(|p| p.file.clone()));
 
@@ -56,39 +62,67 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
         ambiguous,
     );
 
+    let out = format_context_lines(
+        ctx,
+        id,
+        &def,
+        header,
+        limit,
+        &callers,
+        callers_total,
+        &callees,
+        callees_total,
+    )?;
+    let mut lq = LineQuery::new(out, String::new(), shown);
+    lq.truncated = shown < total;
+    Ok(lq)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn format_context_lines(
+    ctx: &QueryCtx<'_>,
+    id: i64,
+    def: &DefRow,
+    header: Option<String>,
+    limit: usize,
+    callers: &[Pointer],
+    callers_total: usize,
+    callees: &[Pointer],
+    callees_total: usize,
+) -> Result<Vec<String>> {
     let mut out = vec![CONTEXT_CAVEAT.to_string()];
     if let Some(header) = header {
         out.push(header);
     }
-    let mut sig = if signature.is_empty() {
+    let mut sig = if def.signature.is_empty() {
         String::new()
     } else {
-        format!(" {}", sanitize(&signature))
+        format!(" {}", sanitize(&def.signature))
     };
-    if !return_type.is_empty() && !signature.contains(&return_type) {
-        sig.push_str(&format!(" -> {}", sanitize(&return_type)));
+    if !def.return_type.is_empty() && !def.signature.contains(&def.return_type) {
+        sig.push_str(&format!(" -> {}", sanitize(&def.return_type)));
     }
     out.push(format!(
         "{}:{}-{} {} {}{sig}",
-        sanitize(&def_path),
-        def_line,
-        def_end,
-        sanitize(&kind),
-        sanitize(&qualname),
+        sanitize(&def.path),
+        def.line,
+        def.line_end,
+        sanitize(&def.kind),
+        sanitize(&def.qualname),
     ));
 
     // Rust qualnames use '.', not '::' — the dot-rsplit works for every
     // language's dotted qualname; the old '::' split returned the whole name
     // for Rust and missed the method for memory-note guards.
-    let last_segment = qualname
+    let last_segment = def
+        .qualname
         .rsplit_once('.')
         .map(|(_, s)| s.to_string())
-        .unwrap_or_else(|| qualname.clone());
-    let last_segment = last_segment.as_str();
+        .unwrap_or_else(|| def.qualname.clone());
     let guards = crate::memory::find_guarding_notes_filtered(
         ctx.root,
-        &[&def_path],
-        &[&qualname, last_segment],
+        &[&def.path],
+        &[&def.qualname, last_segment.as_str()],
         &["decision", "gotcha"],
         2,
     );
@@ -102,10 +136,10 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
     }
 
     if matches!(
-        SymbolKind::parse(&kind),
+        SymbolKind::parse(&def.kind),
         Some(SymbolKind::Class | SymbolKind::Trait | SymbolKind::Interface)
     ) {
-        append_type_details(conn, id, &qualname, limit, &mut out)?;
+        append_type_details(ctx.conn, id, &def.qualname, limit, &mut out)?;
     }
 
     out.push(format!(
@@ -120,10 +154,7 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
         callees_total
     ));
     out.extend(callees.iter().map(|p| p.render()));
-
-    let mut lq = LineQuery::new(out, String::new(), shown);
-    lq.truncated = shown < total;
-    Ok(lq)
+    Ok(out)
 }
 
 fn append_type_details(

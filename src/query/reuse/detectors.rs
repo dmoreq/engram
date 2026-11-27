@@ -7,6 +7,7 @@ use super::index::{normalize_client, CorpusIndex, PostingKind};
 use super::*;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 mod d1;
 pub(super) use d1::find_best_d1;
@@ -120,6 +121,8 @@ impl DetectorId {
 
 pub(super) const DETECTORS: &[Detector] = &[find_best_d1, find_best_d2, check_d3, check_d4];
 
+type OverlapSignal = Option<(u64, Vec<String>, ReuseConfidence, Vec<ReasonCode>)>;
+
 /// Shared D1/D2 scan frame: drop self/overlap/non-canonical candidates and
 /// keep the best signal with a deterministic canonical tie-break.
 fn best_by_overlap(
@@ -128,7 +131,8 @@ fn best_by_overlap(
     corpus: &Corpus<'_>,
     kind: PostingKind,
     min_shared: usize,
-    signal: impl Fn(&SymbolData) -> Option<(u64, Vec<String>, ReuseConfidence, Vec<ReasonCode>)>,
+    deterministic: bool,
+    mut signal: impl FnMut(&SymbolData) -> ControlFlow<(), OverlapSignal>,
 ) -> Option<ReuseCandidate> {
     type BestMatch<'a> = (
         u64,
@@ -137,8 +141,19 @@ fn best_by_overlap(
         ReuseConfidence,
         Vec<ReasonCode>,
     );
+    let mut candidates = candidate_symbols(corpus, target, kind, min_shared);
+    if deterministic {
+        // Deterministic order before budget-bounded loops so hitting
+        // MAX_DEEP_PAIRS never depends on HashMap iteration order.
+        candidates.sort_unstable_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then_with(|| a.line_start.cmp(&b.line_start))
+                .then_with(|| a.qualname.cmp(&b.qualname))
+        });
+    }
     let mut best: Option<BestMatch<'_>> = None;
-    for candidate in candidate_symbols(corpus, target, kind, min_shared) {
+    for candidate in candidates {
         if candidate.id == target.id {
             corpus.guard();
             continue;
@@ -158,7 +173,10 @@ fn best_by_overlap(
             corpus.guard();
             continue;
         }
-        let Some((pct, shared, confidence, reasons)) = signal(candidate) else {
+        let ControlFlow::Continue(matched) = signal(candidate) else {
+            break;
+        };
+        let Some((pct, shared, confidence, reasons)) = matched else {
             continue;
         };
         // Confidence ranks before raw overlap: a Low-confidence candidate
@@ -203,9 +221,10 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
         corpus,
         PostingKind::TokenPair,
         1,
+        false,
         |candidate| {
             if candidate.name_tokens.len() < 2 || target.name_tokens.is_empty() {
-                return None;
+                return ControlFlow::Continue(None);
             }
             // GUARD-COMP: resolved caller/callee edges reject. A bare-name-only
             // overlap is still a composition hint, so keep it at Low.
@@ -213,7 +232,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 || candidate.callee_ids.contains(&target.id)
             {
                 corpus.guard();
-                return None;
+                return ControlFlow::Continue(None);
             }
             let unresolved_composition = target.unresolved_callees.contains(&candidate.name)
                 || candidate.unresolved_callees.contains(&target.name);
@@ -224,7 +243,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 .collect();
             let union_len = target.name_tokens.union(&candidate.name_tokens).count();
             if shared.len() < 2 {
-                return None;
+                return ControlFlow::Continue(None);
             }
             let strict_subset = target.name_tokens.len() != candidate.name_tokens.len()
                 && (target.name_tokens.is_subset(&candidate.name_tokens)
@@ -235,7 +254,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 .count();
             if strict_subset && shared_callees == 0 {
                 corpus.guard();
-                return None;
+                return ControlFlow::Continue(None);
             }
             // Numbered siblings in one file (`find_best_d1` / `find_best_d2`,
             // `check_d3` / `check_d4`) are a family by design, not twins.
@@ -243,7 +262,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 && strip_trailing_digits(&target.name) == strip_trailing_digits(&candidate.name)
             {
                 corpus.guard();
-                return None;
+                return ControlFlow::Continue(None);
             }
             let jac = jaccard(shared.len(), union_len);
             let type_jac = if !target.type_tokens.is_empty() && !candidate.type_tokens.is_empty() {
@@ -257,7 +276,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 0.0
             };
             if jac < 0.60 && !(jac >= 0.40 && type_jac >= 0.50) {
-                return None;
+                return ControlFlow::Continue(None);
             }
             let mut reasons = Vec::new();
             if unresolved_composition {
@@ -275,7 +294,12 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
             } else {
                 ReuseConfidence::Provisional
             };
-            Some(((jac * 100.0).round() as u64, shared, confidence, reasons))
+            ControlFlow::Continue(Some((
+                (jac * 100.0).round() as u64,
+                shared,
+                confidence,
+                reasons,
+            )))
         },
     )
 }

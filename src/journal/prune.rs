@@ -103,7 +103,7 @@ fn safe_prunable_log(path: &Path) -> bool {
 /// Prune the current generation and its rotated (`.1`) predecessor.
 fn prune_generations(
     base_path: &Path,
-    prune: fn(&Path) -> std::io::Result<usize>,
+    prune: impl Fn(&Path) -> std::io::Result<usize>,
 ) -> std::io::Result<usize> {
     let mut total = prune(base_path)?;
     if let Some(parent) = base_path.parent() {
@@ -131,21 +131,13 @@ pub fn prune_startup_entries_all(
     base_path: &Path,
     include_ephemeral: bool,
 ) -> std::io::Result<usize> {
-    let prune = |path: &Path| {
+    prune_generations(base_path, |path| {
         prune_matching(path, |val| {
             super::liveness::entry_is_stale(val)
                 || super::liveness::entry_is_unattributed(val)
                 || (include_ephemeral && super::liveness::entry_is_ephemeral(val))
         })
-    };
-    let mut total = prune(base_path)?;
-    if let Some(parent) = base_path.parent() {
-        let rotated = parent.join("usage.log.1");
-        if rotated.is_file() {
-            total += prune(&rotated)?;
-        }
-    }
-    Ok(total)
+    })
 }
 
 #[cfg(test)]

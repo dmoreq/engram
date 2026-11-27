@@ -100,6 +100,26 @@ def run_eg(eg: str, root: Path, args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def prepare_corpora(eg: str, records: list[dict], tmp: Path) -> dict[str, Path] | None:
+    """Copy each referenced corpus to `tmp` and build its index."""
+    roots: dict[str, Path] = {}
+    for corpus in sorted({record["corpus"] for record in records}):
+        source = CORPUS / corpus
+        destination = tmp / corpus
+        shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".engram"))
+        build = run_eg(eg, destination, ["build"])
+        if build.returncode != 0:
+            print(
+                f"eg bench: build failed for {corpus} (exit {build.returncode})",
+                file=sys.stderr,
+            )
+            print(build.stdout, end="", file=sys.stderr)
+            print(build.stderr, end="", file=sys.stderr)
+            return None
+        roots[corpus] = destination
+    return roots
+
+
 def main(argv: list[str]) -> int:
     eg = argv[1] if len(argv) > 1 else "eg"
     records = [
@@ -112,21 +132,9 @@ def main(argv: list[str]) -> int:
         return 1
 
     with tempfile.TemporaryDirectory(prefix="eg-bench-") as tmp:
-        roots: dict[str, Path] = {}
-        for corpus in sorted({record["corpus"] for record in records}):
-            source = CORPUS / corpus
-            destination = Path(tmp) / corpus
-            shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".engram"))
-            build = run_eg(eg, destination, ["build"])
-            if build.returncode != 0:
-                print(
-                    f"eg bench: build failed for {corpus} (exit {build.returncode})",
-                    file=sys.stderr,
-                )
-                print(build.stdout, end="", file=sys.stderr)
-                print(build.stderr, end="", file=sys.stderr)
-                return 1
-            roots[corpus] = destination
+        roots = prepare_corpora(eg, records, Path(tmp))
+        if roots is None:
+            return 1
 
         failures = 0
         print(f"{'id':<32} {'command':<10} {'pointers':>8}  verdict")
