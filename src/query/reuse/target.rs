@@ -17,10 +17,13 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
         if input.is_empty() {
             return Err(EgError::Usage("path must be non-empty".to_string()));
         }
+        // Relativize contained workspace paths before validation; external
+        // absolute paths stay absolute and are rejected by `validate_input`.
+        let relativized = crate::query::relativize_path(ctx.root, input);
         // Validate the raw input before lexical normalization: dropping empty
         // components would otherwise turn `/etc` into a relative path.
-        validate_input(input)?;
-        let normalized = normalize_target(input);
+        validate_input(&relativized)?;
+        let normalized = normalize_target(&relativized);
         validate_input(&normalized)?;
         if normalized == "." {
             if inputs.len() > 1 {
@@ -329,4 +332,36 @@ pub(super) fn path_matches(path: &str, targets: &[String]) -> bool {
                 .strip_prefix(target)
                 .is_some_and(|rest| rest.starts_with('/'))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+
+    #[test]
+    fn resolve_scope_relativizes_contained_absolute_path_and_rejects_external() {
+        let root = temp_root("reuse-abs-scope");
+        make_dir_all(root.join("src")).unwrap();
+        write_file(root.join("src/a.py"), b"def f(): pass\n").unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
+             INSERT INTO files (id, path) VALUES (1, 'src/a.py');",
+        )
+        .unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: &root,
+        };
+        let abs = root.join("src/a.py").to_string_lossy().into_owned();
+        let scope = resolve_scope(&ctx, &[abs]).unwrap();
+        assert_eq!(scope.paths, vec!["src/a.py"]);
+
+        let ext_err = resolve_scope(&ctx, &["/etc/passwd".to_string()])
+            .err()
+            .unwrap();
+        assert_eq!(ext_err.exit_code(), 2);
+        remove_tree(&root);
+    }
 }

@@ -1,5 +1,5 @@
--- eg schema v10 — v9 -> v10 drops symbols.exported, symbols.effective_loc,
--- and files.generated. The binary opens a DB only when PRAGMA user_version equals its own
+-- eg schema v11 — v10 -> v11 adds symbols.return_type and class_fields.
+-- The binary opens a DB only when PRAGMA user_version equals its own
 -- compiled schema version; older AND newer both exit 5. The DB is never
 -- migrated in place.
 -- Tables and the FTS table live here; secondary indexes live in
@@ -38,7 +38,15 @@ CREATE TABLE symbols(
     -- test-shaped name, or sits under Rust #[test]/#[cfg(test)] or a TS
     -- describe/it callback. Classification happens once at extraction; the
     -- column is authoritative for anti-reinvention test filtering.
-    is_test INTEGER NOT NULL DEFAULT 0
+    is_test INTEGER NOT NULL DEFAULT 0,
+    -- Resolved return-type class qualname (v11), empty when absent/unresolved.
+    return_type TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE class_fields(
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    class_qualname TEXT NOT NULL,
+    field TEXT NOT NULL,
+    target_qualname TEXT NOT NULL
 );
 CREATE TABLE edges(
     id INTEGER PRIMARY KEY,

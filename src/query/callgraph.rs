@@ -62,7 +62,7 @@ fn resolve_targets(
 ) -> Result<(Vec<i64>, Vec<NameCandidate>)> {
     let (ids, cands) = target_ids(conn, name)?;
     if ids.is_empty() {
-        return Err(EgError::NoResults(format!("symbol '{name}' not in index")));
+        return Err(EgError::NoResults(symbol_not_found_msg(name)));
     }
     if cands.len() > 1 {
         // CUJ4: no merged-silent result; name the Class.method form. The
@@ -75,4 +75,38 @@ fn resolve_targets(
         });
     }
     Ok((ids, cands))
+}
+
+fn symbol_not_found_msg(name: &str) -> String {
+    let mut msg = format!("symbol '{name}' not in index");
+    let trimmed = name.trim();
+    if trimmed.contains('/')
+        || [".py", ".rs", ".ts", ".tsx", ".js", ".jsx"]
+            .iter()
+            .any(|ext| trimmed.ends_with(ext))
+    {
+        msg.push_str(" (hint: for file symbols use 'eg symbols <path>')");
+    } else if trimmed.contains(' ') {
+        msg.push_str(" (hint: for keyword search use 'eg search \"<terms>\"')");
+    }
+    msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::symbol_not_found_msg;
+
+    #[test]
+    fn symbol_not_found_emits_boundary_hints() {
+        assert!(symbol_not_found_msg("src/main.rs")
+            .contains("hint: for file symbols use 'eg symbols <path>'"));
+        assert!(symbol_not_found_msg("app.py")
+            .contains("hint: for file symbols use 'eg symbols <path>'"));
+        assert!(symbol_not_found_msg("parse json")
+            .contains("hint: for keyword search use 'eg search \"<terms>\"'"));
+        assert_eq!(
+            symbol_not_found_msg("missing_sym"),
+            "symbol 'missing_sym' not in index"
+        );
+    }
 }

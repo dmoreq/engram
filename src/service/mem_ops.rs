@@ -8,14 +8,14 @@ pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Resu
     let CommandRequest::MemGet { key, global } = req else {
         unreachable!("run_mem_get called with a non-get request")
     };
-    let index_conn = stale_ref_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
 
     if *global {
         let conn = crate::db::open_global_memory_query()?;
         return match crate::db::memory_get(&conn, key)? {
             None => Err(mem_unknown_key(key)),
             Some((row, revs)) => {
-                let status = check_note_ref_status(index_conn.as_ref(), &row);
+                let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
                 Ok(render_mem_hit(
                     &row,
                     &store_tags(true, status, &row.source),
@@ -32,7 +32,7 @@ pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Resu
     ] {
         let Some(conn) = conn else { continue };
         if let Some((row, revs)) = crate::db::memory_get(conn, key)? {
-            let status = check_note_ref_status(index_conn.as_ref(), &row);
+            let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
             return Ok(render_mem_hit(
                 &row,
                 &store_tags(is_global, status, &row.source),
@@ -95,14 +95,19 @@ pub(super) fn run_mem_touch(req: &CommandRequest, root_arg: Option<&Path>) -> Re
     }
 }
 
-/// Best-effort index connection for stale-ref verification: resolved from
-/// the explicit root, else the discovered one; absence degrades reads to
-/// unverified (never stale) refs. Shared by the mem query and get paths.
-pub(super) fn stale_ref_conn(root_arg: Option<&Path>) -> Option<rusqlite::Connection> {
-    root_arg
+/// Best-effort repo root and index connection for stale-ref verification:
+/// resolved from the explicit root, else the discovered one; absence degrades
+/// reads to unverified (never stale) refs. Shared by the mem query and get paths.
+pub(super) fn stale_ref_root_and_conn(
+    root_arg: Option<&Path>,
+) -> (Option<std::path::PathBuf>, Option<rusqlite::Connection>) {
+    let root = root_arg
         .and_then(|r| crate::walk::discover_root(Some(r)).ok())
-        .or_else(|| crate::walk::discover_root(None).ok())
-        .and_then(|root| crate::db::open_for_query(&root).ok())
+        .or_else(|| crate::walk::discover_root(None).ok());
+    let conn = root
+        .as_deref()
+        .and_then(|r| crate::db::open_for_query(r).ok());
+    (root, conn)
 }
 
 /// Caveated empty-result error shared by the mem read commands (stdout keeps
@@ -133,6 +138,7 @@ pub(super) fn mem_ranked(
     is_global: bool,
     index_conn: Option<&rusqlite::Connection>,
     legacy: bool,
+    query_vec: Option<&[f32]>,
 ) -> Result<Vec<crate::memory::Candidate>> {
     let v2 = !legacy && crate::db::memory_fts_v2_usable(conn)?;
     let query = if v2 {
@@ -253,14 +259,14 @@ pub(super) fn mem_ranked(
     // the query embeds, and EVERY candidate carries an embedding. Partial
     // coverage would grade embedded notes against unembedded ones on a shared
     // constant offset, so it is skipped outright.
-    if let Some(query_vector) = crate::memory::embed::embed_text(joined_terms) {
+    if let Some(query_vector) = query_vec {
         let ids: Vec<i64> = candidates.iter().map(|c| c.row.id).collect();
         let embeddings = crate::db::memory_embeddings(conn, &ids)?;
         if !candidates.is_empty() && embeddings.len() == candidates.len() {
             for candidate in &mut candidates {
                 if let Some(vector) = embeddings.get(&candidate.row.id) {
                     candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
-                        &query_vector,
+                        query_vector,
                         vector,
                     )));
                 }

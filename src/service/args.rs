@@ -336,7 +336,7 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
                 global: a.b_spec(tool, "global")?,
                 since: window.since,
                 until: window.until,
-                scan: false,
+                scan: a.b_spec(tool, "scan")?,
             })
         }
         "mem_import" => Ok(CommandRequest::MemImport {

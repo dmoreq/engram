@@ -28,19 +28,18 @@ pub fn insert_unresolved_calls(
     Ok(())
 }
 
-/// Symbols + inherits pairs of the carried set, for resolution tables.
+/// Symbols + inherits + class_fields + reexports of the carried set, for resolution tables.
 pub fn load_carried(old: &Connection, rels: &HashSet<String>) -> Result<CarriedIndex> {
     if rels.is_empty() {
-        return Ok(CarriedIndex {
-            symbols: Vec::new(),
-            inherits: Vec::new(),
-        });
+        return Ok(CarriedIndex::default());
     }
     let mut rel_params: Vec<&str> = rels.iter().map(String::as_str).collect();
     rel_params.sort_unstable();
     Ok(CarriedIndex {
         symbols: load_carried_symbols(old, &rel_params)?,
         inherits: load_carried_inherits(old, &rel_params)?,
+        class_fields: load_carried_class_fields(old, &rel_params)?,
+        reexports: load_carried_reexports(old, &rel_params)?,
     })
 }
 
@@ -48,7 +47,7 @@ fn load_carried_symbols(old: &Connection, rel_params: &[&str]) -> Result<Vec<Car
     let mut symbols = Vec::new();
     for_each_chunk(old, rel_params, |old, placeholders, chunk| {
         let mut stmt = old.prepare(&format!(
-            "SELECT s.id, s.kind, s.name, s.qualname, f.path
+            "SELECT s.id, s.kind, s.name, s.qualname, f.path, s.return_type
              FROM symbols s JOIN files f ON f.id = s.file_id
              WHERE f.path IN ({placeholders})"
         ))?;
@@ -66,12 +65,74 @@ fn load_carried_symbols(old: &Connection, rel_params: &[&str]) -> Result<Vec<Car
                 name: r.get(2)?,
                 qualname: r.get(3)?,
                 module,
+                return_type: r.get(5)?,
             });
         }
         Ok(())
     })?;
     symbols.sort_by_key(|s| s.row_id);
     Ok(symbols)
+}
+
+fn load_carried_class_fields(
+    old: &Connection,
+    rel_params: &[&str],
+) -> Result<Vec<(String, String, String)>> {
+    let mut fields = Vec::new();
+    for_each_chunk(old, rel_params, |old, placeholders, chunk| {
+        let mut stmt = old.prepare(&format!(
+            "SELECT cf.class_qualname, cf.field, cf.target_qualname
+             FROM class_fields cf JOIN files f ON f.id = cf.file_id
+             WHERE f.path IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            fields.push(row?);
+        }
+        Ok(())
+    })?;
+    Ok(fields)
+}
+
+fn load_carried_reexports(
+    old: &Connection,
+    rel_params: &[&str],
+) -> Result<Vec<(String, String, i64)>> {
+    let mut reexports = Vec::new();
+    for_each_chunk(old, rel_params, |old, placeholders, chunk| {
+        let mut stmt = old.prepare(&format!(
+            "SELECT ss.qualname, e.dst_name, e.dst_id
+             FROM edges e
+             JOIN symbols ss ON ss.id = e.src_id
+             JOIN files f ON f.id = ss.file_id
+             WHERE e.kind = '{}' AND ss.kind = '{}' AND e.dst_id IS NOT NULL
+               AND f.path IN ({placeholders})
+             ORDER BY e.id",
+            EdgeKind::Imports.as_str(),
+            SymbolKind::Module.as_str()
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter().copied()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (mod_qn, dst_name, dst_id) = row?;
+            if let Some(exported) = dst_name.rsplit('.').next() {
+                reexports.push((mod_qn, exported.to_string(), dst_id));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(reexports)
 }
 
 fn load_carried_inherits(old: &Connection, rel_params: &[&str]) -> Result<Vec<(String, String)>> {
@@ -148,9 +209,12 @@ pub fn carry_forward_unchanged(
         }
     }
     new.execute_batch(
-        "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test)
-         SELECT id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test
+        "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test, return_type)
+         SELECT id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test, return_type
          FROM olddb.symbols WHERE file_id IN (SELECT id FROM files);
+         INSERT INTO class_fields(file_id, class_qualname, field, target_qualname)
+         SELECT file_id, class_qualname, field, target_qualname
+         FROM olddb.class_fields WHERE file_id IN (SELECT id FROM files);
          INSERT INTO edges(id, src_id, dst_id, dst_name, kind, confidence, site_line)
          SELECT id, src_id, dst_id, dst_name, kind, confidence, site_line
          FROM olddb.edges
@@ -206,8 +270,8 @@ pub fn insert_symbols(
 ) -> Result<Vec<i64>> {
     let mut ids = Vec::with_capacity(symbols.len());
     let mut stmt = conn.prepare(
-        "INSERT INTO symbols(kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO symbols(kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test, return_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for s in symbols {
         stmt.execute(rusqlite::params![
@@ -219,11 +283,33 @@ pub fn insert_symbols(
             s.line_start as i64,
             s.line_end as i64,
             s.signature,
-            i64::from(s.is_test)
+            i64::from(s.is_test),
+            s.return_type
         ])?;
         ids.push(conn.last_insert_rowid());
     }
     Ok(ids)
+}
+
+/// Insert resolved class field types for fresh files (schema v11).
+pub fn insert_class_fields(
+    conn: &Connection,
+    fields: &[crate::extract::ResolvedClassField],
+    file_ids: &[i64],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO class_fields(file_id, class_qualname, field, target_qualname)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for f in fields {
+        stmt.execute(rusqlite::params![
+            file_ids[f.file_idx],
+            f.class_qualname.as_str(),
+            f.field.as_str(),
+            f.target_qualname.as_str()
+        ])?;
+    }
+    Ok(())
 }
 
 /// Fully resolved edge row: endpoint ids already mapped (fresh -> inserted id,

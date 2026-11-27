@@ -120,7 +120,7 @@ eg impact <FILE> [--sites] [--depth <N>] [--edges <KINDS>] [--limit <N>]
 | `<FILE>` | Required | Repository-relative path of the indexed file. |
 | `--sites` | `false` | Display individual call-site pointers instead of grouping by file. |
 | `--depth <N>` | `1` | Reverse traversal depth (1 to 10). |
-| `--edges <KINDS>` | `calls` | Comma-separated edge kinds: `calls`, `imports`, `inherits`, or `all`. |
+| `--edges <KINDS>` | `calls,imports,inherits` | Comma-separated edge kinds: `calls`, `imports`, `inherits`, or `all`. |
 | `--limit <N>` | `50` | Maximum results displayed (1 to 10000). |
 
 ---

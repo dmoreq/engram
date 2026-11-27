@@ -136,9 +136,13 @@ fn audit_does_not_prune_dead_repository_lines() {
 
 #[test]
 fn audit_global_reads_the_global_log_only() {
-    let repo = ready_repo("audit-global");
-    let other = ready_repo("audit-global-other");
-    let global = repo.join(".test_global");
+    let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/tmp-audit-global");
+    let _ = fs::remove_dir_all(&base);
+    let repo = base.join("audit-global");
+    let other = base.join("audit-global-other");
+    let global = base.join(".test_global");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&other).unwrap();
     fs::create_dir_all(&global).unwrap();
     let ts = now() - 60;
     let lines = [
@@ -148,13 +152,14 @@ fn audit_global_reads_the_global_log_only() {
     fs::write(global.join("usage.log"), format!("{}\n", lines.join("\n"))).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_eg"))
         .args(["audit", "--global", "--json"])
-        .env("ENGRAM_GLOBAL_DIR", repo.join(".test_global"))
+        .env("ENGRAM_GLOBAL_DIR", &global)
         .current_dir(&repo)
         .output()
         .unwrap();
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let _ = fs::remove_dir_all(&base);
     assert_eq!(code, 0, "{stderr}");
     let doc: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(doc["mode"], "global");

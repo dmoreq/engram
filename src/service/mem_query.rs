@@ -44,7 +44,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             "mem query: --explain requires terms".to_string(),
         ));
     }
-    let index_conn = stale_ref_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
     let args = MemQueryArgs {
         terms: &clean_terms,
         all: effective_all,
@@ -57,6 +57,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             window,
         },
         index_conn: index_conn.as_ref(),
+        root: root.as_deref(),
         reference: reference.as_deref(),
         explain: *explain,
         legacy: *legacy,
@@ -86,10 +87,13 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
 
 // The ref-status helper lives in the db layer (`crate::db::query_state`)
 // so the reuse allowlist can consume it without a query->service edge.
-use crate::db::{check_ref_status, RefStatus};
+#[cfg(test)]
+use crate::db::check_ref_status;
+use crate::db::{check_ref_status_with_root, RefStatus};
 
 pub(super) fn check_note_ref_status(
     index_conn: Option<&rusqlite::Connection>,
+    root: Option<&Path>,
     row: &crate::db::MemRow,
 ) -> RefStatus {
     let Some(conn) = index_conn else {
@@ -100,7 +104,7 @@ pub(super) fn check_note_ref_status(
     }
     let mut has_modified = false;
     for r in row.refs.split_whitespace() {
-        match check_ref_status(conn, r, row.anchor()) {
+        match check_ref_status_with_root(conn, root, r, row.anchor()) {
             RefStatus::Broken => return RefStatus::Broken,
             RefStatus::Modified => has_modified = true,
             RefStatus::Valid => {}
@@ -177,7 +181,7 @@ fn render_mem_rows(
         .iter()
         .take(shown)
         .map(|(row, is_global)| {
-            let status = check_note_ref_status(args.index_conn, row);
+            let status = check_note_ref_status(args.index_conn, args.root, row);
             let mut line =
                 crate::memory::render_row_tagged(row, &mem_row_tag(row, *is_global, status));
             if let Some(map) = explain {
@@ -240,6 +244,7 @@ fn query_single_store(
         return render_all_rows(rows.into_iter().map(|row| (row, is_global)).collect(), args);
     }
     let joined = args.terms.join(" ");
+    let query_vec = crate::memory::embed::embed_text(&joined);
     let candidates = mem_ranked(
         conn,
         &joined,
@@ -247,6 +252,7 @@ fn query_single_store(
         is_global,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     render_ranked(candidates, args)
 }
@@ -290,6 +296,7 @@ fn query_merged_stores(
         return render_all_rows(combined, args);
     }
     let joined = args.terms.join(" ");
+    let query_vec = crate::memory::embed::embed_text(&joined);
     let mut combined = mem_ranked(
         local_conn,
         &joined,
@@ -297,6 +304,7 @@ fn query_merged_stores(
         false,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     let seen_keys: std::collections::HashSet<String> =
         combined.iter().map(|c| c.row.key.clone()).collect();
@@ -307,6 +315,7 @@ fn query_merged_stores(
         true,
         args.index_conn,
         args.legacy,
+        query_vec.as_deref(),
     )?;
     // One batched existence probe replaces the per-candidate `memory_get`
     // (N+1 with a revision COUNT per key): only keys the local ranking has

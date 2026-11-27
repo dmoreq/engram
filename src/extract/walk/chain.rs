@@ -135,6 +135,16 @@ pub fn split_ident(ident: &str) -> String {
 /// Unwraps `type` wrapper nodes (annotations). Rust path keywords (`crate`,
 /// `self`, `super`) join the chain as plain segments.
 pub(super) fn dotted_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
+    dotted_chain_inner(node, src, false)
+}
+
+/// Dotted identifier chain for type-annotation positions: enables simple
+/// dotted string forward references (`"PlaceRanker"`, `"pkg.PlaceRanker"`).
+pub(super) fn type_dotted_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
+    dotted_chain_inner(node, src, true)
+}
+
+fn dotted_chain_inner(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec<String>> {
     match node.kind() {
         // Leaf kinds. Rust receiver and field access: `self.foo()` / `x.foo()`;
         // `self` is its own node kind in the Rust grammar, and
@@ -150,10 +160,13 @@ pub(super) fn dotted_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
         "scoped_type_identifier" | "scoped_identifier" => scoped_chain(node, src),
         // Annotation wrappers unwrap to the inner type's chain.
         "type" | "type_annotation" => unwrapped_chain(node, src),
-        "generic_type" => generic_base(node, src),
-        // Constructor-call receiver: `Base().m()` / `super().m()` /
-        // `super(C, self).m()` (Amendment 18). Non-uppercase factory calls
-        // are left unresolved to avoid manufacturing class edges.
+        "generic_type" => generic_chain(node, src, allow_str),
+        "subscript" => subscript_chain(node, src, allow_str),
+        "union_type" | "binary_operator" => union_pipe_chain(node, src, allow_str),
+        "string" if allow_str => forward_ref_chain(node, src),
+        // Constructor-call receiver: `Base().m()` / `pkg.Cls().m()` /
+        // `super().m()` / `super(C, self).m()` (Amendment 18). Non-uppercase
+        // factory calls are left unresolved to avoid manufacturing class edges.
         "call" => call_chain(node, src),
         _ => None,
     }
@@ -182,20 +195,150 @@ fn unwrapped_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
         Some(ty) => Some(ty),
         None => node.named_child(0),
     };
-    inner.and_then(|ch| dotted_chain(ch, src))
+    inner.and_then(|ch| dotted_chain_inner(ch, src, true))
 }
 
-/// The constructor-call arm: only `super`-led or uppercase-first receivers
-/// produce a chain.
+/// The constructor-call arm: only `super`-led or uppercase-last receivers
+/// produce a chain (handles both `Cls().m()` and `pkg.Cls().m()`).
 fn call_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
     let func = node.child_by_field_name("function")?;
     let chain = dotted_chain(func, src)?;
     let first = chain.first()?;
-    if first == "super" || first.chars().next().is_some_and(|c| c.is_uppercase()) {
+    let last = chain.last()?;
+    if first == "super" || last.chars().next().is_some_and(|c| c.is_uppercase()) {
         Some(chain)
     } else {
         None
     }
+}
+
+/// Unwrap Python `Optional[T]`, `Annotated[T, ...]`, `ClassVar[T]`, `Final[T]`,
+/// single-type `Union[T, None]`, or `GenericClass[T]`. Falls back to Rust/TS
+/// `generic_base` for `type_identifier` generics.
+fn generic_chain(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec<String>> {
+    if let (Some(base), Some(tp)) = (node.named_child(0), node.named_child(1)) {
+        if matches!(base.kind(), "identifier" | "attribute") && tp.kind() == "type_parameter" {
+            let base_chain = dotted_chain_inner(base, src, false)?;
+            let mut cursor = tp.walk();
+            let args: Vec<_> = tp.named_children(&mut cursor).collect();
+            return unwrap_python_generic(base_chain, &args, src, allow_str);
+        }
+    }
+    generic_base(node, src)
+}
+
+fn subscript_chain(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec<String>> {
+    let value = node.child_by_field_name("value")?;
+    let base_chain = dotted_chain_inner(value, src, false)?;
+    let mut cursor = node.walk();
+    let mut args: Vec<Node<'_>> = node
+        .children_by_field_name("subscript", &mut cursor)
+        .collect();
+    if args.len() == 1 && matches!(args[0].kind(), "tuple" | "expression_list") {
+        let mut inner_cursor = args[0].walk();
+        args = args[0].named_children(&mut inner_cursor).collect();
+    }
+    unwrap_python_generic(base_chain, &args, src, allow_str)
+}
+
+fn unwrap_python_generic(
+    base_chain: Vec<String>,
+    args: &[Node<'_>],
+    src: &[u8],
+    allow_str: bool,
+) -> Option<Vec<String>> {
+    match base_chain.last().map(String::as_str) {
+        Some("Optional" | "ClassVar" | "Final" | "Annotated") => args
+            .first()
+            .and_then(|&arg| dotted_chain_inner(arg, src, allow_str)),
+        Some("Union") => {
+            let non_none: Vec<_> = args
+                .iter()
+                .copied()
+                .filter(|&a| !is_none_type_node(a, src))
+                .collect();
+            if non_none.len() == 1 {
+                dotted_chain_inner(non_none[0], src, allow_str)
+            } else {
+                None
+            }
+        }
+        _ => Some(base_chain),
+    }
+}
+
+fn is_none_type_node(node: Node<'_>, src: &[u8]) -> bool {
+    let inner = if node.kind() == "type" {
+        node.named_child(0).unwrap_or(node)
+    } else {
+        node
+    };
+    inner.kind() == "none" || node_str(inner, src) == "None"
+}
+
+fn union_pipe_chain(node: Node<'_>, src: &[u8], allow_str: bool) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    collect_pipe_parts(node, src, &mut parts)?;
+    let non_none: Vec<_> = parts
+        .into_iter()
+        .filter(|&p| !is_none_type_node(p, src))
+        .collect();
+    if non_none.len() == 1 {
+        dotted_chain_inner(non_none[0], src, allow_str)
+    } else {
+        None
+    }
+}
+
+fn collect_pipe_parts<'a>(node: Node<'a>, src: &[u8], out: &mut Vec<Node<'a>>) -> Option<()> {
+    let inner = if node.kind() == "type" {
+        node.named_child(0)?
+    } else {
+        node
+    };
+    match inner.kind() {
+        "binary_operator" => {
+            let op = inner.child_by_field_name("operator")?;
+            if node_str(op, src) != "|" {
+                return None;
+            }
+            let left = inner.child_by_field_name("left")?;
+            let right = inner.child_by_field_name("right")?;
+            collect_pipe_parts(left, src, out)?;
+            collect_pipe_parts(right, src, out)?;
+        }
+        "union_type" => {
+            let mut cursor = inner.walk();
+            for child in inner.named_children(&mut cursor) {
+                collect_pipe_parts(child, src, out)?;
+            }
+        }
+        _ => out.push(inner),
+    }
+    Some(())
+}
+
+fn forward_ref_chain(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
+    let raw = node_str(node, src);
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
+    if inner.is_empty() || inner.starts_with('"') || inner.starts_with('\'') {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for seg in inner.split('.') {
+        let mut chars = seg.chars();
+        let first = chars.next()?;
+        if !(first.is_ascii_alphabetic() || first == '_')
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return None;
+        }
+        parts.push(seg.to_string());
+    }
+    Some(parts)
 }
 
 /// Rust scoped path (`a::b::c`): append `name` to the chain of `path`.

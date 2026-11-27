@@ -148,9 +148,14 @@ fn g10_initialize_tools_list_and_parity() {
             "tools/call",
             json!({"name": tool, "arguments": args}),
         );
+        let expected = format!(
+            "{}{}",
+            String::from_utf8_lossy(&cli.stdout),
+            String::from_utf8_lossy(&cli.stderr)
+        );
         assert_eq!(
             strip_footer(&result_text(&via_mcp)),
-            String::from_utf8_lossy(&cli.stdout).into_owned(),
+            expected,
             "{tool} byte parity"
         );
         assert!(result_text(&via_mcp).contains("eg:"));

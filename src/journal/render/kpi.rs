@@ -16,12 +16,14 @@ pub(super) fn kpi_section(
 ) -> Vec<String> {
     let mut total = 0;
     let mut total_errors = 0;
+    let mut total_misses = 0;
     let mut total_stale = 0;
     let mut all_lat = Vec::new();
 
     for a in aggs.values() {
         total += a.calls;
         total_errors += a.errors;
+        total_misses += a.exit1 + a.exit2;
         total_stale += a.stale;
         all_lat.extend_from_slice(&a.latencies);
     }
@@ -34,6 +36,11 @@ pub(super) fn kpi_section(
     } else {
         100.0
     };
+    let misses_note = if total_misses > 0 {
+        format!(", {total_misses} query misses")
+    } else {
+        String::new()
+    };
 
     let (saved_tokens, reuse_hits) = calculate_telemetry_totals(aggs);
     let dollars = (saved_tokens as f64) * PRICE_PER_TOKEN;
@@ -43,7 +50,7 @@ pub(super) fn kpi_section(
     let mut out = vec![
         format!("  ├─ Speed: p50 = {p50} | p95 = {p95}"),
         format!(
-            "  ├─ Reliability: {reliability_pct:.1}% ok ({total_errors} errors{errors_note}, {total_stale} stale reads)"
+            "  ├─ Reliability: {reliability_pct:.1}% ok ({total_errors} errors{errors_note}, {total_stale} stale reads{misses_note})"
         ),
         format!(
             "  ├─ Estimated Token Savings: ~{saved_tokens_formatted} tokens (~${dollars:.2})"

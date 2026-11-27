@@ -158,8 +158,9 @@ pub fn impact(
             ),
         );
     }
-    let guards = crate::memory::find_guarding_notes(qctx.root, &[&rel], &[]);
-    for g in guards.iter().filter(|g| g.kind == "decision").take(1) {
+    let guards =
+        crate::memory::find_guarding_notes_filtered(qctx.root, &[&rel], &[], &["decision"], 1);
+    for g in &guards {
         prepend_header(
             &mut out,
             &format!(

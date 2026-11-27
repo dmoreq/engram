@@ -1,4 +1,4 @@
--- eg schema v10 secondary indexes.
+-- eg schema v11 secondary indexes.
 -- A fresh build creates these after the bulk insert, so each index is sorted
 -- once instead of maintained per row. The final schema is identical to the
 -- historical schema/index.sql layout (same names, same key order).
@@ -15,3 +15,5 @@ CREATE INDEX symbols_qualname ON symbols(qualname);
 CREATE INDEX unresolved_calls_file ON unresolved_calls(file_id);
 CREATE INDEX unresolved_calls_kind ON unresolved_calls(kind, dst_name);
 CREATE INDEX symbols_name ON symbols(name);
+CREATE INDEX class_fields_file ON class_fields(file_id);
+CREATE INDEX class_fields_class ON class_fields(class_qualname, field);

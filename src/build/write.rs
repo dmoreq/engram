@@ -36,6 +36,7 @@ pub(super) fn write_rows(
     let fresh_paths: Vec<String> = rows.iter().map(|r| r.rel.clone()).collect();
     let fresh_sym_ids =
         crate::db::insert_symbols(conn, &fresh_symbols, &fresh_file_ids, &fresh_paths)?;
+    crate::db::insert_class_fields(conn, &resolution.class_fields, &fresh_file_ids)?;
 
     // Edges: endpoints map fresh -> inserted id, carried -> previous row id.
     let edge_rows = edge_rows_for(resolution, &fresh_pos, &fresh_sym_ids);

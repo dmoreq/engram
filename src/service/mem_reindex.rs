@@ -10,8 +10,21 @@ pub(super) fn run_mem_reindex(req: &CommandRequest, root_arg: Option<&Path>) -> 
     let CommandRequest::MemReindex { global, embed } = req else {
         unreachable!("run_mem_reindex called with a non-reindex request")
     };
+    let was_usable = open_mem_conn(root_arg, *global, MemoryMode::Query)
+        .and_then(|ro| crate::db::memory_fts_v2_usable(&ro))?;
     let conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
-    let rows = crate::db::ensure_memory_fts_v2(&conn, true)?;
+    // `open_mem_conn(Mutation)` already ran `ensure_memory_fts_v2(false)` and
+    // rebuilt `memories_fts_v2` when `fts_epoch < 3`; skip the redundant second
+    // drop/reconcile pass and read the indexed row count directly.
+    let rows = if was_usable {
+        crate::db::ensure_memory_fts_v2(&conn, true)?
+    } else {
+        conn.query_row("SELECT COUNT(*) FROM memories_fts_v2", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|n| n.max(0) as u64)
+        .map_err(crate::db::map_memory_err)?
+    };
     let mut stderr = String::new();
     let mut embedded = 0usize;
     if *embed {

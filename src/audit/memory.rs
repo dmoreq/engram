@@ -157,8 +157,12 @@ fn inspect_store(
             created_at
         };
         for r in refs.split_whitespace().take(20) {
-            let resolved =
-                crate::dashboard::data::memories::resolve_single_ref(r, index.as_ref(), anchor);
+            let resolved = crate::dashboard::data::memories::resolve_single_ref(
+                r,
+                index.as_ref(),
+                store.repo.as_deref(),
+                anchor,
+            );
             match resolved.get("status").and_then(|s| s.as_str()) {
                 Some("broken") => facts.broken += 1,
                 Some("modified") => facts.modified += 1,
@@ -193,4 +197,94 @@ fn regular_store(path: &Path) -> bool {
 
 fn symlink_store(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+
+    #[test]
+    fn audit_resolves_non_indexed_disk_ref_as_valid_or_modified() {
+        let root = temp_root("audit-disk-ref");
+        make_dir_all(root.join("docs")).unwrap();
+        write_file(root.join("docs/guide.md"), b"# Guide\n").unwrap();
+        let mtime = crate::db::check_disk_ref(&root, "docs/guide.md").unwrap().1;
+
+        let mut mem = crate::db::open_memory_store(&root).unwrap();
+        crate::db::memory_write(
+            &mut mem,
+            &crate::db::MemNoteInput {
+                key: "doc-note",
+                kind: "fact",
+                tags: "",
+                refs: "docs/guide.md",
+                scope: "durable",
+                session: "",
+                body: "doc ref note",
+                source: "cli",
+                expires_at: 0,
+                created_at: None,
+                embedding: None,
+                supersedes: None,
+                touch: false,
+            },
+            mtime + 10,
+        )
+        .unwrap();
+        drop(mem);
+
+        let facts = collect(&Mode::Local(root.clone()), &[], mtime + 20);
+        assert_eq!(facts.valid, 1);
+        assert_eq!(facts.broken, 0);
+
+        remove_tree(&root);
+    }
+
+    #[test]
+    fn check_ref_status_with_root_resolves_non_indexed_disk_files() {
+        let root = temp_root("disk-ref-status");
+        make_dir_all(root.join("docs")).unwrap();
+        let md = root.join("docs/guide.md");
+        write_file(&md, b"# Guide\n").unwrap();
+        let html = root.join("report.html");
+        write_file(&html, b"<html></html>").unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../schema/index.sql"))
+            .unwrap();
+        let mtime = crate::db::check_disk_ref(&root, "docs/guide.md").unwrap().1;
+
+        assert_eq!(
+            crate::db::check_ref_status_with_root(&conn, Some(&root), "docs/guide.md", mtime),
+            crate::db::RefStatus::Valid
+        );
+        assert_eq!(
+            crate::db::check_ref_status_with_root(&conn, Some(&root), "report.html", mtime - 10),
+            crate::db::RefStatus::Modified
+        );
+        assert_eq!(
+            crate::db::check_ref_status_with_root(&conn, Some(&root), "docs/missing.md", mtime),
+            crate::db::RefStatus::Broken
+        );
+        assert_eq!(
+            crate::db::check_ref_status_with_root(&conn, Some(&root), "../outside.md", mtime),
+            crate::db::RefStatus::Broken
+        );
+        assert_eq!(
+            crate::db::check_ref_status_with_root(&conn, Some(&root), "/etc/passwd", mtime),
+            crate::db::RefStatus::Broken
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&md, root.join("docs/link.md")).unwrap();
+            assert_eq!(
+                crate::db::check_ref_status_with_root(&conn, Some(&root), "docs/link.md", mtime),
+                crate::db::RefStatus::Broken
+            );
+        }
+
+        remove_tree(&root);
+    }
 }

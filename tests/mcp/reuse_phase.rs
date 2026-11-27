@@ -310,10 +310,12 @@ fn mcp_reuse_phase1_parity() {
         json!({"name": "reuse", "arguments": {"paths": ["utils.py"], "explain": true}}),
     );
     assert_eq!(ok["result"]["isError"], false, "{ok}");
-    assert_eq!(
-        strip_footer(&result_text(&ok)),
-        String::from_utf8_lossy(&cli_ok.stdout).into_owned()
+    let expected_ok = format!(
+        "{}{}",
+        String::from_utf8_lossy(&cli_ok.stdout),
+        String::from_utf8_lossy(&cli_ok.stderr)
     );
+    assert_eq!(strip_footer(&result_text(&ok)), expected_ok);
 
     let cli_err = eg_cmd(&repo)
         .args(["reuse", "missing.py"])

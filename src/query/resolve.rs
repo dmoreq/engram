@@ -47,13 +47,17 @@ pub(super) fn target_ids(conn: &Connection, name: &str) -> Result<(Vec<i64>, Vec
     Ok(disambiguate(all))
 }
 
-/// `src/main.rs:11 src.main` -> "src.main". A plain name (no space) is not a
-/// pointer.
+/// `src/main.rs:11 src.main` and `src/main.rs:11 function src.main` -> `"src.main"`.
+/// A plain name (no space) is not a pointer.
 fn pointer_qualname(name: &str) -> Option<&str> {
-    let (locator, rest) = name.split_once(' ')?;
+    let (locator, rest) = name.trim().split_once(' ')?;
     let (_, line) = locator.rsplit_once(':')?;
     line.trim().parse::<u64>().ok()?;
-    let qualname = rest.trim();
+    let rest = rest.trim();
+    let qualname = match rest.split_once(' ') {
+        Some((kind, tail)) if SymbolKind::parse(kind).is_some() => tail.trim(),
+        _ => rest,
+    };
     (!qualname.is_empty()).then_some(qualname)
 }
 
@@ -135,4 +139,31 @@ fn disambiguate(all: Vec<CandidateRow>) -> (Vec<i64>, Vec<NameCandidate>) {
         }
     }
     (ids, cands)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pointer_qualname;
+
+    #[test]
+    fn pointer_qualname_trims_and_strips_kind() {
+        assert_eq!(
+            pointer_qualname("src/main.rs:11 src.main"),
+            Some("src.main")
+        );
+        assert_eq!(
+            pointer_qualname("  src/main.rs:11 function src.main  "),
+            Some("src.main")
+        );
+        assert_eq!(
+            pointer_qualname("src/a.py:5 method MyClass.run"),
+            Some("MyClass.run")
+        );
+        assert_eq!(pointer_qualname("src/main.rs:11   "), None);
+        assert_eq!(
+            pointer_qualname("src/main.rs:11 function"),
+            Some("function")
+        );
+        assert_eq!(pointer_qualname("plain_name"), None);
+    }
 }

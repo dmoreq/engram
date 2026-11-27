@@ -248,6 +248,11 @@ fn visit_python_function<'a>(w: &mut Walker<'a, '_, '_>) {
         SymbolKind::Function
     };
     let qualname = format!("{parent_qn}.{name}");
+    if let Some(rt) = w.node.child_by_field_name("return_type") {
+        if let Some(chain) = type_dotted_chain(rt, w.src) {
+            w.fx.bindings.return_types.push((qualname.clone(), chain));
+        }
+    }
     let spec = w.callable_spec(kind, &name, &qualname);
     define_callable(w, &spec);
 }

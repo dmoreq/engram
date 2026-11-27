@@ -52,7 +52,7 @@ pub(crate) fn file_changed(ctx: &QueryCtx<'_>, rel: &str) -> bool {
     if meta.len() != stored_size as u64 {
         return true;
     }
-    let Some(mtime) = db::stat_mtime(&abs) else {
+    let Some(mtime) = db::metadata_mtime(&meta) else {
         return true;
     };
     if mtime != stored_mtime {

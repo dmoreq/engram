@@ -192,7 +192,7 @@ pub fn memory_embeddings(
     ids: &[i64],
 ) -> Result<std::collections::HashMap<i64, Vec<f32>>> {
     let mut out = std::collections::HashMap::new();
-    if ids.is_empty() {
+    if ids.is_empty() || !column_present(conn, "memories", "embedding").unwrap_or(false) {
         return Ok(out);
     }
     let placeholders = sql_placeholders(ids.len());
@@ -449,4 +449,25 @@ fn delete_memory_ids(tx: &rusqlite::Transaction<'_>, ids: &[i64]) -> Result<()> 
         .map_err(map_memory_err)?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_embeddings_returns_empty_without_embedding_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id INTEGER PRIMARY KEY,
+                key TEXT NOT NULL,
+                body TEXT NOT NULL
+            );
+            INSERT INTO memories (id, key, body) VALUES (1, 'k1', 'hello');",
+        )
+        .unwrap();
+        let got = memory_embeddings(&conn, &[1]).unwrap();
+        assert!(got.is_empty());
+    }
 }

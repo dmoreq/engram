@@ -289,3 +289,167 @@ pub(super) fn alias_target_outcome(
         ImportTarget::Module { .. } => None,
     }
 }
+
+/// Resolve a binding chain to a class qualname: direct class lookup first,
+/// then callable return-type lookup (`x = helper()`, `x = mod.helper()`).
+pub(super) fn resolve_target_class(
+    t: &Tables,
+    fi: usize,
+    chain: &[String],
+    scope: &str,
+    depth: usize,
+) -> Option<String> {
+    if let Some(qn) = resolve_class_of_chain(t, fi, chain, scope) {
+        return Some(qn);
+    }
+    if depth >= 2 || chain.is_empty() {
+        return None;
+    }
+    let fctx = &t.file_ctx[fi];
+    let class_qn = t
+        .by_qualname
+        .get(scope)
+        .and_then(|v| {
+            v.iter()
+                .copied()
+                .find(|&i| is_class_kind(t.symbols[i].kind))
+        })
+        .map(|i| t.symbols[i].qualname.clone())
+        .or_else(|| {
+            scope.rsplit_once('.').and_then(|(p, _)| {
+                t.by_qualname
+                    .get(p)
+                    .and_then(|v| {
+                        v.iter()
+                            .copied()
+                            .find(|&i| is_class_kind(t.symbols[i].kind))
+                    })
+                    .map(|i| t.symbols[i].qualname.clone())
+            })
+        });
+    let synthetic = CallSite {
+        line: 0,
+        scope_func: scope.to_string(),
+        scope_class: class_qn,
+        scope_mod: None,
+        callee: if chain.len() == 1 {
+            Callee::Name(chain[0].clone())
+        } else {
+            Callee::Attr(chain.to_vec())
+        },
+    };
+    let ctx = CallCtx {
+        t,
+        fi,
+        fctx,
+        site: &synthetic,
+    };
+    let outcome = if chain.len() == 1 {
+        resolve_name_callee(&ctx, &chain[0])
+    } else {
+        resolve_attr_callee(&ctx, chain)
+    };
+    if let Outcome::Extracted(dst) = outcome {
+        return t.return_types.get(&t.symbols[dst].qualname).cloned();
+    }
+    None
+}
+
+/// MRO-aware field / `@property` type lookup for `self.field` and `obj.field`.
+pub(super) fn resolve_self_attr_type(t: &Tables, class_qn: &str, attr: &str) -> Option<String> {
+    let mut level = vec![class_qn.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    for _ in 0..6 {
+        let mut next: Vec<String> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
+        for qn in &level {
+            if !seen.insert(qn.clone()) {
+                continue;
+            }
+            if let Some(target) = t.class_fields.get(&(qn.clone(), attr.to_string())) {
+                found.push(target.clone());
+            } else if let Some(idxs) = t.class_methods.get(qn).and_then(|m| m.get(attr)) {
+                if idxs.len() == 1 {
+                    if let Some(ret) = t.return_types.get(&t.symbols[idxs[0]].qualname) {
+                        found.push(ret.clone());
+                    }
+                }
+            } else if let Some(bases) = t.class_bases.get(qn) {
+                next.extend(bases.iter().cloned());
+            }
+        }
+        match found.len() {
+            1 => return Some(found.into_iter().next().unwrap()),
+            0 if next.is_empty() => return None,
+            0 => level = next,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Resolve fresh Python return types and `self_fields` into `Tables`,
+/// persist `symbols.return_type` and `ResolvedClassField`s, and emit `TypeRef`
+/// edges so incremental dirty-closure invalidation stays sound.
+pub(super) fn resolve_types_and_fields(t: &mut Tables) -> Vec<ResolvedClassField> {
+    let mut out_fields = Vec::new();
+    let mut type_ref_edges: Vec<NewEdge> = Vec::new();
+    for fi in 0..t.file_ctx.len() {
+        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
+        let ret_items = std::mem::take(&mut t.file_ctx[fi].bindings.return_types);
+        for (func_qn, ret_chain) in ret_items {
+            if let Some(class_qn) = resolve_class_of_chain(t, fi, &ret_chain, &func_qn) {
+                t.return_types.insert(func_qn.clone(), class_qn.clone());
+                let func_idx = t.by_qualname.get(&func_qn).and_then(|v| {
+                    v.iter()
+                        .copied()
+                        .find(|&i| t.symbols[i].file_idx == fctx_file_idx)
+                });
+                if let Some(fidx) = func_idx {
+                    t.symbols[fidx].return_type = class_qn.clone();
+                    if let Some(cidx) = unique_class_index(t, &class_qn) {
+                        type_ref_edges.push(NewEdge {
+                            src_idx: fidx,
+                            dst_idx: Some(cidx),
+                            dst_name: class_qn,
+                            kind: EdgeKind::TypeRef,
+                            confidence: Confidence::Extracted,
+                            site_line: t.symbols[fidx].line_start,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for fi in 0..t.file_ctx.len() {
+        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
+        let mod_sym_idx = t.file_ctx[fi].module_sym_idx;
+        let sf_items = std::mem::take(&mut t.file_ctx[fi].bindings.self_fields);
+        for sf in sf_items {
+            if let Some(target_qn) = resolve_target_class(t, fi, &sf.target_dotted, &sf.class_qn, 0)
+            {
+                t.class_fields
+                    .insert((sf.class_qn.clone(), sf.field.clone()), target_qn.clone());
+                out_fields.push(ResolvedClassField {
+                    file_idx: fctx_file_idx,
+                    class_qualname: sf.class_qn.clone(),
+                    field: sf.field,
+                    target_qualname: target_qn.clone(),
+                });
+                if let Some(cidx) = unique_class_index(t, &target_qn) {
+                    let src_idx = unique_class_index(t, &sf.class_qn).unwrap_or(mod_sym_idx);
+                    type_ref_edges.push(NewEdge {
+                        src_idx,
+                        dst_idx: Some(cidx),
+                        dst_name: target_qn,
+                        kind: EdgeKind::TypeRef,
+                        confidence: Confidence::Extracted,
+                        site_line: sf.site_line,
+                    });
+                }
+            }
+        }
+    }
+    t.edges.extend(type_ref_edges);
+    out_fields
+}
