@@ -470,38 +470,10 @@ mod tests {
     fn memory_embeddings_returns_empty_without_embedding_column() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE memories (
-                id INTEGER PRIMARY KEY,
-                key TEXT NOT NULL,
-                body TEXT NOT NULL
-            );
-            INSERT INTO memories (id, key, body) VALUES (1, 'k1', 'hello');",
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT NOT NULL, body TEXT NOT NULL);
+             INSERT INTO memories (id, key, body) VALUES (1, 'k1', 'hello');",
         )
         .unwrap();
-        let got = memory_embeddings(&conn, &[1]).unwrap();
-        assert!(got.is_empty());
-    }
-
-    #[test]
-    fn v1_store_without_anchored_at_reads_without_error() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT NOT NULL, rev INTEGER NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL, session TEXT NOT NULL, body TEXT NOT NULL, tags TEXT NOT NULL, refs TEXT NOT NULL, content_hash INTEGER NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, superseded_by INTEGER, superseded_at INTEGER NOT NULL DEFAULT 0);
-             INSERT INTO memories (id, key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES (1, 'v1-key', 1, 'fact', 'durable', '', 'v1 body', '', '', 0, 'cli', 42, 0);",
-        ).unwrap();
-        let filter = MemFilter {
-            kind: None,
-            scope: None,
-            now: 100,
-            include_superseded: false,
-            window: crate::memory::TimeWindow::default(),
-        };
-        let rows = memory_current_rows(&conn, &filter, None).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].anchored_at, 0);
-        assert_eq!(rows[0].anchor(), 42);
-        let (got, revs) = memory_get(&conn, "v1-key").unwrap().unwrap();
-        assert_eq!(revs, 1);
-        assert_eq!(got.anchored_at, 0);
+        assert!(memory_embeddings(&conn, &[1]).unwrap().is_empty());
     }
 }

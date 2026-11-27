@@ -245,3 +245,35 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::deep_symbol;
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn deep_callee_budget_is_deterministic() {
+        let picked: Vec<String> = (0..8)
+            .map(|_| {
+                let mut symbols = HashMap::new();
+                symbols.insert(
+                    10,
+                    deep_symbol(10, "m.target", &["a", "b", "c"], &[], 10, 0),
+                );
+                symbols.insert(1, deep_symbol(1, "m.alpha", &["a", "b", "c"], &[], 1, 3));
+                symbols.insert(2, deep_symbol(2, "m.beta", &["a", "b", "c"], &[], 2, 3));
+                let corpus = Corpus {
+                    symbols: &symbols,
+                    index: None,
+                    df_all_excl: None,
+                    deep_callee: true,
+                    guarded_out: Cell::new(0),
+                    deep_budget: Cell::new(1),
+                };
+                find_best_d1(&symbols[&10], &corpus).unwrap().canonical
+            })
+            .collect();
+        assert!(picked.iter().all(|c| c == "m.alpha"), "{picked:?}");
+    }
+}

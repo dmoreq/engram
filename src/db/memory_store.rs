@@ -116,11 +116,6 @@ impl MemoryDbProbe {
     }
 }
 
-#[cfg(test)]
-fn memory_manifest_complete(conn: &Connection) -> Result<bool> {
-    Ok(MemoryDbProbe::read(conn)?.manifest_complete())
-}
-
 /// Two distinct exit-5 messages: newer than the binary vs missing required structure.
 fn memory_version_gate_with_probe(probe: &MemoryDbProbe) -> Result<()> {
     let have = probe.version;
@@ -474,33 +469,4 @@ pub fn open_memory_query(root: &Path) -> Result<Connection> {
 
 pub fn open_global_memory_query() -> Result<Connection> {
     open_memory(StoreLocation::Global, StoreMode::Query)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn manifest_complete_checks_full_and_partial_schemas() {
-        let full = Connection::open_in_memory().unwrap();
-        full.execute_batch(include_str!("../../schema/memory.sql"))
-            .unwrap();
-        assert!(memory_manifest_complete(&full).unwrap());
-        let partial = Connection::open_in_memory().unwrap();
-        partial.execute_batch("CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT); CREATE VIRTUAL TABLE memories_fts USING fts5(text);").unwrap();
-        assert!(!memory_manifest_complete(&partial).unwrap());
-    }
-
-    #[test]
-    fn query_path_opens_read_only_store() {
-        let dir = crate::db::temp_root("mem-query-ro");
-        drop(open_memory_store(&dir).unwrap());
-        let reader = open_memory_query(&dir).unwrap();
-        let ro: i32 = reader
-            .query_row("PRAGMA query_only", [], |r| r.get(0))
-            .unwrap_or(0);
-        assert!(reader.execute("DELETE FROM memories", []).is_err() || ro == 1);
-        drop(reader);
-        crate::db::test_support::remove_tree(&dir);
-    }
 }

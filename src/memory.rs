@@ -422,4 +422,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn ref_matches_target_boundary_checks() {
+        for (want, r, t) in [
+            (true, "src/query/impact.rs", "impact.rs"),
+            (true, "./a/b.rs", "a/b.rs"),
+            (true, "crate::memory::guard", "guard"),
+            (true, "Context.render", "render"),
+            (false, "src/query/my_impact.rs", "impact.rs"),
+            (false, "src/query/impact.rs", ""),
+            (false, "src/a.rs", "rs"),
+            (false, "crate::memory::guard", "memory"),
+            (false, "a.b.c", "b"),
+        ] {
+            assert_eq!(guard::ref_matches_target(r, t), want, "{r} vs {t}");
+        }
+    }
 }

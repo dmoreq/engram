@@ -465,51 +465,25 @@ mod tests {
     }
 
     #[test]
-    fn ref_matches_target_boundary_checks() {
-        assert!(ref_matches_target("src/query/impact.rs", "impact.rs"));
-        assert!(ref_matches_target("./a/b.rs", "a/b.rs"));
-        assert!(ref_matches_target("crate::memory::guard", "guard"));
-        assert!(ref_matches_target("Context.render", "render"));
-        assert!(!ref_matches_target("src/query/my_impact.rs", "impact.rs"));
-        assert!(!ref_matches_target("src/query/impact.rs", ""));
-        // Extension-only and middle-segment tokens must not match.
-        assert!(!ref_matches_target("src/a.rs", "rs"));
-        assert!(!ref_matches_target("crate::memory::guard", "memory"));
-        assert!(!ref_matches_target("a.b.c", "b"));
-    }
-
-    fn run_collect(conn: &rusqlite::Connection, kinds: &[&str], limit: usize) -> Vec<String> {
-        let (mut seen, mut out) = (HashSet::new(), Vec::new());
-        collect_guards(
-            conn,
-            &GuardQuery(1000, &["src/a.rs"], &[], kinds, limit),
-            &mut seen,
-            &mut out,
-        );
-        out.into_iter().map(|g| g.key).collect()
-    }
-
-    #[test]
     fn collect_guards_orders_filters_and_falls_back_on_v1() {
+        let run = |c: &rusqlite::Connection, k: &[&str], l: usize| -> Vec<String> {
+            let (mut s, mut o) = (HashSet::new(), Vec::new());
+            collect_guards(
+                c,
+                &GuardQuery(1000, &["src/a.rs"], &[], k, l),
+                &mut s,
+                &mut o,
+            );
+            o.into_iter().map(|g| g.key).collect()
+        };
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../schema/memory.sql"))
             .unwrap();
-        conn.execute_batch(
-            "INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, anchored_at, expires_at) VALUES
-             ('d1', 1, 'decision', 'durable', '', 'first', '', 'src/a.rs', 1, 'cli', 100, 0, 0),
-             ('g1', 1, 'gotcha',   'durable', '', 'anchored', '', 'src/a.rs', 2, 'cli', 50, 300, 0),
-             ('d2', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 3, 'cli', 200, 0, 0);",
-        ).unwrap();
-        assert_eq!(run_collect(&conn, &["decision", "gotcha"], 2), ["g1", "d2"]);
-        assert_eq!(run_collect(&conn, &["decision"], 1), vec!["d2"]);
-
+        conn.execute_batch("INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, anchored_at, expires_at) VALUES ('d1', 1, 'decision', 'durable', '', 'first', '', 'src/a.rs', 1, 'cli', 100, 0, 0), ('g1', 1, 'gotcha', 'durable', '', 'anchored', '', 'src/a.rs', 2, 'cli', 50, 300, 0), ('d2', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 3, 'cli', 200, 0, 0);").unwrap();
+        assert_eq!(run(&conn, &["decision", "gotcha"], 2), ["g1", "d2"]);
+        assert_eq!(run(&conn, &["decision"], 1), ["d2"]);
         let v1 = rusqlite::Connection::open_in_memory().unwrap();
-        v1.execute_batch(
-            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, rev INTEGER, kind TEXT, scope TEXT, session TEXT, body TEXT, tags TEXT, refs TEXT, content_hash INTEGER, source TEXT, created_at INTEGER, expires_at INTEGER, superseded_by TEXT, superseded_at INTEGER);
-             INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES
-             ('k-old', 1, 'decision', 'durable', '', 'older', '', 'src/a.rs', 1, 'cli', 10, 0),
-             ('k-new', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 2, 'cli', 20, 0);",
-        ).unwrap();
-        assert_eq!(run_collect(&v1, &["decision"], 2), vec!["k-new", "k-old"]);
+        v1.execute_batch("CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, rev INTEGER, kind TEXT, scope TEXT, session TEXT, body TEXT, tags TEXT, refs TEXT, content_hash INTEGER, source TEXT, created_at INTEGER, expires_at INTEGER, superseded_by TEXT, superseded_at INTEGER); INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES ('k-old', 1, 'decision', 'durable', '', 'older', '', 'src/a.rs', 1, 'cli', 10, 0), ('k-new', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 2, 'cli', 20, 0);").unwrap();
+        assert_eq!(run(&v1, &["decision"], 2), ["k-new", "k-old"]);
     }
 }

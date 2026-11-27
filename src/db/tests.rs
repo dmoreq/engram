@@ -115,14 +115,15 @@ fn load_carried_chunks_large_path_sets() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO symbols(id, kind, name, qualname, file_id, line_start, line_end)
-             VALUES (1, 'class', 'B', 'a.B', 1, 1, 1)",
+        "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end)
+             VALUES (1, 'class', 'B', 'a.B', 1, 'a.py', 1, 1),
+                    (2, 'class', 'Base', 'a.Base', 1, 'a.py', 1, 1)",
         [],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO edges(id, src_id, dst_id, dst_name, kind, confidence, site_line)
-             VALUES (1, 1, NULL, 'Base', 'inherits', 'EXTRACTED', 1)",
+             VALUES (1, 1, 2, 'a.Base', 'inherits', 'EXTRACTED', 1)",
         [],
     )
     .unwrap();
@@ -134,7 +135,7 @@ fn load_carried_chunks_large_path_sets() {
     assert!(index.symbols.iter().any(|s| s.qualname == "a.B"));
     assert_eq!(
         index.inherits,
-        vec![("a.B".to_string(), "Base".to_string())]
+        vec![("a.B".to_string(), "a.Base".to_string())]
     );
     drop(conn);
     remove_tree(&dir);

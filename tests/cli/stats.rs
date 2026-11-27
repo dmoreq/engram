@@ -146,12 +146,12 @@ fn partial_v7_file_path_column_rebuilds_fresh() {
     assert_eq!(out.status.code(), Some(0));
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("utils.py"),
-        "fresh index lost symbols after v11 rebuild"
+        "fresh index lost symbols after v12 rebuild"
     );
 }
 
 #[test]
-fn old_version_database_rebuilds_to_v11() {
+fn old_version_database_rebuilds_to_v12() {
     // A v6 user_version disables the fast path; build rewrites the index at
     // the current schema version instead of carrying v6 rows.
     let repo = fixture("v6-to-v8");
@@ -166,7 +166,7 @@ fn old_version_database_rebuilds_to_v11() {
     assert_eq!(out.status.code(), Some(5), "v6 query open must exit 5");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("schema v6, binary expects v11 — run eg build"),
+        stderr.contains("schema v6, binary expects v12 — run eg build"),
         "{stderr}"
     );
     let (code, stdout, stderr) = build(&repo);
@@ -177,8 +177,8 @@ fn old_version_database_rebuilds_to_v11() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        "11",
-        "build did not stamp v11"
+        "12",
+        "build did not stamp v12"
     );
 }
 
