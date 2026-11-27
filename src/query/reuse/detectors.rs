@@ -121,28 +121,22 @@ impl DetectorId {
 
 pub(super) const DETECTORS: &[Detector] = &[find_best_d1, find_best_d2, check_d3, check_d4];
 
-type OverlapSignal = Option<(u64, Vec<String>, ReuseConfidence, Vec<ReasonCode>)>;
+type OverlapSignal<S> = Option<(u64, S, ReuseConfidence, Vec<ReasonCode>)>;
 
 /// Shared D1/D2 scan frame: drop self/overlap/non-canonical candidates and
 /// keep the best signal with a deterministic canonical tie-break.
-fn best_by_overlap(
+fn best_by_overlap<S>(
     detector: DetectorId,
     target: &SymbolData,
     corpus: &Corpus<'_>,
     kind: PostingKind,
     min_shared: usize,
-    deterministic: bool,
-    mut signal: impl FnMut(&SymbolData) -> ControlFlow<(), OverlapSignal>,
+    mut signal: impl FnMut(&SymbolData) -> ControlFlow<(), OverlapSignal<S>>,
+    materialize: impl FnOnce(S) -> Vec<String>,
 ) -> Option<ReuseCandidate> {
-    type BestMatch<'a> = (
-        u64,
-        &'a SymbolData,
-        Vec<String>,
-        ReuseConfidence,
-        Vec<ReasonCode>,
-    );
+    type BestMatch<'a, S> = (u64, &'a SymbolData, S, ReuseConfidence, Vec<ReasonCode>);
     let mut candidates = candidate_symbols(corpus, target, kind, min_shared);
-    if deterministic {
+    if matches!(kind, PostingKind::DeepCallee) {
         // Deterministic order before budget-bounded loops so hitting
         // MAX_DEEP_PAIRS never depends on HashMap iteration order.
         candidates.sort_unstable_by(|a, b| {
@@ -152,7 +146,7 @@ fn best_by_overlap(
                 .then_with(|| a.qualname.cmp(&b.qualname))
         });
     }
-    let mut best: Option<BestMatch<'_>> = None;
+    let mut best: Option<BestMatch<'_, S>> = None;
     for candidate in candidates {
         if candidate.id == target.id {
             corpus.guard();
@@ -195,12 +189,13 @@ fn best_by_overlap(
         }
     }
     best.map(|(pct, candidate, shared, confidence, reasons)| {
+        let shared_names = materialize(shared);
         make_candidate(
             detector,
             target,
             candidate,
             Some(pct),
-            &shared,
+            &shared_names,
             MatchMeta {
                 raw_client: None,
                 confidence,
@@ -221,7 +216,6 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
         corpus,
         PostingKind::TokenPair,
         1,
-        false,
         |candidate| {
             if candidate.name_tokens.len() < 2 || target.name_tokens.is_empty() {
                 return ControlFlow::Continue(None);
@@ -301,6 +295,7 @@ fn find_best_d2(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandida
                 reasons,
             )))
         },
+        |shared| shared,
     )
 }
 
