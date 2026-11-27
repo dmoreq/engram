@@ -153,6 +153,7 @@ pub use time::{parse_time_bound, validate_window, TimeWindow};
 mod graph;
 mod guard;
 mod judge_hint;
+pub(crate) mod judge_proc;
 mod note;
 mod rank;
 mod tokens;

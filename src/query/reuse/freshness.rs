@@ -60,14 +60,29 @@ impl FreshnessReport {
 struct Checker<'a> {
     ctx: &'a QueryCtx<'a>,
     remaining_bytes: u64,
+    preloaded: Option<HashMap<String, (i64, i64, i64)>>,
+    stmt: Option<rusqlite::Statement<'a>>,
 }
 
 impl<'a> Checker<'a> {
-    fn new(ctx: &'a QueryCtx<'a>) -> Self {
-        Self {
+    fn new(
+        ctx: &'a QueryCtx<'a>,
+        preloaded: Option<HashMap<String, (i64, i64, i64)>>,
+    ) -> Result<Self> {
+        let stmt = if preloaded.is_none() {
+            Some(
+                ctx.conn
+                    .prepare("SELECT mtime, size, content_hash FROM files WHERE path = ?1")?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
             ctx,
             remaining_bytes: HASH_BUDGET,
-        }
+            preloaded,
+            stmt,
+        })
     }
 
     #[cfg(test)]
@@ -82,21 +97,20 @@ impl<'a> Checker<'a> {
         if !crate::query::staleness::safe_index_path(rel) {
             return Ok(Prepared::Ready(stale(UnknownReason::UnsafePath)));
         }
-        let stored = self
-            .ctx
-            .conn
-            .query_row(
-                "SELECT mtime, size, content_hash FROM files WHERE path = ?1",
-                [rel],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
+        let stored = if let Some(map) = &self.preloaded {
+            map.get(rel).copied()
+        } else if let Some(stmt) = &mut self.stmt {
+            stmt.query_row([rel], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()?
+        } else {
+            None
+        };
         let abs = self.ctx.root.join(rel);
         let meta = match std::fs::symlink_metadata(&abs) {
             Ok(meta) => meta,
@@ -118,7 +132,7 @@ impl<'a> Checker<'a> {
         if meta.len() != stored_size as u64 {
             return Ok(Prepared::Ready(stale_without_reason()));
         }
-        let Some(mtime) = crate::db::stat_mtime(&abs) else {
+        let Some(mtime) = crate::db::metadata_mtime(&meta) else {
             return Ok(Prepared::Ready(stale(UnknownReason::StatError)));
         };
         if mtime == stored_mtime {
@@ -192,13 +206,33 @@ pub(super) fn evaluate(
     scope: &ResolvedScope,
     candidates: &mut [ReuseCandidate],
 ) -> Result<FreshnessReport> {
-    let mut checker = Checker::new(ctx);
-    let mut results: HashMap<String, CheckResult> = HashMap::new();
-    let files = if candidates.is_empty() {
-        scope_files(ctx, scope)?
+    let (files, preloaded) = if candidates.is_empty() && scope.is_repo() {
+        let mut stmt = ctx
+            .conn
+            .prepare("SELECT path, mtime, size, content_hash FROM files ORDER BY path")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut paths = Vec::new();
+        let mut map = HashMap::new();
+        for row in rows {
+            let (path, mtime, size, hash) = row?;
+            paths.push(path.clone());
+            map.insert(path, (mtime, size, hash));
+        }
+        (paths, Some(map))
+    } else if candidates.is_empty() {
+        (scope.files.clone(), None)
     } else {
-        candidate_files(candidates)
+        (candidate_files(candidates), None)
     };
+    let mut checker = Checker::new(ctx, preloaded)?;
+    let mut results: HashMap<String, CheckResult> = HashMap::new();
     let mut seen = HashSet::new();
     for file in files {
         // Proposal candidates have no backing file; stat-ing the sentinel
@@ -217,7 +251,9 @@ pub(super) fn evaluate(
     }
 
     let mut report = FreshnessReport::default();
-    if candidates.is_empty() {
+    if candidates.is_empty()
+        && matches!(scope.kind, status::ScopeKind::Repo | status::ScopeKind::Dir)
+    {
         if let Some(reason) = new_file_walk(ctx, scope, &results, &mut report)? {
             if report
                 .unknown_reason
@@ -303,15 +339,6 @@ fn candidate_files(candidates: &[ReuseCandidate]) -> Vec<String> {
     out
 }
 
-fn scope_files(ctx: &QueryCtx<'_>, scope: &ResolvedScope) -> Result<Vec<String>> {
-    if scope.is_repo() {
-        let mut stmt = ctx.conn.prepare("SELECT path FROM files ORDER BY path")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        return Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?);
-    }
-    Ok(scope.files.clone())
-}
-
 /// A source file on disk but absent from the index is `unknown/new-file`.
 /// The walk is scope-limited and only runs for an empty candidate pool.
 fn new_file_walk(
@@ -375,7 +402,7 @@ mod tests {
         conn.execute("INSERT INTO files VALUES ('Cargo.toml', 0, ?1, 0)", [size])
             .unwrap();
         let ctx = QueryCtx { conn: &conn, root };
-        let mut checker = Checker::new(&ctx);
+        let mut checker = Checker::new(&ctx, None).unwrap();
         checker.remaining_bytes = 0;
         let result = checker.check("Cargo.toml").unwrap();
         assert_eq!(result.state, Freshness::Unknown);
@@ -391,7 +418,7 @@ mod tests {
         )
         .unwrap();
         let ctx = QueryCtx { conn: &conn, root };
-        let mut checker = Checker::new(&ctx);
+        let mut checker = Checker::new(&ctx, None).unwrap();
         let result = checker.check("Cargo.toml").unwrap();
         assert_eq!(result.state, Freshness::Unknown);
         assert_eq!(result.reason, Some(UnknownReason::NewFile));

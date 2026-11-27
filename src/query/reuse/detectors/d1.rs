@@ -38,21 +38,6 @@ fn score_d1_confidence(reasons: &[ReasonCode], weak: f64, ratio: f64, bal: f64) 
 /// every worker against every other worker's thousands of leaf callees.
 const MAX_DEEP_FOOTPRINT: usize = 512;
 
-/// `C_in(s)`: resolved project callees in the source's language family whose
-/// names survived the static/dynamic stoplist.
-fn d1_project_ids(corpus: &Corpus<'_>, symbol: &SymbolData) -> std::collections::HashSet<i64> {
-    symbol
-        .callee_ids
-        .iter()
-        .copied()
-        .filter(|id| {
-            corpus.symbols.get(id).is_some_and(|callee| {
-                !cross_language(symbol, callee) && symbol.resolved_callees.contains(&callee.name)
-            })
-        })
-        .collect()
-}
-
 /// Weighted deep scan. Computes the expensive shared-evidence set only for a
 /// candidate that can still beat the current best, and stops after the
 /// per-invocation pair budget.
@@ -64,13 +49,17 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
         ReuseConfidence,
         Vec<ReasonCode>,
     );
+    let mut candidates = candidate_symbols(corpus, target, PostingKind::DeepCallee, 2);
+    // Deterministic order before the budget-bounded loop so hitting
+    // MAX_DEEP_PAIRS never depends on HashMap iteration order.
+    candidates.sort_unstable_by(|a, b| {
+        a.file_path
+            .cmp(&b.file_path)
+            .then_with(|| a.line_start.cmp(&b.line_start))
+            .then_with(|| a.qualname.cmp(&b.qualname))
+    });
     let mut best: Option<DeepBest<'_>> = None;
-    for candidate in candidate_symbols(corpus, target, PostingKind::DeepCallee, 2) {
-        if corpus.deep_budget.get() == 0 {
-            corpus.guard();
-            break;
-        }
-        corpus.deep_budget.set(corpus.deep_budget.get() - 1);
+    for candidate in candidates {
         let same_file_overlap = candidate.file_id == target.file_id
             && !(candidate.line_end < target.line_start || candidate.line_start > target.line_end);
         if candidate.id == target.id || same_file_overlap {
@@ -81,13 +70,22 @@ fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCa
             corpus.guard();
             continue;
         }
-        if target.callee_ids.contains(&candidate.id) || candidate.callee_ids.contains(&target.id) {
+        if target.callee_ids.contains(&candidate.id)
+            || candidate.callee_ids.contains(&target.id)
+            || target.deep_weights.contains_key(&candidate.id)
+            || candidate.deep_weights.contains_key(&target.id)
+        {
             corpus.guard();
             continue;
         }
         if candidate.deep_weights.len() < 3 || candidate.deep_weights.len() > MAX_DEEP_FOOTPRINT {
             continue;
         }
+        if corpus.deep_budget.get() == 0 {
+            corpus.guard();
+            break;
+        }
+        corpus.deep_budget.set(corpus.deep_budget.get() - 1);
         let ratio = weighted_containment(target, candidate);
         if ratio < 0.85 {
             continue;
@@ -173,7 +171,7 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
         }
         return find_best_d1_deep(target, corpus);
     }
-    let target_ids = d1_project_ids(corpus, target);
+    let target_ids = &target.d1_callee_ids;
     if target_ids.len() < 3 {
         return None;
     }
@@ -184,7 +182,7 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
         PostingKind::Callee,
         2,
         |candidate| {
-            let c_ids = d1_project_ids(corpus, candidate);
+            let c_ids = &candidate.d1_callee_ids;
             // GUARD-COMP: a resolved call edge in either direction is a
             // caller/callee composition, not duplication.
             if target.callee_ids.contains(&candidate.id)
@@ -205,7 +203,7 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
             if c_ids.len() < 3 {
                 return None;
             }
-            let shared_ids: Vec<i64> = target_ids.intersection(&c_ids).copied().collect();
+            let shared_ids: Vec<i64> = target_ids.intersection(c_ids).copied().collect();
             if shared_ids.len() < 2 {
                 return None;
             }

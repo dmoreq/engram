@@ -2,19 +2,32 @@
 
 use super::corpus::SymbolData;
 
-/// GUARD-LANG: Python, TsJs, Rust, or the exact lowercase extension.
-pub(super) fn language_family(file: &str) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum LangFamily {
+    Python,
+    TsJs,
+    Rust,
+    Other(u64),
+}
+
+/// GUARD-LANG: Python, TsJs, Rust, or a hash of the lowercase extension.
+pub(super) fn language_family(file: &str) -> LangFamily {
     let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     match ext {
-        "py" | "pyi" => "python".to_string(),
-        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => "tsjs".to_string(),
-        "rs" => "rust".to_string(),
-        other => other.to_ascii_lowercase(),
+        "py" | "pyi" => LangFamily::Python,
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => LangFamily::TsJs,
+        "rs" => LangFamily::Rust,
+        other => {
+            let hash = other.bytes().fold(0xcbf2_9ce4_8422_2325u64, |acc, b| {
+                (acc ^ u64::from(b.to_ascii_lowercase())).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            LangFamily::Other(hash)
+        }
     }
 }
 
 pub(super) fn cross_language(a: &SymbolData, b: &SymbolData) -> bool {
-    language_family(&a.file_path) != language_family(&b.file_path)
+    a.lang_family != b.lang_family
 }
 
 /// Deterministic canonical ordering: more callers wins; ties use the
@@ -42,8 +55,8 @@ pub(super) fn strip_trailing_digits(name: &str) -> &str {
 
 /// Weighted containment of the smaller deep footprint in the larger one.
 pub(super) fn weighted_containment(target: &SymbolData, candidate: &SymbolData) -> f64 {
-    let target_total: f64 = target.deep_weights.values().sum();
-    let candidate_total: f64 = candidate.deep_weights.values().sum();
+    let target_total = target.deep_total;
+    let candidate_total = candidate.deep_total;
     if target_total <= 0.0 || candidate_total <= 0.0 {
         return 0.0;
     }
@@ -64,8 +77,8 @@ pub(super) fn weighted_containment(target: &SymbolData, candidate: &SymbolData) 
 
 /// Weighted size balance: `min(total_t, total_c) / max(total_t, total_c)`.
 pub(super) fn weighted_balance(target: &SymbolData, candidate: &SymbolData) -> f64 {
-    let target_total: f64 = target.deep_weights.values().sum();
-    let candidate_total: f64 = candidate.deep_weights.values().sum();
+    let target_total = target.deep_total;
+    let candidate_total = candidate.deep_total;
     if target_total <= 0.0 || candidate_total <= 0.0 {
         return 0.0;
     }

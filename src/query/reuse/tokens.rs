@@ -8,75 +8,142 @@ use std::collections::HashMap;
 use crate::extract::split_ident;
 
 /// Standard prelude/utility constructors and methods excluded from callee footprint.
+/// Sorted for `binary_search`.
 const STOPLIST: &[&str] = &[
-    // Rust prelude & stdlib
-    "Ok",
-    "Err",
-    "Some",
-    "None",
-    "Vec::new",
-    "String::new",
+    "Array",
     "Default::default",
-    "unwrap",
-    "clone",
-    "to_string",
-    "format",
-    "push",
-    "len",
-    "is_empty",
-    "as_str",
-    "as_ref",
-    "into",
-    "from",
-    "map",
-    "unwrap_or",
-    "unwrap_or_default",
-    "and_then",
-    "contains",
-    "get",
-    "insert",
-    "open",
-    "new",
-    "collect",
-    "iter",
-    "into_iter",
-    "eprintln",
-    "println",
-    // TypeScript / JavaScript
+    "Err",
+    "None",
+    "Object",
+    "Ok",
+    "Promise",
     "Promise.all",
     "Promise.resolve",
-    "console",
-    "log",
-    "error",
-    "warn",
-    "string",
-    "number",
-    "boolean",
+    "Some",
+    "String::new",
+    "Vec::new",
+    "and_then",
     "any",
-    "void",
-    "Promise",
-    "Array",
-    "Object",
-    // Python
-    "def",
-    "self",
-    "cls",
-    "int",
-    "str",
-    "float",
+    "as_ref",
+    "as_str",
     "bool",
-    "list",
+    "boolean",
+    "clone",
+    "cls",
+    "collect",
+    "console",
+    "contains",
+    "def",
     "dict",
-    "set",
-    "tuple",
-    "print",
-    "range",
+    "eprintln",
+    "error",
+    "float",
+    "format",
+    "from",
+    "get",
+    "insert",
+    "int",
+    "into",
+    "into_iter",
+    "is_empty",
     "isinstance",
+    "iter",
+    "len",
+    "list",
+    "log",
+    "map",
+    "new",
+    "number",
+    "open",
+    "print",
+    "println",
+    "push",
+    "range",
+    "self",
+    "set",
+    "str",
+    "string",
+    "to_string",
+    "tuple",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "void",
+    "warn",
 ];
+
+/// Lowercase stoplist sorted for `binary_search` in `keep_token`.
+const STOPLIST_LOWER: &[&str] = &[
+    "and_then",
+    "any",
+    "array",
+    "as_ref",
+    "as_str",
+    "bool",
+    "boolean",
+    "clone",
+    "cls",
+    "collect",
+    "console",
+    "contains",
+    "def",
+    "default::default",
+    "dict",
+    "eprintln",
+    "err",
+    "error",
+    "float",
+    "format",
+    "from",
+    "get",
+    "insert",
+    "int",
+    "into",
+    "into_iter",
+    "is_empty",
+    "isinstance",
+    "iter",
+    "len",
+    "list",
+    "log",
+    "map",
+    "new",
+    "none",
+    "number",
+    "object",
+    "ok",
+    "open",
+    "print",
+    "println",
+    "promise",
+    "promise.all",
+    "promise.resolve",
+    "push",
+    "range",
+    "self",
+    "set",
+    "some",
+    "str",
+    "string",
+    "string::new",
+    "to_string",
+    "tuple",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "vec::new",
+    "void",
+    "warn",
+];
+
+pub(super) fn is_stoplisted(callee: &str) -> bool {
+    STOPLIST.binary_search(&callee).is_ok()
+}
 
 pub(super) fn tokenize_name_sig(
     name: &str,
     sig: &str,
+    include_all_tokens: bool,
 ) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let mut all_tokens = HashSet::new();
     let mut type_tokens = HashSet::new();
@@ -91,9 +158,16 @@ pub(super) fn tokenize_name_sig(
                 type_tokens.insert(lower.clone());
             }
             if from_name {
-                name_tokens.insert(lower.clone());
+                if include_all_tokens {
+                    name_tokens.insert(lower.clone());
+                } else {
+                    name_tokens.insert(lower);
+                    return;
+                }
             }
-            all_tokens.insert(lower);
+            if include_all_tokens {
+                all_tokens.insert(lower);
+            }
         }
     };
 
@@ -113,8 +187,10 @@ pub(super) fn tokenize_name_sig(
         }
     }
 
-    for tok in split_ident(sig).split_whitespace() {
-        push_token(tok, false, false);
+    if include_all_tokens {
+        for tok in split_ident(sig).split_whitespace() {
+            push_token(tok, false, false);
+        }
     }
 
     (all_tokens, type_tokens, name_tokens)
@@ -123,7 +199,7 @@ pub(super) fn tokenize_name_sig(
 /// Shared tokenizer guard: keep lowercase tokens of at least three characters
 /// that the stoplist does not cover.
 fn keep_token(lower: &str) -> bool {
-    lower.len() >= 3 && !STOPLIST.iter().any(|s| s.eq_ignore_ascii_case(lower))
+    lower.len() >= 3 && STOPLIST_LOWER.binary_search(&lower).is_err()
 }
 
 /// Name tokens carried by more than 5% of the corpus are generic vocabulary,
@@ -145,19 +221,19 @@ pub(super) fn build_name_stoplist(symbols: &HashMap<i64, SymbolData>) -> HashSet
 
 pub(super) fn build_stoplist(symbols: &HashMap<i64, SymbolData>) -> HashSet<String> {
     let mut stopset: HashSet<String> = STOPLIST.iter().map(|&s| s.to_string()).collect();
-    let mut freq: HashMap<String, usize> = HashMap::new();
+    let mut freq: HashMap<&str, usize> = HashMap::new();
     let total = symbols.len();
 
     for sym in symbols.values() {
         for callee in &sym.all_callees {
-            *freq.entry(callee.clone()).or_default() += 1;
+            *freq.entry(callee.as_str()).or_default() += 1;
         }
     }
 
     let threshold = (total as f64 * 0.05).max(4.0) as usize;
     for (callee, count) in freq {
-        if count >= threshold && !is_raw_client(&callee) {
-            stopset.insert(callee);
+        if count >= threshold && !is_raw_client(callee) {
+            stopset.insert(callee.to_string());
         }
     }
     stopset
