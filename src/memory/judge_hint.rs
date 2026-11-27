@@ -25,6 +25,20 @@ impl ConsolidationMatch {
         let binary = judge_proc::find_bin()?;
         let model = judge_proc::resolve_model_dir().ok()?;
         let home = std::env::var("HOME").ok();
+        let timeout = std::time::Duration::from_millis(15_000);
+        if judge_proc::is_coprocess_enabled() {
+            if let Ok(req) = serde_json::to_string(
+                &serde_json::json!({"text_a": &old_body, "text_b": &note.body}),
+            ) {
+                if let Some(raw) =
+                    judge_proc::serve_request(&binary, &model, home.as_deref(), &req, timeout)
+                {
+                    if let Some(pct) = parse_similarity_pct(&raw) {
+                        return Some(pct);
+                    }
+                }
+            }
+        }
         let mut command = judge_proc::base_command(&binary, home.as_deref());
         command
             .arg("similarity")
@@ -34,12 +48,7 @@ impl ConsolidationMatch {
             .arg(&note.body)
             .arg("--model")
             .arg(model);
-        let raw = judge_proc::run_bounded(
-            command,
-            None,
-            std::time::Duration::from_millis(15_000),
-            65_536,
-        )?;
+        let raw = judge_proc::run_bounded(command, None, timeout, 65_536)?;
         parse_similarity_pct(&raw)
     }
 }

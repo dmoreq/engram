@@ -4,11 +4,10 @@
 use super::*;
 use crate::extract::EdgeSiteKind;
 
-/// Count-then-bounded-fetch frame shared by the direct caller/callee loads:
-/// the count and the display set bind the same id list, then the display
-/// limit joins as the trailing parameter (`?N`, N = id count + 1). Maps rows
-/// directly into `Pointer`.
-fn count_then_page(
+/// Single-pass windowed fetch shared by `direct_callers` and `direct_callees`:
+/// `COUNT(*) OVER ()` computes total rows before `LIMIT`, avoiding a second
+/// pass. When `limit == 0`, falls back to `count_sql` so `total` stays exact.
+fn single_pass_page(
     conn: &Connection,
     ids: &[i64],
     limit: usize,
@@ -16,30 +15,34 @@ fn count_then_page(
     page_sql: &str,
 ) -> Result<(Vec<Pointer>, usize)> {
     let mut params = id_params(ids);
-    let total: usize =
-        conn.query_row(count_sql, rusqlite::params_from_iter(params.iter()), |r| {
-            r.get::<_, i64>(0)
-        })? as usize;
-    if total == 0 || limit == 0 {
+    if limit == 0 {
+        let total: usize =
+            conn.query_row(count_sql, rusqlite::params_from_iter(params.iter()), |r| {
+                r.get::<_, i64>(0)
+            })? as usize;
         return Ok((Vec::new(), total));
     }
     params.push(rusqlite::types::Value::from(limit as i64));
     let mut stmt = conn.prepare(page_sql)?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            let line = r.get(0)?;
-            let conf: String = r.get(1)?;
-            let file = r.get(2)?;
-            let detail = r.get(3)?;
-            Ok(Pointer {
-                file,
-                line,
-                tag: confidence_tag(&conf),
-                detail,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok((rows, total))
+    let mut total: Option<usize> = None;
+    let mut pointers = Vec::new();
+    let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+    while let Some(r) = rows.next()? {
+        if total.is_none() {
+            total = Some(r.get::<_, i64>(4)? as usize);
+        }
+        let line = r.get(0)?;
+        let conf: String = r.get(1)?;
+        let file = r.get(2)?;
+        let detail = r.get(3)?;
+        pointers.push(Pointer {
+            file,
+            line,
+            tag: confidence_tag(&conf),
+            detail,
+        });
+    }
+    Ok((pointers, total.unwrap_or(0)))
 }
 
 pub(super) struct TransitivePlan {
@@ -128,7 +131,8 @@ pub(super) fn direct_callers(
         EdgeKind::Calls.as_str()
     );
     let page_sql = format!(
-        "SELECT e.site_line, e.confidence, s.file_path, s.qualname
+        "SELECT e.site_line, e.confidence, s.file_path, s.qualname,
+                COUNT(*) OVER () AS total_count
          FROM edges e
          JOIN symbols s ON s.id = e.src_id
          WHERE e.dst_id IN ({placeholders}) AND e.kind = '{}'
@@ -136,7 +140,7 @@ pub(super) fn direct_callers(
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );
-    count_then_page(conn, ids, limit, &count_sql, &page_sql)
+    single_pass_page(conn, ids, limit, &count_sql, &page_sql)
 }
 
 /// Side-effect-free direct-callee load. Mirrors the depth-1 SQL used by
@@ -157,7 +161,8 @@ pub(super) fn direct_callees(
         "SELECT MIN(COALESCE(ds.line_start, e.site_line)) AS line,
                 MAX(e.confidence) AS confidence,
                 MAX(COALESCE(ds.file_path, s.file_path)) AS path,
-                COALESCE(ds.qualname, e.dst_name) AS qn
+                COALESCE(ds.qualname, e.dst_name) AS qn,
+                COUNT(*) OVER () AS total_count
          FROM edges e
          JOIN symbols s ON s.id = e.src_id
          LEFT JOIN symbols ds ON ds.id = e.dst_id
@@ -167,7 +172,7 @@ pub(super) fn direct_callees(
         EdgeKind::Calls.as_str(),
         limit_param = ids.len() + 1
     );
-    count_then_page(conn, ids, limit, &count_sql, &page_sql)
+    single_pass_page(conn, ids, limit, &count_sql, &page_sql)
 }
 
 /// Explain an empty `callees` result instead of reporting a resolver gap as
@@ -236,4 +241,40 @@ fn symbol_file(conn: &Connection, ids: &[i64]) -> Option<String> {
         )
         .ok()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_pass_direct_callers_and_callees_preserve_totals_and_limit_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE symbols (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT, file_id INTEGER, file_path TEXT, line_start INTEGER, line_end INTEGER);
+             CREATE TABLE edges (id INTEGER PRIMARY KEY, src_id INTEGER, dst_id INTEGER, dst_name TEXT, kind TEXT, confidence TEXT, site_line INTEGER);
+             INSERT INTO symbols VALUES (1, 'function', 'target', 'm.target', 1, 'a.py', 1, 5);
+             INSERT INTO symbols VALUES (2, 'function', 'c1', 'm.c1', 1, 'a.py', 10, 12);
+             INSERT INTO symbols VALUES (3, 'function', 'c2', 'm.c2', 1, 'a.py', 20, 22);
+             INSERT INTO symbols VALUES (4, 'function', 'd1', 'm.d1', 1, 'a.py', 30, 32);
+             INSERT INTO edges VALUES (1, 2, 1, 'target', 'calls', 'resolved', 11);
+             INSERT INTO edges VALUES (2, 3, 1, 'target', 'calls', 'resolved', 21);
+             INSERT INTO edges VALUES (3, 1, 4, 'd1', 'calls', 'resolved', 2);
+             INSERT INTO edges VALUES (4, 1, NULL, 'ext', 'calls', 'resolved', 3);",
+        )
+        .unwrap();
+
+        let (rows, total) = direct_callers(&conn, &[1], 1).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].detail, "m.c1");
+
+        let (rows_zero, total_zero) = direct_callers(&conn, &[1], 0).unwrap();
+        assert_eq!(total_zero, 2);
+        assert!(rows_zero.is_empty());
+
+        let (callees, c_total) = direct_callees(&conn, &[1], 1).unwrap();
+        assert_eq!(c_total, 2);
+        assert_eq!(callees.len(), 1);
+    }
 }

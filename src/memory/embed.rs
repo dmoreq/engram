@@ -14,32 +14,50 @@ use super::judge_proc;
 
 /// One cold Metal start plus one warm embed, matching the judge deadline.
 const EMBED_TIMEOUT: Duration = Duration::from_millis(20_000);
+const BATCH_MAX_INPUT: usize = 256 * 1024;
+const BATCH_MAX_OUTPUT: usize = 4 * 1024 * 1024;
 
-/// The configured text checkpoint, when the env var points at a directory
-/// that carries a checkpoint manifest. Unset/invalid -> None (embeddings off).
-pub fn text_model_dir() -> Option<PathBuf> {
-    let value = std::env::var("EG_JUDGE_TEXT_MODEL").ok()?;
-    if value.is_empty() {
-        return None;
-    }
-    let dir = PathBuf::from(value);
-    dir.join("lazy.json").is_file().then_some(dir)
+fn is_encoder_only_manifest(dir: &std::path::Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(dir.join("lazy.json")) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("head_layers").and_then(Value::as_u64))
+        == Some(0)
 }
 
-/// Embed one text through `eg-judge embed`. `None` on any failure: a missing
-/// binary, a timeout, or a malformed payload must never fail the note write.
-pub fn embed_text(text: &str) -> Option<Vec<f32>> {
-    let model = text_model_dir()?;
-    let binary = judge_proc::find_bin()?;
-    let home = std::env::var("HOME").ok();
-    let mut command = judge_proc::base_command(&binary, home.as_deref());
-    command
-        .arg("embed")
-        .arg("--text")
-        .arg(text)
-        .arg("--model")
-        .arg(&model);
-    let raw = judge_proc::run_bounded(command, None, EMBED_TIMEOUT, 256 * 1024)?;
+/// The configured text checkpoint: `EG_JUDGE_TEXT_MODEL`, else
+/// `~/.engram/judge/text-model`, else `~/.engram/judge/model` when its
+/// `lazy.json` declares `head_layers == 0`. Unset/invalid -> None.
+pub fn text_model_dir() -> Option<PathBuf> {
+    text_model_dir_with(
+        std::env::var("EG_JUDGE_TEXT_MODEL").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+fn text_model_dir_with(env_val: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    if let Some(value) = env_val {
+        if !value.is_empty() {
+            let dir = PathBuf::from(value);
+            return dir.join("lazy.json").is_file().then_some(dir);
+        }
+    }
+    let home = home?;
+    let judge_dir = PathBuf::from(home).join(".engram").join("judge");
+    let text_model = judge_dir.join("text-model");
+    if text_model.join("lazy.json").is_file() {
+        return Some(text_model);
+    }
+    let model = judge_dir.join("model");
+    if model.join("lazy.json").is_file() && is_encoder_only_manifest(&model) {
+        return Some(model);
+    }
+    None
+}
+
+fn parse_embedding_line(raw: &str) -> Option<Vec<f32>> {
     let value: Value = serde_json::from_str(raw.trim()).ok()?;
     let dim = value.get("dim")?.as_u64()? as usize;
     let vector: Vec<f32> = value
@@ -49,6 +67,85 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
         .map(|v| v.as_f64().map(|n| n as f32))
         .collect::<Option<_>>()?;
     (vector.len() == dim && dim > 0).then_some(vector)
+}
+
+/// Embed one text through `eg-judge embed` (or the persistent coprocess when
+/// enabled). `None` on any failure: a missing binary, a timeout, or a
+/// malformed payload must never fail the note write.
+pub fn embed_text(text: &str) -> Option<Vec<f32>> {
+    let model = text_model_dir()?;
+    let binary = judge_proc::find_bin()?;
+    let home = std::env::var("HOME").ok();
+    if judge_proc::is_coprocess_enabled() {
+        if let Ok(req) = serde_json::to_string(&serde_json::json!({"text": text})) {
+            if let Some(raw) =
+                judge_proc::serve_request(&binary, &model, home.as_deref(), &req, EMBED_TIMEOUT)
+            {
+                if let Some(vec) = parse_embedding_line(&raw) {
+                    return Some(vec);
+                }
+            }
+        }
+    }
+    let mut command = judge_proc::base_command(&binary, home.as_deref());
+    command
+        .arg("embed")
+        .arg("--text")
+        .arg(text)
+        .arg("--model")
+        .arg(&model);
+    let raw = judge_proc::run_bounded(command, None, EMBED_TIMEOUT, 256 * 1024)?;
+    parse_embedding_line(&raw)
+}
+
+/// Embed a slice of texts in batched NDJSON `eg-judge embed --stdin` calls,
+/// avoiding `O(N)` cold Metal reloads during `mem_reindex --embed`.
+#[allow(dead_code)]
+pub fn embed_batch(texts: &[&str]) -> crate::error::Result<Vec<Option<Vec<f32>>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(model) = text_model_dir() else {
+        return Ok(vec![None; texts.len()]);
+    };
+    let Some(binary) = judge_proc::find_bin() else {
+        return Ok(vec![None; texts.len()]);
+    };
+    let home = std::env::var("HOME").ok();
+    let mut out = Vec::with_capacity(texts.len());
+    let mut idx = 0;
+    while idx < texts.len() {
+        let mut payload = Vec::new();
+        let chunk_start = idx;
+        while idx < texts.len() {
+            let line =
+                serde_json::to_vec(&serde_json::json!({"text": texts[idx]})).unwrap_or_default();
+            if idx > chunk_start && payload.len() + line.len() + 1 > BATCH_MAX_INPUT {
+                break;
+            }
+            payload.extend_from_slice(&line);
+            payload.push(b'\n');
+            idx += 1;
+        }
+        let chunk_len = idx - chunk_start;
+        let mut command = judge_proc::base_command(&binary, home.as_deref());
+        command
+            .arg("embed")
+            .arg("--stdin")
+            .arg("--model")
+            .arg(&model);
+        let Some(raw) =
+            judge_proc::run_bounded(command, Some(&payload), EMBED_TIMEOUT, BATCH_MAX_OUTPUT)
+        else {
+            out.extend(std::iter::repeat_n(None, chunk_len));
+            continue;
+        };
+        let mut lines = raw.lines().map(str::trim).filter(|l| !l.is_empty());
+        for _ in 0..chunk_len {
+            out.push(lines.next().and_then(parse_embedding_line));
+        }
+    }
+    Ok(out)
 }
 
 /// L2-normalised f32 vector -> little-endian BLOB bytes.
@@ -81,11 +178,44 @@ mod tests {
 
     #[test]
     fn text_model_dir_requires_a_manifest() {
-        // No env var -> None regardless of the environment.
-        if std::env::var("EG_JUDGE_TEXT_MODEL").is_ok_and(|v| !v.is_empty()) {
-            return; // a real model is configured on this host; skip the absence case
-        }
-        assert!(text_model_dir().is_none());
+        let root = crate::db::test_support::temp_root("embed-model-missing");
+        assert!(text_model_dir_with(None, root.to_str()).is_none());
+        crate::db::test_support::remove_tree(&root);
+    }
+
+    #[test]
+    fn text_model_dir_falls_back_to_text_model_and_zero_head_model() {
+        let root = crate::db::test_support::temp_root("embed-model-fallback");
+        let model_dir = root.join(".engram/judge/model");
+        crate::db::test_support::make_dir_all(&model_dir).unwrap();
+        crate::db::test_support::write_file(model_dir.join("lazy.json"), b"{\"head_layers\":1}")
+            .unwrap();
+        // head_layers != 0 is rejected as a text model fallback.
+        assert!(text_model_dir_with(None, root.to_str()).is_none());
+
+        // head_layers == 0 is accepted as fallback.
+        crate::db::test_support::write_file(model_dir.join("lazy.json"), b"{\"head_layers\":0}")
+            .unwrap();
+        assert_eq!(
+            text_model_dir_with(None, root.to_str()).as_deref(),
+            Some(model_dir.as_path())
+        );
+
+        // text-model takes precedence over model.
+        let text_dir = root.join(".engram/judge/text-model");
+        crate::db::test_support::make_dir_all(&text_dir).unwrap();
+        crate::db::test_support::write_file(text_dir.join("lazy.json"), b"{}").unwrap();
+        assert_eq!(
+            text_model_dir_with(None, root.to_str()).as_deref(),
+            Some(text_dir.as_path())
+        );
+
+        crate::db::test_support::remove_tree(&root);
+    }
+
+    #[test]
+    fn embed_batch_empty_returns_empty() {
+        assert!(embed_batch(&[]).unwrap().is_empty());
     }
 
     #[test]

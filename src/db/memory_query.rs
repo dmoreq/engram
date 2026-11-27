@@ -255,48 +255,11 @@ pub fn memory_rows_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<MemRow>>
         .map_err(map_memory_err)
 }
 
-/// Candidates from code-anchored `refs`: current unexpired rows whose `refs`
-/// field matches any query token, window-filtered before the cap.
-pub fn memory_ref_candidate_rows(
-    conn: &Connection,
-    tokens: &[String],
-    window: &crate::memory::TimeWindow,
-    now: i64,
-    cap: usize,
-) -> Result<Vec<MemRow>> {
-    if tokens.is_empty() {
-        return Ok(Vec::new());
-    }
-    let cols = mem_row_sql(conn);
-    let n = tokens.len();
-    let clauses: Vec<String> = (1..=n)
-        .map(|i| format!("refs LIKE ?{i} ESCAPE '\\'"))
-        .collect();
-    let win_exp = window_expiry_clause("", n + 1, n + 2, n + 3);
-    let sql = format!(
-        "SELECT {cols} FROM memories
-         WHERE superseded_by IS NULL AND refs != ''
-           AND {win_exp}
-           AND ({})
-         ORDER BY id DESC LIMIT ?{}",
-        clauses.join(" OR "),
-        n + 4
-    );
-    let mut params: Vec<rusqlite::types::Value> = tokens
-        .iter()
-        .map(|t| format!("%{}%", like_escape(t)).into())
-        .collect();
-    params.push(now.into());
-    params.push(window.since.unwrap_or(-1).into());
-    params.push(window.until.unwrap_or(-1).into());
-    params.push((cap as i64).into());
-    let mut stmt = conn.prepare(&sql).map_err(map_memory_err)?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params.iter()), mem_row)
-        .map_err(map_memory_err)?;
-    rows.collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(map_memory_err)
-}
+mod refs;
+pub use refs::memory_ref_candidate_rows;
+
+#[cfg(test)]
+mod tests;
 
 /// The subset of `keys` that carry a current, unexpired row — the existence
 /// probe behind the merged-store shadowing check (one IN query replaces a
@@ -460,20 +423,4 @@ fn delete_memory_ids(tx: &rusqlite::Transaction<'_>, ids: &[i64]) -> Result<()> 
         .map_err(map_memory_err)?;
         Ok(())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn memory_embeddings_returns_empty_without_embedding_column() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT NOT NULL, body TEXT NOT NULL);
-             INSERT INTO memories (id, key, body) VALUES (1, 'k1', 'hello');",
-        )
-        .unwrap();
-        assert!(memory_embeddings(&conn, &[1]).unwrap().is_empty());
-    }
 }

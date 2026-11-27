@@ -192,3 +192,141 @@ pub(super) fn mro_outcome(t: &Tables, class_qn: &str, method: &str) -> Outcome {
     }
     Outcome::Unresolved
 }
+
+/// Resolve fresh return types, `self_fields`, and parameter annotations into
+/// `Tables`, persisting `symbols.return_type`, `ResolvedClassField`s, and `TypeRef` edges.
+pub(super) fn resolve_types_and_fields(t: &mut Tables) -> Vec<ResolvedClassField> {
+    let mut out_fields = Vec::new();
+    let mut type_ref_edges: Vec<NewEdge> = Vec::new();
+    for fi in 0..t.file_ctx.len() {
+        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
+        let ret_items = std::mem::take(&mut t.file_ctx[fi].bindings.return_types);
+        for (func_qn, ret_chain) in ret_items {
+            if let Some(class_qn) = resolve_class_of_chain(t, fi, &ret_chain, &func_qn) {
+                t.return_types.insert(func_qn.clone(), class_qn.clone());
+                let func_idx = t.by_qualname.get(&func_qn).and_then(|v| {
+                    v.iter()
+                        .copied()
+                        .find(|&i| t.symbols[i].file_idx == fctx_file_idx)
+                });
+                if let Some(fidx) = func_idx {
+                    t.symbols[fidx].return_type = class_qn.clone();
+                    if let Some(cidx) = unique_class_index(t, &class_qn) {
+                        type_ref_edges.push(NewEdge {
+                            src_idx: fidx,
+                            dst_idx: Some(cidx),
+                            dst_name: class_qn,
+                            kind: EdgeKind::TypeRef,
+                            confidence: Confidence::Extracted,
+                            site_line: t.symbols[fidx].line_start,
+                        });
+                    }
+                }
+            }
+        }
+        // Emit TypeRef edges for resolved function parameter annotations.
+        let param_items: Vec<(String, Vec<Vec<String>>)> = t.file_ctx[fi]
+            .bindings
+            .params
+            .iter()
+            .map(|(fq, vars)| (fq.clone(), vars.values().cloned().collect()))
+            .collect();
+        for (func_qn, chains) in param_items {
+            let Some(fidx) = t.by_qualname.get(&func_qn).and_then(|v| {
+                v.iter()
+                    .copied()
+                    .find(|&i| t.symbols[i].file_idx == fctx_file_idx)
+            }) else {
+                continue;
+            };
+            let mut seen_classes: HashSet<usize> = HashSet::new();
+            for ann_chain in chains {
+                if let Some(class_qn) = resolve_class_of_chain(t, fi, &ann_chain, &func_qn) {
+                    if let Some(cidx) = unique_class_index(t, &class_qn) {
+                        if seen_classes.insert(cidx) {
+                            type_ref_edges.push(NewEdge {
+                                src_idx: fidx,
+                                dst_idx: Some(cidx),
+                                dst_name: class_qn,
+                                kind: EdgeKind::TypeRef,
+                                confidence: Confidence::Extracted,
+                                site_line: t.symbols[fidx].line_start,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for fi in 0..t.file_ctx.len() {
+        let fctx_file_idx = t.symbols[t.file_ctx[fi].module_sym_idx].file_idx;
+        let mod_sym_idx = t.file_ctx[fi].module_sym_idx;
+        let sf_items = std::mem::take(&mut t.file_ctx[fi].bindings.self_fields);
+        for sf in sf_items {
+            if let Some(target_qn) = resolve_target_class(
+                t,
+                fi,
+                &sf.target_dotted,
+                &sf.class_qn,
+                Some(&sf.class_qn),
+                sf.site_line,
+                0,
+            ) {
+                t.class_fields
+                    .entry(sf.class_qn.clone())
+                    .or_default()
+                    .insert(sf.field.clone(), target_qn.clone());
+                out_fields.push(ResolvedClassField {
+                    file_idx: fctx_file_idx,
+                    class_qualname: sf.class_qn.clone(),
+                    field: sf.field,
+                    target_qualname: target_qn.clone(),
+                });
+                if let Some(cidx) = unique_class_index(t, &target_qn) {
+                    let src_idx = unique_class_index(t, &sf.class_qn).unwrap_or(mod_sym_idx);
+                    type_ref_edges.push(NewEdge {
+                        src_idx,
+                        dst_idx: Some(cidx),
+                        dst_name: target_qn,
+                        kind: EdgeKind::TypeRef,
+                        confidence: Confidence::Extracted,
+                        site_line: sf.site_line,
+                    });
+                }
+            }
+        }
+    }
+    t.edges.extend(type_ref_edges);
+    out_fields
+}
+
+pub(super) fn resolve_reexported_class(
+    t: &Tables,
+    module: &str,
+    name: &str,
+    tail: &[String],
+) -> Option<String> {
+    let qn = format!("{module}.{name}");
+    let base_qn = if unique_class_exists(t, &qn) {
+        Some(qn)
+    } else {
+        follow_reexport(t, module, name)
+    }?;
+    if tail.is_empty() {
+        return Some(base_qn);
+    }
+    let nested = format!("{}.{}", base_qn, tail.join("."));
+    unique_class_exists(t, &nested).then_some(nested)
+}
+
+/// Follow package re-export chains (`from pkg import Base` where pkg/__init__
+/// re-exports it) to the defining class qualname.
+pub(super) fn follow_reexport(t: &Tables, module: &str, name: &str) -> Option<String> {
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    match follow_binding(t, (module, name), 0, &mut seen, name) {
+        Some(Outcome::Extracted(idx)) if is_class_kind(t.symbols[idx].kind) => {
+            Some(t.symbols[idx].qualname.to_string())
+        }
+        _ => None,
+    }
+}

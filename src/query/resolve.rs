@@ -87,7 +87,9 @@ fn pointer_span_ids(
     let mut stmt = conn.prepare(
         "SELECT id, qualname, file_path, line_start, kind
          FROM symbols
-         WHERE file_path = ?1 AND line_start <= ?2 AND line_end >= ?2
+         WHERE file_path = ?1
+           AND line_start <= ?2
+           AND (line_end >= ?2 OR (kind = 'module' AND line_end = 1))
          ORDER BY CASE WHEN kind = 'module' THEN 1 ELSE 0 END,
                   (line_end - line_start) ASC,
                   line_start DESC,
@@ -208,5 +210,29 @@ mod tests {
         let (ids_mod, cands_mod) = target_ids(&conn, root, "src/app.py:28").unwrap();
         assert_eq!(ids_mod, vec![1]);
         assert_eq!(cands_mod[0].2, "src.app");
+    }
+
+    #[test]
+    fn pointer_span_ids_falls_back_to_module_with_line_end_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
+             CREATE TABLE symbols (
+                 id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT,
+                 file_id INTEGER, file_path TEXT, line_start INTEGER, line_end INTEGER
+             );
+             INSERT INTO files (id, path) VALUES (1, 'src/mod.py');
+             INSERT INTO symbols VALUES (1, 'module', 'mod', 'src.mod', 1, 'src/mod.py', 1, 1);
+             INSERT INTO symbols VALUES (2, 'function', 'helper', 'src.mod.helper', 1, 'src/mod.py', 10, 20);",
+        )
+        .unwrap();
+        let root = std::path::Path::new(".");
+        let (ids, cands) = target_ids(&conn, root, "src/mod.py:234").unwrap();
+        assert_eq!(ids, vec![1]);
+        assert_eq!(cands[0].2, "src.mod");
+
+        let (ids_fn, cands_fn) = target_ids(&conn, root, "src/mod.py:15").unwrap();
+        assert_eq!(ids_fn, vec![2]);
+        assert_eq!(cands_fn[0].2, "src.mod.helper");
     }
 }
