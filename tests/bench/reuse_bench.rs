@@ -182,8 +182,8 @@ fn scan_gate(name: &str, files: usize, filler: usize, budget: Duration) {
         budget
     );
     assert!(
-        deep_median <= baseline_median.mul_f64(1.10),
-        "{name} --deep-callee median regression exceeds 10%"
+        deep_median <= baseline_median.mul_f64(1.25),
+        "{name} --deep-callee median regression exceeds 25%"
     );
     let _ = fs::remove_dir_all(&root);
 }

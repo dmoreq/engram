@@ -66,9 +66,9 @@ mod tests {
     fn child_stdout_over_16kib_does_not_deadlock() {
         let root = temp_root("judge-child-16k");
         let script = root.join("eg-judge");
-        // Emit >32 KiB of NDJSON lines before exiting; without draining stdout
-        // concurrently with try_wait(), the child blocks on the OS pipe.
-        let body = b"#!/bin/sh\ncat >/dev/null\ni=0\nwhile [ $i -lt 700 ]; do\n  printf '{\"decision\":\"duplicate\",\"probability\":0.9,\"pad\":\"abcdefghijklmnopqrstuvwxyz0123456789\"}\\n'\n  i=$((i + 1))\ndone\n";
+        // Drain stdin with POSIX sh builtins (works under env_clear()) and emit
+        // >32 KiB of NDJSON lines before exiting.
+        let body = b"#!/bin/sh\nwhile IFS= read -r _; do :; done\ni=0\nwhile [ $i -lt 700 ]; do\n  printf '{\"decision\":\"duplicate\",\"probability\":0.9,\"pad\":\"abcdefghijklmnopqrstuvwxyz0123456789\"}\\n'\n  i=$((i + 1))\ndone\n";
         write_file(&script, body).unwrap();
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
