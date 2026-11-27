@@ -101,37 +101,36 @@ impl ImportEmitter<'_> {
                     self.push_edge(dst, &dst_name, confidence, line);
                 }
             }
-            Decision::Fallback => {
-                // `use crate::a::b` where b is a submodule: the symbol
-                // candidate resolves to the module symbol.
-                let module_dst = self.t.by_qualname.get(&dst_name).and_then(|dsts| {
-                    dsts.iter()
-                        .copied()
-                        .find(|&i| self.t.symbols[i].kind == SymbolKind::Module)
-                });
-                match module_dst {
-                    Some(dst) if dst != self.module_sym_idx => {
-                        self.push_edge(Some(dst), &dst_name, Confidence::Extracted, line);
-                    }
-                    Some(_) => {}
-                    None => {
-                        let mut seen: HashSet<(&str, &str)> = HashSet::new();
-                        match super::follow_binding(self.t, (module, name), 0, &mut seen, &dst_name)
-                        {
-                            Some(Outcome::Extracted(dst)) if dst != self.module_sym_idx => {
-                                self.push_edge(Some(dst), &dst_name, Confidence::Extracted, line);
-                            }
-                            Some(Outcome::Extracted(_)) => {}
-                            Some(Outcome::Ambiguous(_)) => {
-                                self.push_edge(None, &dst_name, Confidence::Ambiguous, line);
-                            }
-                            _ => {
-                                if !is_stdlib_module(self.t.file_ctx[self.fi].lang, module) {
-                                    self.push_unresolved(&dst_name, line);
-                                }
-                            }
-                        }
-                    }
+            Decision::Fallback => self.resolve_symbol_fallback(module, name, &dst_name, line),
+        }
+    }
+
+    fn resolve_symbol_fallback(&mut self, module: &str, name: &str, dst_name: &str, line: usize) {
+        // `use crate::a::b` where b is a submodule: the symbol candidate
+        // resolves to the module symbol.
+        let module_dst = self.t.by_qualname.get(dst_name).and_then(|dsts| {
+            dsts.iter()
+                .copied()
+                .find(|&i| self.t.symbols[i].kind == SymbolKind::Module)
+        });
+        if let Some(dst) = module_dst {
+            if dst != self.module_sym_idx {
+                self.push_edge(Some(dst), dst_name, Confidence::Extracted, line);
+            }
+            return;
+        }
+        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+        match super::follow_binding(self.t, (module, name), 0, &mut seen, dst_name) {
+            Some(Outcome::Extracted(dst)) if dst != self.module_sym_idx => {
+                self.push_edge(Some(dst), dst_name, Confidence::Extracted, line);
+            }
+            Some(Outcome::Extracted(_)) => {}
+            Some(Outcome::Ambiguous(_)) => {
+                self.push_edge(None, dst_name, Confidence::Ambiguous, line);
+            }
+            _ => {
+                if !is_stdlib_module(self.t.file_ctx[self.fi].lang, module) {
+                    self.push_unresolved(dst_name, line);
                 }
             }
         }

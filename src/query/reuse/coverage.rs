@@ -121,6 +121,24 @@ fn class_candidates(
         buckets.entry(key).or_default().push(cls);
     }
 
+    let methods = load_class_methods(conn)?;
+    let mut bucket_keys: Vec<(String, LangFamily)> = buckets
+        .iter()
+        .filter(|(_, v)| v.len() >= 2)
+        .map(|(k, _)| k.clone())
+        .collect();
+    bucket_keys.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut pool = Vec::new();
+    for key in bucket_keys {
+        if pair_class_group(&buckets[&key], &methods, path_filter, &mut pool) {
+            break;
+        }
+    }
+    Ok(pool)
+}
+
+fn load_class_methods(conn: &Connection) -> Result<HashMap<(i64, String), HashSet<String>>> {
     let mut methods: HashMap<(i64, String), HashSet<String>> = HashMap::new();
     let mut method_stmt = conn.prepare(
         "SELECT file_id, qualname, name FROM symbols WHERE kind = 'method' AND is_test = 0",
@@ -144,71 +162,66 @@ fn class_candidates(
                 .insert(name);
         }
     }
+    Ok(methods)
+}
 
-    let mut pool = Vec::new();
-    let mut bucket_keys: Vec<(String, LangFamily)> = buckets
-        .iter()
-        .filter(|(_, v)| v.len() >= 2)
-        .map(|(k, _)| k.clone())
-        .collect();
-    bucket_keys.sort_by(|a, b| a.0.cmp(&b.0));
-
-    'classes: for key in bucket_keys {
-        let group = &buckets[&key];
-        for (i, left) in group.iter().enumerate() {
-            let Some(left_methods) = methods.get(&(left.file_id, left.qualname.clone())) else {
+fn pair_class_group(
+    group: &[ClassRow],
+    methods: &HashMap<(i64, String), HashSet<String>>,
+    path_filter: Option<&[String]>,
+    pool: &mut Vec<ReuseCandidate>,
+) -> bool {
+    for (i, left) in group.iter().enumerate() {
+        let Some(left_methods) = methods.get(&(left.file_id, left.qualname.clone())) else {
+            continue;
+        };
+        for right in group.iter().skip(i + 1) {
+            if left.file_path == right.file_path {
+                continue;
+            }
+            if path_filter.is_some_and(|paths| {
+                !super::target::path_matches(&left.file_path, paths)
+                    && !super::target::path_matches(&right.file_path, paths)
+            }) {
+                continue;
+            }
+            let Some(right_methods) = methods.get(&(right.file_id, right.qualname.clone())) else {
                 continue;
             };
-            for right in group.iter().skip(i + 1) {
-                if left.file_path == right.file_path {
-                    continue;
-                }
-                if let Some(paths) = path_filter {
-                    if !super::target::path_matches(&left.file_path, paths)
-                        && !super::target::path_matches(&right.file_path, paths)
-                    {
-                        continue;
-                    }
-                }
-                let Some(right_methods) = methods.get(&(right.file_id, right.qualname.clone()))
-                else {
-                    continue;
-                };
-                let mut shared: Vec<String> =
-                    left_methods.intersection(right_methods).cloned().collect();
-                if shared.is_empty() {
-                    continue;
-                }
-                shared.sort();
-                let confidence = if shared.len() >= 2 {
-                    ReuseConfidence::Medium
-                } else {
-                    ReuseConfidence::Low
-                };
-                pool.push(ReuseCandidate {
-                    detector: DetectorId::D5,
-                    symbol: right.qualname.clone(),
-                    file: right.file_path.clone(),
-                    line: right.line_start,
-                    line_end: right.line_end,
-                    canonical: left.qualname.clone(),
-                    canonical_file: left.file_path.clone(),
-                    canonical_line: left.line_start,
-                    canonical_line_end: left.line_end,
-                    canonical_callers: 0,
-                    overlap_pct: None,
-                    shared_items: shared,
-                    raw_client: None,
-                    confidence,
-                    reasons: vec![ReasonCode::CoverageClass],
-                });
-                if pool.len() >= MAX_CLASS_CANDIDATES {
-                    break 'classes;
-                }
+            let mut shared: Vec<String> =
+                left_methods.intersection(right_methods).cloned().collect();
+            if shared.is_empty() {
+                continue;
+            }
+            shared.sort();
+            let confidence = if shared.len() >= 2 {
+                ReuseConfidence::Medium
+            } else {
+                ReuseConfidence::Low
+            };
+            pool.push(ReuseCandidate {
+                detector: DetectorId::D5,
+                symbol: right.qualname.clone(),
+                file: right.file_path.clone(),
+                line: right.line_start,
+                line_end: right.line_end,
+                canonical: left.qualname.clone(),
+                canonical_file: left.file_path.clone(),
+                canonical_line: left.line_start,
+                canonical_line_end: left.line_end,
+                canonical_callers: 0,
+                overlap_pct: None,
+                shared_items: shared,
+                raw_client: None,
+                confidence,
+                reasons: vec![ReasonCode::CoverageClass],
+            });
+            if pool.len() >= MAX_CLASS_CANDIDATES {
+                return true;
             }
         }
     }
-    Ok(pool)
+    false
 }
 
 fn is_generic_coverage_name(name: &str) -> bool {
@@ -321,34 +334,8 @@ fn test_candidates(
             continue;
         }
         let test_family = language_family(&file);
-        let mut counts: HashMap<i64, (&SymbolData, usize)> = HashMap::new();
-        for token in &name_tokens {
-            if let Some(candidates) = by_token.get(token.as_str()) {
-                for &candidate in candidates {
-                    if candidate.lang_family != test_family {
-                        continue;
-                    }
-                    counts
-                        .entry(candidate.id)
-                        .and_modify(|(_, c)| *c += 1)
-                        .or_insert((candidate, 1));
-                }
-            }
-        }
-        let mut best: Option<(&SymbolData, usize)> = None;
-        for (candidate, shared) in counts.into_values() {
-            if shared < 3 {
-                continue;
-            }
-            let better = best.is_none_or(|(current, current_shared)| {
-                shared > current_shared
-                    || (shared == current_shared && is_more_canonical(candidate, current))
-            });
-            if better {
-                best = Some((candidate, shared));
-            }
-        }
-        let Some((canonical, shared)) = best else {
+        let Some((canonical, shared)) = best_prod_match(&name_tokens, test_family, &by_token)
+        else {
             continue;
         };
         pool.push(ReuseCandidate {
@@ -372,110 +359,41 @@ fn test_candidates(
     Ok(pool)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn index_fixture() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../schema/index.sql"))
-            .unwrap();
-        for path in ["a.py", "b.py", "c.py"] {
-            conn.execute(
-                "INSERT INTO files(id, path, size, mtime, content_hash, parse_status, error_nodes)
-                 VALUES (NULL, ?1, 10, 1, 1, 'ok', 0)",
-                [path],
-            )
-            .unwrap();
+fn best_prod_match<'a>(
+    name_tokens: &HashSet<String>,
+    test_family: LangFamily,
+    by_token: &HashMap<&str, Vec<&'a SymbolData>>,
+) -> Option<(&'a SymbolData, usize)> {
+    let mut counts: HashMap<i64, (&SymbolData, usize)> = HashMap::new();
+    for token in name_tokens {
+        let Some(candidates) = by_token.get(token.as_str()) else {
+            continue;
+        };
+        for &candidate in candidates {
+            if candidate.lang_family != test_family {
+                continue;
+            }
+            counts
+                .entry(candidate.id)
+                .and_modify(|(_, c)| *c += 1)
+                .or_insert((candidate, 1));
         }
-        for (id, name, qualname, file_id, file_path, line_end) in [
-            (1, "fetch", "a.fetch", 1, "a.py", 2),
-            (2, "send_data", "b.send_data", 2, "b.py", 4),
-            (3, "unwrap", "c.unwrap", 3, "c.py", 2),
-        ] {
-            conn.execute(
-                "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end, signature)
-                 VALUES (?1, 'function', ?2, ?3, ?4, ?5, 1, ?6, '')",
-                rusqlite::params![id, name, qualname, file_id, file_path, line_end],
-            )
-            .unwrap();
-        }
-        for (dst_name, site_line) in [("fetch", 2), ("unwrap", 3)] {
-            conn.execute(
-                "INSERT INTO unresolved_calls(file_id, dst_name, kind, site_line)
-                 VALUES (2, ?1, 'call', ?2)",
-                rusqlite::params![dst_name, site_line],
-            )
-            .unwrap();
-        }
-        conn
     }
-
-    #[test]
-    fn coverage_raw_client_still_matches_user_defined_symbol() {
-        // review.md I-11.1 attributed D1L raw-client matches to the retain's
-        // `|| is_raw_client` disjunct; that disjunct is unreachable dead code
-        // (build_stoplist never stoplists a raw client, and the static
-        // STOPLIST is disjoint from RAW_CLIENTS), and the same-name match
-        // below is a true positive by design — a user-defined `fetch` wrapper
-        // is exactly what D1L should surface, the same reason D4 keeps raw
-        // clients on `all_callees`. Pin both directions of the retain: a
-        // raw-client-named callee with a same-family defining symbol still
-        // reaches unresolved_candidates, while a stoplisted callee does not.
-        let conn = index_fixture();
-        let pool = analyze(&conn, &[CoverageKind::Unresolved], None).unwrap();
-        let matched: Vec<(String, String)> = pool
-            .iter()
-            .filter(|c| c.detector == DetectorId::D1L && c.symbol == "b.send_data")
-            .map(|c| (c.canonical.clone(), c.shared_items.join(",")))
-            .collect();
-        assert!(
-            matched.contains(&("a.fetch".into(), "fetch".into())),
-            "user-defined fetch must stay a D1L match: {matched:?}"
-        );
-        assert!(
-            !matched.iter().any(|(canonical, _)| canonical == "c.unwrap"),
-            "stoplisted callees must be dropped from unresolved_callees: {matched:?}"
-        );
-    }
-
-    #[test]
-    fn coverage_class_excludes_boilerplate_and_honors_scope() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../schema/index.sql"))
-            .unwrap();
-        for (id, path) in [(1, "a.py"), (2, "b.py"), (3, "c.py")] {
-            conn.execute(
-                "INSERT INTO files(id, path, size, mtime, content_hash, parse_status, error_nodes)
-                 VALUES (?1, ?2, 10, 1, 1, 'ok', 0)",
-                rusqlite::params![id, path],
-            )
-            .unwrap();
+    let mut best: Option<(&SymbolData, usize)> = None;
+    for (candidate, shared) in counts.into_values() {
+        if shared < 3 {
+            continue;
         }
-        for (id, kind, name, qualname, file_id, file_path) in [
-            (1, "class", "Widget", "a.Widget", 1, "a.py"),
-            (2, "method", "__init__", "a.Widget.__init__", 1, "a.py"),
-            (3, "class", "Widget", "b.Widget", 2, "b.py"),
-            (4, "method", "__init__", "b.Widget.__init__", 2, "b.py"),
-            (5, "class", "Widget", "c.Widget", 3, "c.py"),
-            (6, "method", "render", "a.Widget.render", 1, "a.py"),
-            (7, "method", "render", "c.Widget.render", 3, "c.py"),
-        ] {
-            conn.execute(
-                "INSERT INTO symbols(id, kind, name, qualname, file_id, file_path, line_start, line_end, signature)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 2, '')",
-                rusqlite::params![id, kind, name, qualname, file_id, file_path],
-            )
-            .unwrap();
+        let better = best.is_none_or(|(current, current_shared)| {
+            shared > current_shared
+                || (shared == current_shared && is_more_canonical(candidate, current))
+        });
+        if better {
+            best = Some((candidate, shared));
         }
-        // Only __init__ shared between a.Widget and b.Widget -> must be excluded.
-        let all = analyze(&conn, &[CoverageKind::Class], None).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].symbol, "c.Widget");
-        assert_eq!(all[0].canonical, "a.Widget");
-
-        // Scope to b.py -> no matches because b.Widget only shared __init__.
-        let scoped = analyze(&conn, &[CoverageKind::Class], Some(&["b.py".into()])).unwrap();
-        assert!(scoped.is_empty(), "{scoped:?}");
     }
+    best
 }
+
+#[cfg(test)]
+mod tests;

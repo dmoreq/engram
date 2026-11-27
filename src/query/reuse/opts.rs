@@ -76,6 +76,32 @@ impl ReuseOpts {
         })
     }
 
+    pub(super) fn from_run_args(args: ReuseRunArgs) -> Result<Self> {
+        Ok(Self::new(
+            args.paths,
+            args.limit,
+            args.deep_callee,
+            args.min_confidence,
+            args.explain,
+        )?
+        .with_show_suppressed(args.show_suppressed)
+        .with_coverage(&args.coverage)?
+        .with_judge(args.judge))
+    }
+
+    pub(super) fn from_proposal_args(args: ProposalRunArgs) -> Result<Self> {
+        Ok(Self::new_proposal(
+            args.signature,
+            args.callees,
+            args.limit,
+            args.deep_callee,
+            args.min_confidence,
+            args.explain,
+        )?
+        .with_show_suppressed(args.show_suppressed)
+        .with_judge(args.judge))
+    }
+
     pub(super) fn for_hints() -> Self {
         Self {
             mode: ReuseMode::Scan,

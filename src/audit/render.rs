@@ -8,6 +8,14 @@ use super::collect::AuditData;
 use super::index::{IndexState, RepoFacts};
 use crate::time::civil_from_days;
 
+struct AuditView<'a> {
+    data: &'a AuditData,
+    checks: &'a [CheckResult],
+    status: Status,
+    data_status: &'a str,
+    elapsed_ms: u64,
+}
+
 pub fn human(
     data: &AuditData,
     checks: &[CheckResult],
@@ -17,11 +25,23 @@ pub fn human(
     all_checks: bool,
     reveal: bool,
 ) -> String {
+    let view = AuditView {
+        data,
+        checks,
+        status,
+        data_status,
+        elapsed_ms,
+    };
+    render_human(&view, all_checks, reveal)
+}
+
+fn render_human(view: &AuditView<'_>, all_checks: bool, reveal: bool) -> String {
+    let data = view.data;
     let mut out = String::new();
     out.push_str(&format!(
         "eg audit: health={} data={} scope={} generated={}\n",
-        status.as_str(),
-        data_status,
+        view.status.as_str(),
+        view.data_status,
         data.mode,
         fmt_utc(data.now)
     ));
@@ -54,10 +74,10 @@ pub fn human(
         c.repos_checked,
         c.repos_active,
         c.stores_checked,
-        elapsed_ms
+        view.elapsed_ms
     ));
-    out.push_str(&format!("checks={}\n", counts_line(checks)));
-    for check in checks {
+    out.push_str(&format!("checks={}\n", counts_line(view.checks)));
+    for check in view.checks {
         if !all_checks && check.status == Status::Pass {
             continue;
         }
@@ -93,6 +113,19 @@ pub fn json(
     data_status: &str,
     elapsed_ms: u64,
 ) -> String {
+    let view = AuditView {
+        data,
+        checks,
+        status,
+        data_status,
+        elapsed_ms,
+    };
+    render_json(&view)
+}
+
+fn render_json(view: &AuditView<'_>) -> String {
+    let data = view.data;
+    let checks = view.checks;
     let counts = json!({
         "checks": checks.len(),
         "pass": checks.iter().filter(|c| c.status == Status::Pass).count(),
@@ -108,10 +141,10 @@ pub fn json(
         "standards_version": 1,
         "audit_version": env!("CARGO_PKG_VERSION"),
         "generated_at": data.now,
-        "elapsed_ms": elapsed_ms,
+        "elapsed_ms": view.elapsed_ms,
         "mode": data.mode,
-        "status": status.as_str(),
-        "data_status": data_status,
+        "status": view.status.as_str(),
+        "data_status": view.data_status,
         "window": {"days": data.window.days, "start_ts": data.window.start_ts, "end_ts": data.window.end_ts},
         "baseline": {
             "days": data.baseline.days,

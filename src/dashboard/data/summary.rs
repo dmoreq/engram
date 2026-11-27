@@ -160,42 +160,19 @@ impl SummaryState {
     fn record_error(&mut self, v: &EntryView<'_>) {
         self.errors += 1;
         self.tool_mut(v.tool).errors += 1;
-        let is_graph = v.facts.is_graph;
-        let is_reuse = v.facts.is_reuse;
-        let is_mem = v.facts.is_mem;
-        let folded_wt = v.repo_main.is_some() && is_graph;
-        if is_graph {
+        if v.facts.is_graph {
             self.graph_errors += 1;
         }
         {
             let repo = self.repo_mut(folded_key(v), &v.repo_display);
-            repo.errors += 1;
-            if is_graph {
-                repo.graph_errors += 1;
-            }
-            if is_reuse {
-                repo.reuse_errors += 1;
-            }
-            if is_mem {
-                repo.memory_errors += 1;
-            }
-            if folded_wt {
+            repo.record_error(v.facts);
+            if v.repo_main.is_some() && v.facts.is_graph {
                 if let Some(wt) = repo.worktrees.get_mut(v.repo_name) {
                     wt.errors += 1;
                 }
             }
         }
-        let agent = self.agent_mut(v.agent_name);
-        agent.errors += 1;
-        if is_graph {
-            agent.graph_errors += 1;
-        }
-        if is_reuse {
-            agent.reuse_errors += 1;
-        }
-        if is_mem {
-            agent.memory_errors += 1;
-        }
+        self.agent_mut(v.agent_name).record_error(v.facts);
     }
 
     fn record_success(&mut self, v: &EntryView<'_>) {
@@ -214,12 +191,7 @@ impl SummaryState {
         let reuse_scan = v.tool == "reuse" && v.mode.is_none_or(|mode| mode == "scan");
         {
             let repo = self.repo_mut(folded_key(v), &v.repo_display);
-            if search_hit {
-                repo.search_hit_calls += 1;
-            }
-            if mem_hit {
-                repo.memory_read_hits += 1;
-            }
+            repo.record_success(v.facts, saved, search_hit, mem_hit);
             if reuse_scan {
                 // Proposal and coverage runs journal as tool "reuse" too; only a
                 // scan is a duplicate-census snapshot. Truncation comes from the
@@ -243,28 +215,9 @@ impl SummaryState {
                     repo.last_reuse_scan = Some(demoted);
                 }
             }
-            repo.tokens_saved += saved;
-            if v.facts.is_graph {
-                repo.graph_tokens_saved += saved;
-            }
-            if v.facts.is_reuse {
-                repo.reuse_tokens_saved += saved;
-            }
         }
-        let agent = self.agent_mut(v.agent_name);
-        if search_hit {
-            agent.search_hit_calls += 1;
-        }
-        if mem_hit {
-            agent.memory_read_hits += 1;
-        }
-        agent.tokens_saved += saved;
-        if v.facts.is_graph {
-            agent.graph_tokens_saved += saved;
-        }
-        if v.facts.is_reuse {
-            agent.reuse_tokens_saved += saved;
-        }
+        self.agent_mut(v.agent_name)
+            .record_success(v.facts, saved, search_hit, mem_hit);
     }
 
     fn record_latency(&mut self, v: &EntryView<'_>) {
@@ -408,6 +361,37 @@ struct EntryFacts {
     is_mem: bool,
     is_mem_read: bool,
     is_mem_write: bool,
+}
+
+impl RepoAgg {
+    fn record_error(&mut self, facts: EntryFacts) {
+        self.errors += 1;
+        if facts.is_graph {
+            self.graph_errors += 1;
+        }
+        if facts.is_reuse {
+            self.reuse_errors += 1;
+        }
+        if facts.is_mem {
+            self.memory_errors += 1;
+        }
+    }
+
+    fn record_success(&mut self, facts: EntryFacts, saved: usize, search_hit: bool, mem_hit: bool) {
+        if search_hit {
+            self.search_hit_calls += 1;
+        }
+        if mem_hit {
+            self.memory_read_hits += 1;
+        }
+        self.tokens_saved += saved;
+        if facts.is_graph {
+            self.graph_tokens_saved += saved;
+        }
+        if facts.is_reuse {
+            self.reuse_tokens_saved += saved;
+        }
+    }
 }
 
 fn record_entry_into(agg: &mut RepoAgg, facts: EntryFacts, ts: f64, worktree: bool) {

@@ -34,7 +34,6 @@ pub enum MemoryFailure {
 
 struct Store {
     repo: Option<PathBuf>,
-    global: bool,
     path: PathBuf,
 }
 
@@ -43,21 +42,18 @@ pub fn collect(mode: &Mode, repos: &[PathBuf], now: i64) -> MemoryFacts {
     match mode {
         Mode::Local(root) => stores.push(Store {
             repo: Some(root.clone()),
-            global: false,
             path: db::memory_db_path(root),
         }),
         Mode::Global => {
             if let Ok(g) = db::global_eg_dir() {
                 stores.push(Store {
                     repo: None,
-                    global: true,
                     path: g.join("memory.db"),
                 });
             }
             for repo in repos {
                 stores.push(Store {
                     repo: Some(repo.clone()),
-                    global: false,
                     path: db::memory_db_path(repo),
                 });
             }
@@ -165,11 +161,10 @@ fn inspect_store(store: &Store, now: i64, facts: &mut MemoryFacts) -> Result<(),
 }
 
 fn open_store(store: &Store) -> Result<Connection, MemoryFailure> {
-    if store.global {
-        return db::open_global_memory_query().map_err(map_open_error);
+    match store.repo.as_ref() {
+        None => db::open_global_memory_query().map_err(map_open_error),
+        Some(repo) => db::open_memory_query(repo).map_err(map_open_error),
     }
-    let repo = store.repo.as_ref().ok_or(MemoryFailure::Unreadable)?;
-    db::open_memory_query(repo).map_err(map_open_error)
 }
 
 fn map_open_error(e: crate::error::EgError) -> MemoryFailure {

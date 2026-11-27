@@ -5,7 +5,6 @@
 use super::*;
 
 pub(super) fn finalize(
-    _ctx: &QueryCtx<'_>,
     mut report: ReuseReport,
     opts: &ReuseOpts,
 ) -> Result<crate::query::LineQuery> {
@@ -28,74 +27,68 @@ pub(super) fn finalize(
         .retain(|c| c.confidence.rank() >= opts.min_confidence.rank());
     super::sort_candidates(&mut report.pool);
     let below_threshold = report.counts.below_threshold + extra_below;
-    let eligible = report.pool.len();
-    let limit_omitted = eligible.saturating_sub(opts.limit);
+    let limit_omitted = report.pool.len().saturating_sub(opts.limit);
     report.pool.truncate(opts.limit);
 
-    if report.pool.is_empty() {
-        report.counts = ReuseCounts {
-            suppressed: report.counts.suppressed,
-            guarded_out: report.counts.guarded_out,
-            below_threshold,
-            total: report.counts.total,
-            ..ReuseCounts::default()
-        };
-        crate::journal::set_mode(report.mode);
-        crate::journal::set_reuse_counts(crate::journal::ReuseJournalCounts {
-            provisional: 0,
-            low: 0,
-            medium: 0,
-            high: 0,
-            suppressed: report.counts.suppressed,
-            guarded_out: report.counts.guarded_out,
-            below_threshold,
-            omitted: 0,
-            capped: 0,
-            truncated: false,
-        });
-        crate::journal::record_result(
-            crate::journal::OutcomeCounts::of(0, report.counts.total),
-            report.freshness.state == Freshness::Stale,
-            0,
-        );
-        // --limit 0 is the count-only convention: report the real total even
-        // though nothing is displayed.
-        let header = if opts.limit == 0 && report.counts.total > 0 {
-            format!(
-                "eg: reuse — {} duplication candidate(s) found (count-only: --limit 0)",
-                report.counts.total
-            )
-        } else {
-            "eg: reuse — 0 duplication candidate(s) found".to_string()
-        };
-        let mut lines = vec![header];
-        lines.extend(freshness_headers);
-        if below_threshold > 0 || report.counts.guarded_out > 0 || report.counts.suppressed > 0 {
-            let mut summary = format!(
-                "eg: reuse: 0 provisional, 0 low, 0 medium, 0 high, {} guarded out, {below_threshold} below threshold",
-                report.counts.guarded_out
-            );
-            if report.counts.suppressed > 0 {
-                summary.push_str(&format!("; {} suppressed", report.counts.suppressed));
-            }
-            lines.push(summary);
-        }
-        if !opts.paths.is_empty() {
-            lines.push(format!("eg: reuse: path_matches={}", report.path_matches));
-        }
-        let mut query = crate::query::LineQuery::new(lines, report.stderr, 0);
-        query.mode = report.mode;
-        return Ok(query);
-    }
+    let (emitted, capped) = if report.pool.is_empty() {
+        (Vec::new(), 0)
+    } else {
+        let blocks: Vec<(&ReuseCandidate, String)> = report
+            .pool
+            .iter()
+            .map(|c| (c, c.format_text(opts.explain)))
+            .collect();
+        cap_blocks(blocks)
+    };
+    let shown = emitted.len();
+    let omitted = if shown == 0 {
+        0
+    } else {
+        limit_omitted + capped
+    };
+    let count_level = |level: ReuseConfidence| {
+        emitted
+            .iter()
+            .filter(|(c, _)| c.confidence == level)
+            .count()
+    };
+    report.counts = ReuseCounts {
+        shown_provisional: count_level(ReuseConfidence::Provisional),
+        shown_low: count_level(ReuseConfidence::Low),
+        shown_medium: count_level(ReuseConfidence::Medium),
+        shown_high: count_level(ReuseConfidence::High),
+        suppressed: report.counts.suppressed,
+        guarded_out: report.counts.guarded_out,
+        below_threshold,
+        omitted,
+        capped,
+        shown,
+        total: report.counts.total,
+        truncated: omitted > 0,
+    };
+    record_journal(&report, &emitted);
 
-    let blocks: Vec<(&ReuseCandidate, String)> = report
-        .pool
-        .iter()
-        .map(|c| (c, c.format_text(opts.explain)))
-        .collect();
+    let out = build_output_lines(&report, opts, &freshness_headers, &emitted);
+    if opts.paths.is_empty() && omitted > 0 {
+        report.stderr.push_str(
+            "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts\n",
+        );
+    }
+    if !opts.judge && emitted.iter().any(|(c, _)| judge::is_judgeable(c)) && judge::is_available() {
+        report
+            .stderr
+            .push_str("eg: tip: rerun with --judge to arbitrate gray-band candidates locally\n");
+    }
+    let mut query = crate::query::LineQuery::new(out, report.stderr, shown);
+    query.mode = report.mode;
+    query.truncated = report.counts.truncated;
+    Ok(query)
+}
+
+fn cap_blocks(blocks: Vec<(&ReuseCandidate, String)>) -> (Vec<(&ReuseCandidate, String)>, usize) {
     const OUTPUT_CAP: usize = 30 * 1024;
     let total_blocks = blocks.len();
-    let mut emitted: Vec<(&ReuseCandidate, String)> = Vec::new();
+    let mut emitted = Vec::new();
     let mut bytes = 0usize;
     let mut capped = 0usize;
     for (index, (candidate, block)) in blocks.into_iter().enumerate() {
@@ -107,32 +100,10 @@ pub(super) fn finalize(
         bytes += cost;
         emitted.push((candidate, block));
     }
-    let shown = emitted.len();
-    let count_level = |level: ReuseConfidence| {
-        emitted
-            .iter()
-            .filter(|(c, _)| c.confidence == level)
-            .count()
-    };
-    let provisional = count_level(ReuseConfidence::Provisional);
-    let low = count_level(ReuseConfidence::Low);
-    let medium = count_level(ReuseConfidence::Medium);
-    let high = count_level(ReuseConfidence::High);
-    let omitted = limit_omitted + capped;
-    report.counts = ReuseCounts {
-        shown_provisional: provisional,
-        shown_low: low,
-        shown_medium: medium,
-        shown_high: high,
-        suppressed: report.counts.suppressed,
-        guarded_out: report.counts.guarded_out,
-        below_threshold,
-        omitted,
-        capped,
-        shown,
-        total: report.counts.total,
-        truncated: omitted > 0,
-    };
+    (emitted, capped)
+}
+
+fn record_journal(report: &ReuseReport, emitted: &[(&ReuseCandidate, String)]) {
     crate::journal::set_mode(report.mode);
     crate::journal::set_reuse_counts(crate::journal::ReuseJournalCounts {
         provisional: report.counts.shown_provisional,
@@ -146,79 +117,96 @@ pub(super) fn finalize(
         capped: report.counts.capped,
         truncated: report.counts.truncated,
     });
-    let mut summary = format!(
-        "eg: reuse: {} provisional, {} low, {} medium, {} high, {} guarded out, {} below threshold",
-        report.counts.shown_provisional,
-        report.counts.shown_low,
-        report.counts.shown_medium,
-        report.counts.shown_high,
-        report.counts.guarded_out,
-        report.counts.below_threshold
-    );
-    if report.counts.omitted > 0 {
-        summary.push_str(&format!("; {} omitted", report.counts.omitted));
+    if !emitted.is_empty() {
+        let surfaced: Vec<String> = emitted
+            .iter()
+            .take(25)
+            .map(|(c, _)| format!("{}->{}", sanitize(&c.symbol), sanitize(&c.canonical)))
+            .collect();
+        crate::journal::set_candidate_ids(&surfaced.join("\n"));
     }
-    if report.counts.capped > 0 {
-        summary.push_str(&format!("; {} capped", report.counts.capped));
-    }
-    if report.counts.suppressed > 0 {
-        summary.push_str(&format!("; {} suppressed", report.counts.suppressed));
-    }
-    if report.counts.omitted > 0 {
-        summary.push_str(&format!(
-            "; showing {} of {}",
-            report.counts.shown, report.counts.total
-        ));
-    }
-    if !opts.paths.is_empty() {
-        summary.push_str(&format!("; path_matches={}", report.path_matches));
-    }
-    let mut out = vec![
-        format!(
-            "eg: reuse — {} duplication candidate(s) found",
-            report.counts.shown
-        ),
-        summary,
-    ];
-    out.extend(freshness_headers);
-    for (_, block) in &emitted {
-        for line in block.lines() {
-            out.push(line.to_string());
-        }
-    }
-    if report.counts.capped > 0 {
-        out.push("eg: output capped at 30 KiB; narrow the path or raise the limit".to_string());
-    }
-    let surfaced: Vec<String> = emitted
-        .iter()
-        .take(25)
-        .map(|(c, _)| format!("{}->{}", sanitize(&c.symbol), sanitize(&c.canonical)))
-        .collect();
-    crate::journal::set_candidate_ids(&surfaced.join("\n"));
     crate::journal::record_result(
         crate::journal::OutcomeCounts::of(report.counts.shown, report.counts.total),
         report.freshness.state == Freshness::Stale,
         0,
     );
-    if opts.paths.is_empty() && omitted > 0 {
-        report.stderr.push_str(
-            "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts\n",
-        );
+}
+
+fn format_summary_line(counts: &ReuseCounts, path_matches: Option<usize>) -> String {
+    let mut summary = format!(
+        "eg: reuse: {} provisional, {} low, {} medium, {} high, {} guarded out, {} below threshold",
+        counts.shown_provisional,
+        counts.shown_low,
+        counts.shown_medium,
+        counts.shown_high,
+        counts.guarded_out,
+        counts.below_threshold
+    );
+    if counts.omitted > 0 {
+        summary.push_str(&format!("; {} omitted", counts.omitted));
     }
-    if !opts.judge
-        && emitted
-            .iter()
-            .any(|(c, _)| judge::is_judgeable(c, report.mode))
-        && judge::is_available()
-    {
-        report
-            .stderr
-            .push_str("eg: tip: rerun with --judge to arbitrate gray-band candidates locally\n");
+    if counts.capped > 0 {
+        summary.push_str(&format!("; {} capped", counts.capped));
     }
-    let mut query = crate::query::LineQuery::new(out, report.stderr, report.counts.shown);
-    query.mode = report.mode;
-    query.truncated = report.counts.truncated;
-    Ok(query)
+    if counts.suppressed > 0 {
+        summary.push_str(&format!("; {} suppressed", counts.suppressed));
+    }
+    if counts.omitted > 0 {
+        summary.push_str(&format!("; showing {} of {}", counts.shown, counts.total));
+    }
+    if let Some(matches) = path_matches {
+        summary.push_str(&format!("; path_matches={matches}"));
+    }
+    summary
+}
+
+fn build_output_lines(
+    report: &ReuseReport,
+    opts: &ReuseOpts,
+    freshness_headers: &[String],
+    emitted: &[(&ReuseCandidate, String)],
+) -> Vec<String> {
+    if emitted.is_empty() {
+        // --limit 0 is the count-only convention: report the real total even
+        // though nothing is displayed.
+        let header = if opts.limit == 0 && report.counts.total > 0 {
+            format!(
+                "eg: reuse — {} duplication candidate(s) found (count-only: --limit 0)",
+                report.counts.total
+            )
+        } else {
+            "eg: reuse — 0 duplication candidate(s) found".to_string()
+        };
+        let mut lines = vec![header];
+        lines.extend(freshness_headers.iter().cloned());
+        if report.counts.below_threshold > 0
+            || report.counts.guarded_out > 0
+            || report.counts.suppressed > 0
+        {
+            lines.push(format_summary_line(&report.counts, None));
+        }
+        if !opts.paths.is_empty() {
+            lines.push(format!("eg: reuse: path_matches={}", report.path_matches));
+        }
+        return lines;
+    }
+
+    let path_matches = (!opts.paths.is_empty()).then_some(report.path_matches);
+    let mut out = vec![
+        format!(
+            "eg: reuse — {} duplication candidate(s) found",
+            report.counts.shown
+        ),
+        format_summary_line(&report.counts, path_matches),
+    ];
+    out.extend(freshness_headers.iter().cloned());
+    for (_, block) in emitted {
+        out.extend(block.lines().map(str::to_string));
+    }
+    if report.counts.capped > 0 {
+        out.push("eg: output capped at 30 KiB; narrow the path or raise the limit".to_string());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -247,11 +235,6 @@ mod tests {
 
     #[test]
     fn finalize_sort_tie_breaks_on_canonical_file_and_line() {
-        let conn = Connection::open_in_memory().unwrap();
-        let ctx = QueryCtx {
-            conn: &conn,
-            root: std::path::Path::new("."),
-        };
         let opts = ReuseOpts::new(Vec::new(), 10, false, ReuseConfidence::Low, false).unwrap();
         // Identical detector rank, symbol, file, and line; only the canonical
         // identity differs. Without the tie-breakers the stable sort would
@@ -268,7 +251,7 @@ mod tests {
             path_matches: 0,
             stderr: String::new(),
         };
-        let query = finalize(&ctx, report, &opts).unwrap();
+        let query = finalize(report, &opts).unwrap();
         let joined = query.lines.join("\n");
         let alpha1 = joined.find("in src/alpha.py:1)").unwrap();
         let alpha2 = joined.find("in src/alpha.py:2)").unwrap();
@@ -282,11 +265,6 @@ mod tests {
 
     #[test]
     fn finalize_emits_scope_tip_when_repo_wide_scan_omits_candidates() {
-        let conn = Connection::open_in_memory().unwrap();
-        let ctx = QueryCtx {
-            conn: &conn,
-            root: std::path::Path::new("."),
-        };
         let opts = ReuseOpts::new(Vec::new(), 1, false, ReuseConfidence::Low, false).unwrap();
         let report = ReuseReport {
             mode: ReuseMode::Scan,
@@ -299,7 +277,7 @@ mod tests {
             path_matches: 0,
             stderr: String::new(),
         };
-        let query = finalize(&ctx, report, &opts).unwrap();
+        let query = finalize(report, &opts).unwrap();
         assert!(
             query.stderr.contains(
                 "eg: tip: scope scans to edited files ('eg reuse <file>') for focused verdicts"

@@ -8,11 +8,16 @@ use super::status::{ResolvedScope, ScopeKind};
 use super::*;
 use crate::query::{NameCandidate, QueryCtx, MAX_AMBIGUOUS_CANDIDATES};
 
+#[derive(Default)]
+struct ScopeAcc {
+    paths: Vec<String>,
+    symbols: HashSet<String>,
+    matched_files: HashSet<String>,
+    has_dir: bool,
+}
+
 pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<ResolvedScope> {
-    let mut paths = Vec::new();
-    let mut symbols = HashSet::new();
-    let mut matched_files = HashSet::new();
-    let mut has_dir = false;
+    let mut acc = ScopeAcc::default();
 
     for input in inputs {
         if input.is_empty() {
@@ -46,14 +51,7 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
             if meta.file_type().is_symlink() {
                 return Err(unsafe_path(&normalized));
             }
-            resolve_file_line(
-                ctx,
-                &normalized,
-                &file,
-                line,
-                &mut symbols,
-                &mut matched_files,
-            )?;
+            resolve_file_line(ctx, &normalized, &file, line, &mut acc)?;
             continue;
         }
         let abs = ctx.root.join(&normalized);
@@ -61,12 +59,10 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(unsafe_path(&normalized));
             }
-            Ok(meta) if meta.is_file() => {
-                resolve_file(ctx, &normalized, &mut paths, &mut matched_files)?
-            }
+            Ok(meta) if meta.is_file() => resolve_file(ctx, &normalized, &mut acc)?,
             Ok(meta) if meta.is_dir() => {
-                has_dir = true;
-                resolve_dir(ctx, &normalized, &mut paths, &mut matched_files)?
+                acc.has_dir = true;
+                resolve_dir(ctx, &normalized, &mut acc)?
             }
             Ok(_) => {
                 return Err(EgError::Usage(format!(
@@ -75,7 +71,7 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
                 )));
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                resolve_symbol(ctx, &normalized, &mut symbols, &mut matched_files)?;
+                resolve_symbol(ctx, &normalized, &mut acc)?;
             }
             Err(err) => {
                 return Err(EgError::Internal(format!(
@@ -86,15 +82,15 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
         }
     }
 
-    if !paths.is_empty() && !symbols.is_empty() {
+    if !acc.paths.is_empty() && !acc.symbols.is_empty() {
         return Err(EgError::Usage(
             "mixed path and symbol targets are not supported".to_string(),
         ));
     }
-    let kind = if paths.is_empty() && symbols.is_empty() {
+    let kind = if acc.paths.is_empty() && acc.symbols.is_empty() {
         ScopeKind::Repo
-    } else if !paths.is_empty() {
-        if has_dir {
+    } else if !acc.paths.is_empty() {
+        if acc.has_dir {
             ScopeKind::Dir
         } else {
             ScopeKind::Files
@@ -102,13 +98,13 @@ pub(super) fn resolve_scope(ctx: &QueryCtx<'_>, inputs: &[String]) -> Result<Res
     } else {
         ScopeKind::Symbols
     };
-    let mut files: Vec<String> = matched_files.into_iter().collect();
+    let mut files: Vec<String> = acc.matched_files.into_iter().collect();
     files.sort();
     let path_matches = files.len();
     Ok(ResolvedScope {
         kind,
-        paths,
-        symbols,
+        paths: acc.paths,
+        symbols: acc.symbols,
         files,
         path_matches,
     })
@@ -171,8 +167,7 @@ fn resolve_file_line(
     input: &str,
     file: &str,
     line: i64,
-    symbols: &mut HashSet<String>,
-    matched_files: &mut HashSet<String>,
+    acc: &mut ScopeAcc,
 ) -> Result<()> {
     let indexed: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM files WHERE path = ?1",
@@ -202,17 +197,12 @@ fn resolve_file_line(
             super::sanitize(input)
         )));
     };
-    symbols.insert(qualname);
-    matched_files.insert(file.to_string());
+    acc.symbols.insert(qualname);
+    acc.matched_files.insert(file.to_string());
     Ok(())
 }
 
-fn resolve_file(
-    ctx: &QueryCtx<'_>,
-    input: &str,
-    paths: &mut Vec<String>,
-    matched_files: &mut HashSet<String>,
-) -> Result<()> {
+fn resolve_file(ctx: &QueryCtx<'_>, input: &str, acc: &mut ScopeAcc) -> Result<()> {
     let indexed: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM files WHERE path = ?1",
         [input],
@@ -224,17 +214,12 @@ fn resolve_file(
             super::sanitize(input)
         )));
     }
-    paths.push(input.to_string());
-    matched_files.insert(input.to_string());
+    acc.paths.push(input.to_string());
+    acc.matched_files.insert(input.to_string());
     Ok(())
 }
 
-fn resolve_dir(
-    ctx: &QueryCtx<'_>,
-    input: &str,
-    paths: &mut Vec<String>,
-    matched_files: &mut HashSet<String>,
-) -> Result<()> {
+fn resolve_dir(ctx: &QueryCtx<'_>, input: &str, acc: &mut ScopeAcc) -> Result<()> {
     let prefix = format!("{}/%", crate::db::like_escape(input));
     let mut stmt = ctx
         .conn
@@ -246,7 +231,7 @@ fn resolve_dir(
     for row in rows {
         let path = row?;
         if path_matches(&path, &[input.to_string()]) {
-            matched_files.insert(path);
+            acc.matched_files.insert(path);
             found += 1;
         }
     }
@@ -256,16 +241,11 @@ fn resolve_dir(
             super::sanitize(input)
         )));
     }
-    paths.push(input.to_string());
+    acc.paths.push(input.to_string());
     Ok(())
 }
 
-fn resolve_symbol(
-    ctx: &QueryCtx<'_>,
-    input: &str,
-    symbols: &mut HashSet<String>,
-    matched_files: &mut HashSet<String>,
-) -> Result<()> {
+fn resolve_symbol(ctx: &QueryCtx<'_>, input: &str, acc: &mut ScopeAcc) -> Result<()> {
     let mut exact_stmt = ctx.conn.prepare(
         "SELECT file_path, line_start, qualname FROM symbols
          WHERE is_test = 0 AND kind IN ('function', 'method')
@@ -312,8 +292,8 @@ fn resolve_symbol(
         }
         1 => {
             let (file, _, qualname) = all.into_iter().next().unwrap();
-            matched_files.insert(file);
-            symbols.insert(qualname);
+            acc.matched_files.insert(file);
+            acc.symbols.insert(qualname);
             Ok(())
         }
         _ => {

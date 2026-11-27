@@ -98,16 +98,21 @@ pub(super) fn run_usage(root_arg: Option<&Path>, quality: bool, global: bool) ->
     }
 }
 
-fn validate_reuse_args(
-    paths: &[String],
-    limit: usize,
-    min_confidence: &str,
-    propose: Option<&str>,
-    callees: &[String],
-    coverage: &[String],
-) -> Result<()> {
+fn validate_reuse_args(req: &CommandRequest) -> Result<()> {
+    let CommandRequest::Reuse {
+        paths,
+        limit,
+        min_confidence,
+        propose,
+        callees,
+        coverage,
+        ..
+    } = req
+    else {
+        unreachable!()
+    };
     // 0 is the count-only convention: summary totals, empty payload.
-    if limit > 100 {
+    if *limit > 100 {
         return Err(EgError::Usage("limit must be 0..=100".to_string()));
     }
     if !min_confidence.is_empty()
@@ -199,24 +204,8 @@ fn execute_reuse(
 
 /// Index-only query arms: graph traversal, analysis, and inventory.
 fn run_query(req: &CommandRequest, root_arg: Option<&Path>, surface: Surface) -> Result<ArmOut> {
-    if let CommandRequest::Reuse {
-        paths,
-        limit,
-        min_confidence,
-        propose,
-        callees,
-        coverage,
-        ..
-    } = req
-    {
-        validate_reuse_args(
-            paths,
-            *limit,
-            min_confidence,
-            propose.as_deref(),
-            callees,
-            coverage,
-        )?;
+    if matches!(req, CommandRequest::Reuse { .. }) {
+        validate_reuse_args(req)?;
     }
     let (root, conn) = open_query_for_surface(root_arg, surface)?;
     let ctx = crate::query::QueryCtx {
@@ -302,7 +291,7 @@ fn run_mem_gc(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
     let CommandRequest::MemGc { global } = req else {
         unreachable!("run_mem_gc called with a non-gc request")
     };
-    let mut conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
+    let mut conn = open_mem_conn(root_arg, *global, crate::db::StoreMode::Mutation)?;
     let (expired, superseded, durable) = crate::db::memory_gc(&mut conn, crate::db::unix_now())?;
     crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
     Ok(ArmOut::plain(

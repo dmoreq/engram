@@ -84,6 +84,31 @@ PRIVATE_SCRIPTS = {
     "search_recall.py",
 }
 
+# Patterns are assembled from pieces so this gate file does not match
+# itself when the export is scanned.
+GATE_CHECKS = {
+    "private_names": "|".join(["vi" + "hap", "fin" + "guard", "map" + "kit",
+        "mskit" + "-ui", "qauto" + "-ui", "be-pool-" + "collector",
+        "ds-team-" + "dag", "be-map-search-" + "v2", "be-ds-" + "forecast",
+        "be-parser-" + "geocoder", "be-" + "mercury", "food-" + "dispatch",
+        "agent-" + "skills"]),
+    "private_symbols": "|".join(["Hierarchical" + "AddressParser", "marshal" + "_io",
+        "get_knowledge" + "_base", "normalize_" + "ascii",
+        "_gso_" + "loader", "AddressPairwise" + "Scorer",
+        "AddressQuality" + "Scorer", "Gso" + "Index",
+        "MicroStreet" + "Parser", "MacroAdmin" + "Resolver"]),
+    "personal_paths": "|".join(["/Us" + "ers/", "/home/[A-Za-z0-9._-]+/",
+        "/Work" + "space/", "/private/" + "tmp", "/tmp/utility-" + "corpus"]),
+    "employer_email": "quy" + "\\.doan@|@" + "be" + "\\.com\\.vn",
+    "home_tilde": "~" + "/",
+    "secrets": "|".join(["(AKIA|ASIA)[0-9A-Z]{16}",
+        "gh[pousr]_[A-Za-z0-9]{36,}", "github_pat_[A-Za-z0-9_]{22,}",
+        "xox[abprs]-[A-Za-z0-9-]{10,}",
+        "-----BEGIN [A-Z ]*PRIVATE KEY-----"]),
+    "vault_prose": "the private evidence vault",
+    "empty_link": "\\]\\(\\)",
+}
+
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kw)
@@ -154,75 +179,53 @@ def scrub(out: Path) -> None:
         ev.write_text(text)
 
 
-def gate(out: Path) -> int:
-    run(["git", "init", "-q"], cwd=out)
-    run(["git", "add", "-A"], cwd=out)
-    # Patterns are assembled from pieces so this gate file does not match
-    # itself when the export is scanned.
-    checks = {
-        "private_names": "|".join(["vi" + "hap", "fin" + "guard", "map" + "kit",
-            "mskit" + "-ui", "qauto" + "-ui", "be-pool-" + "collector",
-            "ds-team-" + "dag", "be-map-search-" + "v2", "be-ds-" + "forecast",
-            "be-parser-" + "geocoder", "be-" + "mercury", "food-" + "dispatch",
-            "agent-" + "skills"]),
-        "private_symbols": "|".join(["Hierarchical" + "AddressParser", "marshal" + "_io",
-            "get_knowledge" + "_base", "normalize_" + "ascii",
-            "_gso_" + "loader", "AddressPairwise" + "Scorer",
-            "AddressQuality" + "Scorer", "Gso" + "Index",
-            "MicroStreet" + "Parser", "MacroAdmin" + "Resolver"]),
-        "personal_paths": "|".join(["/Us" + "ers/", "/home/[A-Za-z0-9._-]+/",
-            "/Work" + "space/", "/private/" + "tmp", "/tmp/utility-" + "corpus"]),
-        "employer_email": "quy" + "\\.doan@|@" + "be" + "\\.com\\.vn",
-        "home_tilde": "~" + "/",
-        "secrets": "|".join(["(AKIA|ASIA)[0-9A-Z]{16}",
-            "gh[pousr]_[A-Za-z0-9]{36,}", "github_pat_[A-Za-z0-9_]{22,}",
-            "xox[abprs]-[A-Za-z0-9-]{10,}",
-            "-----BEGIN [A-Z ]*PRIVATE KEY-----"]),
-    }
+def scan_patterns(out: Path, patterns: dict[str, str]) -> int:
+    failed = 0
+    for label, pat in patterns.items():
+        try:
+            res = subprocess.run(
+                ["git", "grep", "--cached", "-I", "-n", "-E", pat, "--", "."],
+                cwd=out, capture_output=True, text=True,
+            )
+        except OSError as exc:
+            print(f"{label:16s} scan-error: {exc}")
+            failed = 1
+            continue
+        if res.returncode not in (0, 1):
+            print(f"{label:16s} scan-error {res.returncode}")
+            print(res.stderr[:2000])
+            failed = 1
+            continue
+        n = len([l for l in res.stdout.splitlines() if l.strip()])
+        print(f"{label:16s} {n}")
+        if n:
+            print(res.stdout[:2000])
+            failed = 1
+    return failed
+
+
+def check_forbidden_paths(out: Path) -> int:
     rc = 0
-
-    def scan(patterns) -> int:
-        failed = 0
-        for label, pat in patterns.items():
-            try:
-                res = subprocess.run(
-                    ["git", "grep", "--cached", "-I", "-n", "-E", pat, "--", "."],
-                    cwd=out, capture_output=True, text=True,
-                )
-            except OSError as exc:
-                print(f"{label:16s} scan-error: {exc}")
-                failed = 1
-                continue
-            if res.returncode not in (0, 1):
-                print(f"{label:16s} scan-error {res.returncode}")
-                print(res.stderr[:2000])
-                failed = 1
-                continue
-            n = len([l for l in res.stdout.splitlines() if l.strip()])
-            print(f"{label:16s} {n}")
-            if n:
-                print(res.stdout[:2000])
-                failed = 1
-        return failed
-
-    rc |= scan(checks)
-    rc |= scan({
-        "vault_prose": "the private evidence vault",
-        "empty_link": "\\]\\(\\)",
-    })
     cargo = (out / "Cargo.toml").read_text()
     if "include = [" not in cargo or "exclude = [" in cargo:
         print("Cargo.toml include allowlist is missing or exclude is still set")
         rc = 1
     for bad in ("docs/baselines", "docs/archive", ".engram", "target", ".zcode"):
-        p = out / bad
-        if p.exists():
+        if (out / bad).exists():
             print(f"forbidden path present: {bad}")
             rc = 1
     for name in PRIVATE_SCRIPTS:
         if (out / "tests" / "scripts" / name).exists():
             print(f"private script present: tests/scripts/{name}")
             rc = 1
+    return rc
+
+
+def gate(out: Path) -> int:
+    run(["git", "init", "-q"], cwd=out)
+    run(["git", "add", "-A"], cwd=out)
+    rc = scan_patterns(out, GATE_CHECKS)
+    rc |= check_forbidden_paths(out)
     return rc
 
 

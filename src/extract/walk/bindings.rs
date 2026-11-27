@@ -53,7 +53,7 @@ fn push_param_local(
     if (var == "self" || var == "cls" || var == "this") && is_method_receiver {
         return;
     }
-    w.fx.bindings.locals.push((scope.to_string(), var));
+    w.push_local(scope, var);
 }
 
 /// Rust: `x: Foo`, `x: &Foo`, `x: &mut Foo`. `self`/`&self` parameters

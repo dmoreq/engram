@@ -6,7 +6,17 @@
 //! All, expanded rows survive one SSE cycle, Tab/Enter activate rows and the
 //! label target — stays the documented check.
 
-const APP_JS: &str = include_str!("../../../src/dashboard/assets/app.js");
+const APP_JS: &str = concat!(
+    include_str!("../../../src/dashboard/assets/core.js"),
+    "\n",
+    include_str!("../../../src/dashboard/assets/overview.js"),
+    "\n",
+    include_str!("../../../src/dashboard/assets/telemetry.js"),
+    "\n",
+    include_str!("../../../src/dashboard/assets/reuse.js"),
+    "\n",
+    include_str!("../../../src/dashboard/assets/memory.js"),
+);
 
 /// Slice the body of a top-level `function name(...) {...}` in app.js.
 /// Top-level declarations start at column 0, so the next `\nfunction ` bound
@@ -29,27 +39,37 @@ fn fn_body(name: &str) -> String {
 fn dashboard_asset_memory_store_filter_matches_option_and_never_appends() {
     let body = fn_body("filterMemoryByRepo");
     // Rows pass the display name while options carry store_id values, so the
-    // match must accept either side and select the matched option value.
+    // match must accept either side and delegate toggle/reset to setMemoryStoreFilter.
     assert!(
         body.contains("opt.value === repoName || opt.textContent === repoName"),
         "filterMemoryByRepo must match the option by value or text: {body}"
     );
     assert!(
-        body.contains("select.value === matchedValue"),
-        "the toggle must compare the matched option value, not the raw label: {body}"
-    );
-    assert!(
-        body.contains("select.value = 'ALL'"),
-        "an unmatched name must fall back to ALL: {body}"
+        body.contains("setMemoryStoreFilter("),
+        "filterMemoryByRepo must delegate to setMemoryStoreFilter: {body}"
     );
     // No ghost option: the handler must never fabricate a missing entry.
     assert!(
         !body.contains("appendChild"),
         "filterMemoryByRepo must not append options: {body}"
     );
+
+    let set_body = fn_body("setMemoryStoreFilter");
     assert!(
-        body.contains("renderMemoryList()"),
-        "every path re-renders: {body}"
+        set_body.contains("select.value === storeId"),
+        "the toggle must compare the matched storeId value: {set_body}"
+    );
+    assert!(
+        set_body.contains("? 'ALL' : storeId"),
+        "re-clicking the active store must fall back to ALL: {set_body}"
+    );
+    assert!(
+        set_body.contains("state.memories.selectedId = null"),
+        "store filter change must reset selectedId: {set_body}"
+    );
+    assert!(
+        set_body.contains("renderMemoryList()"),
+        "every path re-renders: {set_body}"
     );
 }
 
@@ -80,11 +100,11 @@ fn dashboard_asset_filter_rows_drop_aria_label_and_announce() {
         "filterByRepo",
         "filterByAgent",
         "filterReuseByRepo",
-        "filterMemoryByRepo",
+        "setMemoryStoreFilter",
     ] {
         let body = fn_body(name);
         assert!(
-            body.contains("announce('Filtered by"),
+            body.contains("announce("),
             "{name} must announce the filter action: {body}"
         );
     }

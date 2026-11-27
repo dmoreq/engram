@@ -28,6 +28,30 @@ enum InputEvent {
     Quit,
 }
 
+struct MonitorFilter<'a> {
+    repo_filter: Option<&'a str>,
+    errors_only: bool,
+    exclude_ephemeral: bool,
+}
+
+impl MonitorFilter<'_> {
+    fn matches(&self, val: &Value) -> bool {
+        is_event_matched(
+            val,
+            self.repo_filter,
+            self.errors_only,
+            self.exclude_ephemeral,
+        )
+    }
+}
+
+struct MonitorConfig<'a> {
+    root: Option<&'a Path>,
+    log_path: &'a Path,
+    filter: MonitorFilter<'a>,
+    local: bool,
+}
+
 pub fn stream_monitor(
     root: Option<&Path>,
     repo_filter: Option<&str>,
@@ -35,43 +59,29 @@ pub fn stream_monitor(
     local: bool,
 ) -> Result<()> {
     let (log_path, gate_root) = resolve_monitor_log_path(root, local)?;
-    let effective_root = gate_root.as_deref().or(root);
     // The monitor is global exactly when the resolver found no repo root: the
     // journal is the machine-wide log, so scratch stores hide here exactly as
     // they hide from every dashboard panel. A local session keeps them.
-    let exclude_ephemeral = gate_root.is_none();
-
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return stream_linear(
-            &log_path,
+    let cfg = MonitorConfig {
+        root: gate_root.as_deref().or(root),
+        log_path: &log_path,
+        filter: MonitorFilter {
             repo_filter,
             errors_only,
-            effective_root,
-            exclude_ephemeral,
-            local,
-        );
+            exclude_ephemeral: gate_root.is_none(),
+        },
+        local,
+    };
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return stream_linear(&cfg);
     }
 
     let Some(guard) = RawModeGuard::enter() else {
-        return stream_linear(
-            &log_path,
-            repo_filter,
-            errors_only,
-            effective_root,
-            exclude_ephemeral,
-            local,
-        );
+        return stream_linear(&cfg);
     };
 
-    run_interactive(
-        effective_root,
-        log_path,
-        repo_filter,
-        errors_only,
-        exclude_ephemeral,
-        local,
-        guard,
-    )
+    run_interactive(&cfg, guard)
 }
 
 struct RawModeGuard {
@@ -122,22 +132,14 @@ impl Drop for RawModeGuard {
     }
 }
 
-fn run_interactive(
-    root: Option<&Path>,
-    log_path: PathBuf,
-    repo_filter: Option<&str>,
-    errors_only: bool,
-    exclude_ephemeral: bool,
-    local: bool,
-    _guard: RawModeGuard,
-) -> Result<()> {
-    let repo_filter_owned = repo_filter.map(str::to_string);
+fn run_interactive(cfg: &MonitorConfig<'_>, _guard: RawModeGuard) -> Result<()> {
+    let repo_filter_owned = cfg.filter.repo_filter.map(str::to_string);
     let mut state = TuiState::new(
-        root,
-        log_path.clone(),
+        cfg.root,
+        cfg.log_path.to_path_buf(),
         repo_filter_owned,
-        errors_only,
-        exclude_ephemeral,
+        cfg.filter.errors_only,
+        cfg.filter.exclude_ephemeral,
     );
 
     let (tx, rx) = mpsc::channel();
@@ -163,9 +165,9 @@ fn run_interactive(
         }
     });
 
-    let mut tail = data::Tail::new(&log_path);
+    let mut tail = data::Tail::new(cfg.log_path);
     let mut last_refresh = std::time::Instant::now();
-    let root_path = root.map(Path::to_path_buf);
+    let root_path = cfg.root.map(Path::to_path_buf);
 
     let (mut cols, mut rows) = get_terminal_size();
     let mut stdout = io::stdout();
@@ -174,7 +176,7 @@ fn run_interactive(
 
     loop {
         if last_gate.elapsed() >= Duration::from_secs(5) {
-            monitor_gate(root, local)?;
+            monitor_gate(cfg.root, cfg.local)?;
             last_gate = Instant::now();
         }
         let mut need_render = false;
@@ -199,7 +201,7 @@ fn run_interactive(
             }
         }
 
-        if poll_log_new_events(&mut tail, &log_path, &mut state, root_path.as_deref()) {
+        if poll_log_new_events(&mut tail, cfg.log_path, &mut state, root_path.as_deref()) {
             need_render = true;
         }
 
@@ -276,44 +278,25 @@ fn get_terminal_size() -> (usize, usize) {
     (80, 24)
 }
 
-fn stream_linear(
-    log_path: &Path,
-    repo_filter: Option<&str>,
-    errors_only: bool,
-    root: Option<&Path>,
-    exclude_ephemeral: bool,
-    local: bool,
-) -> Result<()> {
+fn stream_linear(cfg: &MonitorConfig<'_>) -> Result<()> {
     println!(
         "eg: query monitor (linear streaming) from {}",
-        log_path.display()
+        cfg.log_path.display()
     );
-    let tail_start = file_len(log_path).saturating_sub(4096);
-    let mut tail = data::Tail::starting_at(log_path, tail_start);
+    let tail_start = file_len(cfg.log_path).saturating_sub(4096);
+    let mut tail = data::Tail::starting_at(cfg.log_path, tail_start);
     let mut last_gate = Instant::now();
     loop {
         if last_gate.elapsed() >= Duration::from_secs(5) {
-            monitor_gate(root, local)?;
+            monitor_gate(cfg.root, cfg.local)?;
             last_gate = Instant::now();
         }
-        poll_linear_events(
-            &mut tail,
-            log_path,
-            repo_filter,
-            errors_only,
-            exclude_ephemeral,
-        );
+        poll_linear_events(&mut tail, cfg.log_path, &cfg.filter);
         thread::sleep(Duration::from_millis(250));
     }
 }
 
-fn poll_linear_events(
-    tail: &mut data::Tail,
-    log_path: &Path,
-    repo_filter: Option<&str>,
-    errors_only: bool,
-    exclude_ephemeral: bool,
-) {
+fn poll_linear_events(tail: &mut data::Tail, log_path: &Path, filter: &MonitorFilter<'_>) {
     let mut stdout = io::stdout();
     tail.poll(log_path, |event| match event {
         data::TailEvent::Reset => {
@@ -321,7 +304,7 @@ fn poll_linear_events(
         }
         data::TailEvent::Line(line) => {
             if let Some(val) = data::live_event(line) {
-                if is_event_matched(&val, repo_filter, errors_only, exclude_ephemeral) {
+                if filter.matches(&val) {
                     let _ = render::render_event_row(&mut stdout, &val, 78);
                 }
             }
@@ -374,9 +357,7 @@ fn monitor_gate(root: Option<&Path>, local: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(root) = root {
-        crate::db::reject_symlink(&crate::db::eg_dir(root), ".engram directory")?;
         crate::db::reject_unsafe_journal(root)?;
-        crate::db::reject_tracked_eg_dir(root)?;
     }
     Ok(())
 }

@@ -38,129 +38,100 @@ fn score_d1_confidence(reasons: &[ReasonCode], weak: f64, ratio: f64, bal: f64) 
 /// every worker against every other worker's thousands of leaf callees.
 const MAX_DEEP_FOOTPRINT: usize = 512;
 
-/// Weighted deep scan. Computes the expensive shared-evidence set only for a
-/// candidate that can still beat the current best, and stops after the
-/// per-invocation pair budget.
+fn score_d1_match(
+    target: &SymbolData,
+    candidate: &SymbolData,
+    corpus: &Corpus<'_>,
+    shared_ids: &[i64],
+    ratio: f64,
+    bal: f64,
+) -> (u64, Vec<String>, ReuseConfidence, Vec<ReasonCode>) {
+    let mut shared: Vec<String> = shared_ids
+        .iter()
+        .filter_map(|id| corpus.symbols.get(id))
+        .map(|sym| sym.name.clone())
+        .collect();
+    shared.sort();
+    shared.dedup();
+    let mut reasons = Vec::new();
+    // Only unresolved bare-name overlaps are composition hints; a call
+    // resolved to a different project symbol is not this pair.
+    if target.unresolved_callees.contains(&candidate.name)
+        || candidate.unresolved_callees.contains(&target.name)
+    {
+        reasons.push(ReasonCode::CallerCallee);
+    }
+    if target
+        .name_tokens
+        .intersection(&candidate.name_tokens)
+        .next()
+        .is_none()
+    {
+        reasons.push(ReasonCode::ZeroName);
+    }
+    if bal < 0.50 {
+        reasons.push(ReasonCode::SizeImbalance);
+    }
+    let weak = distinctive_weakness(corpus, shared_ids);
+    let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
+    ((ratio * 100.0).round() as u64, shared, confidence, reasons)
+}
+
+/// Weighted deep scan. Stops after the per-invocation pair budget.
 fn find_best_d1_deep(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> {
-    type DeepBest<'a> = (
-        u64,
-        &'a SymbolData,
-        Vec<String>,
-        ReuseConfidence,
-        Vec<ReasonCode>,
-    );
-    let mut candidates = candidate_symbols(corpus, target, PostingKind::DeepCallee, 2);
-    // Deterministic order before the budget-bounded loop so hitting
-    // MAX_DEEP_PAIRS never depends on HashMap iteration order.
-    candidates.sort_unstable_by(|a, b| {
-        a.file_path
-            .cmp(&b.file_path)
-            .then_with(|| a.line_start.cmp(&b.line_start))
-            .then_with(|| a.qualname.cmp(&b.qualname))
-    });
-    let mut best: Option<DeepBest<'_>> = None;
-    for candidate in candidates {
-        let same_file_overlap = candidate.file_id == target.file_id
-            && !(candidate.line_end < target.line_start || candidate.line_start > target.line_end);
-        if candidate.id == target.id || same_file_overlap {
-            corpus.guard();
-            continue;
-        }
-        if cross_language(target, candidate) || !is_more_canonical(candidate, target) {
-            corpus.guard();
-            continue;
-        }
-        if target.callee_ids.contains(&candidate.id)
-            || candidate.callee_ids.contains(&target.id)
-            || target.deep_weights.contains_key(&candidate.id)
-            || candidate.deep_weights.contains_key(&target.id)
-        {
-            corpus.guard();
-            continue;
-        }
-        if candidate.deep_weights.len() < 3 || candidate.deep_weights.len() > MAX_DEEP_FOOTPRINT {
-            continue;
-        }
-        if corpus.deep_budget.get() == 0 {
-            corpus.guard();
-            break;
-        }
-        corpus.deep_budget.set(corpus.deep_budget.get() - 1);
-        let ratio = weighted_containment(target, candidate);
-        if ratio < 0.85 {
-            continue;
-        }
-        let bal = weighted_balance(target, candidate);
-        if bal < 0.30 {
-            corpus.guard();
-            continue;
-        }
-        let pct = (ratio * 100.0).round() as u64;
-        let shared_ids: Vec<i64> = target
-            .deep_weights
-            .keys()
-            .filter(|id| {
+    best_by_overlap(
+        DetectorId::D1,
+        target,
+        corpus,
+        PostingKind::DeepCallee,
+        2,
+        true,
+        |candidate| {
+            if target.callee_ids.contains(&candidate.id)
+                || candidate.callee_ids.contains(&target.id)
+                || target.deep_weights.contains_key(&candidate.id)
+                || candidate.deep_weights.contains_key(&target.id)
+            {
+                corpus.guard();
+                return ControlFlow::Continue(None);
+            }
+            if candidate.deep_weights.len() < 3 || candidate.deep_weights.len() > MAX_DEEP_FOOTPRINT
+            {
+                return ControlFlow::Continue(None);
+            }
+            if corpus.deep_budget.get() == 0 {
+                corpus.guard();
+                return ControlFlow::Break(());
+            }
+            corpus.deep_budget.set(corpus.deep_budget.get() - 1);
+            let ratio = weighted_containment(target, candidate);
+            if ratio < 0.85 {
+                return ControlFlow::Continue(None);
+            }
+            let bal = weighted_balance(target, candidate);
+            if bal < 0.30 {
+                corpus.guard();
+                return ControlFlow::Continue(None);
+            }
+            let shared_ids: Vec<i64> = target
+                .deep_weights
+                .keys()
                 // A cycle can place each pair member in the other's closure;
                 // the pair itself is never evidence of its own duplication.
-                **id != target.id && **id != candidate.id
-            })
-            .filter(|id| candidate.deep_weights.contains_key(*id))
-            .copied()
-            .collect();
-        let mut shared: Vec<String> = shared_ids
-            .iter()
-            .filter_map(|id| corpus.symbols.get(id))
-            .map(|sym| sym.name.clone())
-            .collect();
-        shared.sort();
-        shared.dedup();
-        let mut reasons = Vec::new();
-        let unresolved_composition = target.unresolved_callees.contains(&candidate.name)
-            || candidate.unresolved_callees.contains(&target.name);
-        if unresolved_composition {
-            reasons.push(ReasonCode::CallerCallee);
-        }
-        if target
-            .name_tokens
-            .intersection(&candidate.name_tokens)
-            .next()
-            .is_none()
-        {
-            reasons.push(ReasonCode::ZeroName);
-        }
-        if bal < 0.50 {
-            reasons.push(ReasonCode::SizeImbalance);
-        }
-        let weak = distinctive_weakness(corpus, &shared_ids);
-        let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
-        // Confidence ranks before raw overlap; the pct pre-filter cannot be
-        // applied because a lower-overlap candidate may carry a higher rank.
-        let better = best
-            .as_ref()
-            .is_none_or(|(best_pct, best_sym, _, best_conf, _)| {
-                confidence.rank() > best_conf.rank()
-                    || (confidence.rank() == best_conf.rank()
-                        && (pct > *best_pct
-                            || (pct == *best_pct && is_more_canonical(candidate, best_sym))))
-            });
-        if better {
-            best = Some((pct, candidate, shared, confidence, reasons));
-        }
-    }
-    best.map(|(pct, candidate, shared, confidence, reasons)| {
-        make_candidate(
-            DetectorId::D1,
-            target,
-            candidate,
-            Some(pct),
-            &shared,
-            MatchMeta {
-                raw_client: None,
-                confidence,
-                reasons,
-            },
-        )
-    })
+                .filter(|id| **id != target.id && **id != candidate.id)
+                .filter(|id| candidate.deep_weights.contains_key(*id))
+                .copied()
+                .collect();
+            ControlFlow::Continue(Some(score_d1_match(
+                target,
+                candidate,
+                corpus,
+                &shared_ids,
+                ratio,
+                bal,
+            )))
+        },
+    )
 }
 
 pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> {
@@ -181,6 +152,7 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
         corpus,
         PostingKind::Callee,
         2,
+        false,
         |candidate| {
             let c_ids = &candidate.d1_callee_ids;
             // GUARD-COMP: a resolved call edge in either direction is a
@@ -189,59 +161,36 @@ pub(crate) fn find_best_d1(target: &SymbolData, corpus: &Corpus<'_>) -> Option<R
                 || candidate.callee_ids.contains(&target.id)
             {
                 corpus.guard();
-                return None;
+                return ControlFlow::Continue(None);
             }
-            // Only unresolved bare-name overlaps are composition hints; a
-            // call resolved to a different project symbol is not this pair.
-            let unresolved_composition = target.unresolved_callees.contains(&candidate.name)
-                || candidate.unresolved_callees.contains(&target.name);
-            let zero_name = target
-                .name_tokens
-                .intersection(&candidate.name_tokens)
-                .next()
-                .is_none();
             if c_ids.len() < 3 {
-                return None;
+                return ControlFlow::Continue(None);
             }
             let shared_ids: Vec<i64> = target_ids.intersection(c_ids).copied().collect();
             if shared_ids.len() < 2 {
-                return None;
+                return ControlFlow::Continue(None);
             }
-            let mut shared: Vec<String> = shared_ids
-                .iter()
-                .filter_map(|id| corpus.symbols.get(id))
-                .map(|sym| sym.name.clone())
-                .collect();
-            shared.sort();
-            shared.dedup();
             // GUARD-BAL: reject < 0.30, low in [0.30, 0.50), provisional >= 0.50.
             let min_len = target_ids.len().min(c_ids.len());
             let max_len = target_ids.len().max(c_ids.len());
             let bal = min_len as f64 / max_len as f64;
             if bal < 0.30 {
                 corpus.guard();
-                return None;
+                return ControlFlow::Continue(None);
             }
-            let ratio_candidate = shared_ids.len() as f64 / c_ids.len() as f64;
-            let ratio_target = shared_ids.len() as f64 / target_ids.len() as f64;
-            let ratio = ratio_candidate.max(ratio_target);
+            let ratio = (shared_ids.len() as f64 / c_ids.len() as f64)
+                .max(shared_ids.len() as f64 / target_ids.len() as f64);
             if ratio < 0.80 {
-                return None;
+                return ControlFlow::Continue(None);
             }
-            let pct = (ratio * 100.0).round() as u64;
-            let mut reasons = Vec::new();
-            if unresolved_composition {
-                reasons.push(ReasonCode::CallerCallee);
-            }
-            if zero_name {
-                reasons.push(ReasonCode::ZeroName);
-            }
-            if bal < 0.50 {
-                reasons.push(ReasonCode::SizeImbalance);
-            }
-            let weak = distinctive_weakness(corpus, &shared_ids);
-            let confidence = score_d1_confidence(&reasons, weak, ratio, bal);
-            Some((pct, shared, confidence, reasons))
+            ControlFlow::Continue(Some(score_d1_match(
+                target,
+                candidate,
+                corpus,
+                &shared_ids,
+                ratio,
+                bal,
+            )))
         },
     )
 }

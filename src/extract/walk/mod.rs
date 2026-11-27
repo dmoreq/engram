@@ -20,10 +20,6 @@ pub(crate) use chain::{node_str, text};
 pub(super) use dispatch::walk_children;
 use dispatch::*;
 
-pub(super) fn innermost_scope<'a>(ctx: &'a WalkCtx, module: &'a str) -> &'a str {
-    ctx.enclosing_scope(module)
-}
-
 pub(super) struct WalkCtx {
     class_stack: Vec<String>, // class/impl qualnames
     mod_stack: Vec<String>,   // inline `mod` qualnames (Rust)
@@ -134,6 +130,21 @@ impl<'a, 's> Walker<'a, 's, '_> {
             qualname,
             is_test: is_test_item(self.fx, self.ctx, name),
         }
+    }
+
+    pub(super) fn push_local(&mut self, scope: &str, var: String) {
+        self.fx.bindings.locals.push((scope.to_string(), var));
+    }
+
+    pub(super) fn push_return_type(&mut self, qualname: String, chain: Vec<String>) {
+        self.fx.bindings.return_types.push((qualname, chain));
+    }
+
+    pub(super) fn push_alias(&mut self, scope: &str, bound: String, target: ImportTarget) {
+        self.fx
+            .bindings
+            .aliases
+            .push((scope.to_string(), bound, target));
     }
 }
 

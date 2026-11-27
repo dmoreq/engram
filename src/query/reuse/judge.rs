@@ -65,29 +65,8 @@ pub(super) fn apply(
         Ok(setup) => setup,
         Err(note) => return Some(format!("eg: judge unavailable: {note}")),
     };
-    let canon_root = std::fs::canonicalize(ctx.root).ok();
-    let mut file_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
-    let mut indices: Vec<usize> = Vec::new();
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    for (index, candidate) in pool.iter().enumerate() {
-        let eligible = is_judgeable(candidate, mode)
-            || (mode == ReuseMode::Propose && candidate.overlap_pct.is_some());
-        if pairs.len() >= MAX_JUDGED
-            || !eligible
-            || (!allowed.is_empty() && allowlist::is_allowed(allowed, candidate))
-        {
-            continue;
-        }
-        // A candidate whose source cannot be read safely is not judgeable; the
-        // batch continues without it instead of failing every verdict.
-        if let Some(pair) = canon_root
-            .as_deref()
-            .and_then(|cr| pair_texts(ctx.root, cr, &mut file_cache, candidate, proposal_signature))
-        {
-            indices.push(index);
-            pairs.push(pair);
-        }
-    }
+    let (mut indices, mut pairs) =
+        collect_judge_pairs(ctx, pool, mode, proposal_signature, allowed);
     if pairs.is_empty() {
         crate::journal::set_judged(false);
         crate::journal::set_judge_counts(crate::journal::JudgeJournalCounts {
@@ -122,49 +101,7 @@ pub(super) fn apply(
     // batch below keeps the result deterministic.
     let lines =
         coprocess::judge_batch(&setup, &pairs).or_else(|| run_child_batch(&setup, &payload));
-    let reviewed = pairs.len();
-    let mut outcome = BatchOutcome {
-        reviewed,
-        rejected: 0,
-        promoted: 0,
-        failed: reviewed,
-        reject_indices: Vec::new(),
-    };
-    if let Some(lines) = &lines {
-        if lines.len() == reviewed {
-            outcome.failed = 0;
-            for (position, raw) in lines.iter().enumerate() {
-                match parse_verdict(raw) {
-                    Some(VerdictDecision::Distinct) => {
-                        outcome.reject_indices.push(indices[position]);
-                        outcome.rejected += 1;
-                    }
-                    Some(VerdictDecision::Duplicate) => {
-                        // A semantic duplicate outranks the static provisional
-                        // band: promote it into the display so a judged gray
-                        // candidate survives a higher --min-confidence.
-                        // Stale/unknown canonicals are never promoted.
-                        let candidate = &mut pool[indices[position]];
-                        let canonical_stale = candidate.reasons.iter().any(|r| {
-                            matches!(
-                                r,
-                                ReasonCode::StaleIndex
-                                    | ReasonCode::FreshnessUnknown
-                                    | ReasonCode::UnsafePath
-                            )
-                        });
-                        if !canonical_stale
-                            && candidate.confidence.rank() < ReuseConfidence::Medium.rank()
-                        {
-                            candidate.confidence = ReuseConfidence::Medium;
-                            outcome.promoted += 1;
-                        }
-                    }
-                    None => outcome.failed += 1,
-                }
-            }
-        }
-    }
+    let outcome = apply_verdicts(pool, &indices, lines.as_deref(), pairs.len());
     let successes = outcome.reviewed.saturating_sub(outcome.failed);
     crate::journal::set_judged(successes > 0);
     crate::journal::set_judge_counts(crate::journal::JudgeJournalCounts {
@@ -195,6 +132,88 @@ pub(super) fn apply(
     Some(note)
 }
 
+fn collect_judge_pairs(
+    ctx: &QueryCtx<'_>,
+    pool: &[ReuseCandidate],
+    mode: ReuseMode,
+    proposal_signature: Option<&str>,
+    allowed: &HashSet<(String, String)>,
+) -> (Vec<usize>, Vec<(String, String)>) {
+    let canon_root = std::fs::canonicalize(ctx.root).ok();
+    let mut file_cache: HashMap<String, Option<Vec<String>>> = HashMap::new();
+    let mut indices = Vec::new();
+    let mut pairs = Vec::new();
+    for (index, candidate) in pool.iter().enumerate() {
+        let eligible = is_judgeable(candidate)
+            || (mode == ReuseMode::Propose && candidate.overlap_pct.is_some());
+        if pairs.len() >= MAX_JUDGED
+            || !eligible
+            || (!allowed.is_empty() && allowlist::is_allowed(allowed, candidate))
+        {
+            continue;
+        }
+        // A candidate whose source cannot be read safely is not judgeable; the
+        // batch continues without it instead of failing every verdict.
+        if let Some(pair) = canon_root
+            .as_deref()
+            .and_then(|cr| pair_texts(ctx.root, cr, &mut file_cache, candidate, proposal_signature))
+        {
+            indices.push(index);
+            pairs.push(pair);
+        }
+    }
+    (indices, pairs)
+}
+
+fn apply_verdicts(
+    pool: &mut [ReuseCandidate],
+    indices: &[usize],
+    lines: Option<&[String]>,
+    reviewed: usize,
+) -> BatchOutcome {
+    let mut outcome = BatchOutcome {
+        reviewed,
+        rejected: 0,
+        promoted: 0,
+        failed: reviewed,
+        reject_indices: Vec::new(),
+    };
+    let Some(lines) = lines.filter(|l| l.len() == reviewed) else {
+        return outcome;
+    };
+    outcome.failed = 0;
+    for (position, raw) in lines.iter().enumerate() {
+        match parse_verdict(raw) {
+            Some(VerdictDecision::Distinct) => {
+                outcome.reject_indices.push(indices[position]);
+                outcome.rejected += 1;
+            }
+            Some(VerdictDecision::Duplicate) => {
+                // A semantic duplicate outranks the static provisional
+                // band: promote it into the display so a judged gray
+                // candidate survives a higher --min-confidence.
+                // Stale/unknown canonicals are never promoted.
+                let candidate = &mut pool[indices[position]];
+                let canonical_stale = candidate.reasons.iter().any(|r| {
+                    matches!(
+                        r,
+                        ReasonCode::StaleIndex
+                            | ReasonCode::FreshnessUnknown
+                            | ReasonCode::UnsafePath
+                    )
+                });
+                if !canonical_stale && candidate.confidence.rank() < ReuseConfidence::Medium.rank()
+                {
+                    candidate.confidence = ReuseConfidence::Medium;
+                    outcome.promoted += 1;
+                }
+            }
+            None => outcome.failed += 1,
+        }
+    }
+    outcome
+}
+
 /// Process-lifetime switch for the MCP coprocess session; see
 /// [`crate::query::reuse::enable_judge_coprocess`].
 pub(super) fn enable_coprocess() {
@@ -205,7 +224,7 @@ pub(super) fn is_available() -> bool {
     judge_proc::find_bin().is_some() && judge_proc::resolve_model_dir().is_ok()
 }
 
-pub(super) fn is_judgeable(candidate: &ReuseCandidate, _mode: ReuseMode) -> bool {
+pub(super) fn is_judgeable(candidate: &ReuseCandidate) -> bool {
     if candidate.confidence == ReuseConfidence::High {
         return false;
     }
@@ -375,34 +394,34 @@ mod tests {
             confidence,
             reasons: Vec::new(),
         };
-        assert!(is_judgeable(
-            &candidate(DetectorId::D1, ReuseConfidence::Low),
-            ReuseMode::Scan
-        ));
-        assert!(is_judgeable(
-            &candidate(DetectorId::D2, ReuseConfidence::Provisional),
-            ReuseMode::Scan
-        ));
-        assert!(is_judgeable(
-            &candidate(DetectorId::D3, ReuseConfidence::Medium),
-            ReuseMode::Scan
-        ));
-        assert!(!is_judgeable(
-            &candidate(DetectorId::D1, ReuseConfidence::Medium),
-            ReuseMode::Scan
-        ));
-        assert!(!is_judgeable(
-            &candidate(DetectorId::D1, ReuseConfidence::High),
-            ReuseMode::Scan
-        ));
-        assert!(!is_judgeable(
-            &candidate(DetectorId::D2, ReuseConfidence::Medium),
-            ReuseMode::Propose
-        ));
-        assert!(!is_judgeable(
-            &candidate(DetectorId::D1, ReuseConfidence::High),
-            ReuseMode::Propose
-        ));
+        assert!(is_judgeable(&candidate(
+            DetectorId::D1,
+            ReuseConfidence::Low
+        )));
+        assert!(is_judgeable(&candidate(
+            DetectorId::D2,
+            ReuseConfidence::Provisional
+        )));
+        assert!(is_judgeable(&candidate(
+            DetectorId::D3,
+            ReuseConfidence::Medium
+        )));
+        assert!(!is_judgeable(&candidate(
+            DetectorId::D1,
+            ReuseConfidence::Medium
+        )));
+        assert!(!is_judgeable(&candidate(
+            DetectorId::D1,
+            ReuseConfidence::High
+        )));
+        assert!(!is_judgeable(&candidate(
+            DetectorId::D2,
+            ReuseConfidence::Medium
+        )));
+        assert!(!is_judgeable(&candidate(
+            DetectorId::D1,
+            ReuseConfidence::High
+        )));
     }
 
     #[test]

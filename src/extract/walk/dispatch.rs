@@ -145,6 +145,14 @@ fn collect_type_heritage(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, sy
             _ => {}
         }
     }
+    if let Some(bases) = node.child_by_field_name("superclasses") {
+        let mut bases_cursor = bases.walk();
+        for b in bases.named_children(&mut bases_cursor) {
+            if let Some(chain) = dotted_chain(b, src) {
+                fx.inherits.push((sym_idx, chain));
+            }
+        }
+    }
     if let Some(bounds) = node.child_by_field_name("bounds") {
         typescript::collect_heritage(bounds, src, fx, sym_idx);
     }
@@ -325,6 +333,16 @@ fn bind_commonjs_require(
     }
 }
 
+pub(super) fn define_scoped_function<'a>(w: &mut Walker<'a, '_, '_>) {
+    let parent_qn = w.ctx.enclosing_scope(&w.fx.module);
+    let kind = if w.ctx.class_stack.last().map(|s| s.as_str()) == Some(parent_qn) {
+        SymbolKind::Method
+    } else {
+        SymbolKind::Function
+    };
+    define_function(w, kind);
+}
+
 pub(super) fn define_function<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKind) {
     let Some(name_node) = w.node.child_by_field_name("name") else {
         return;
@@ -342,7 +360,7 @@ pub(super) fn define_function<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKind) 
             rt
         };
         if let Some(chain) = type_dotted_chain(ty, w.src) {
-            w.fx.bindings.return_types.push((qualname.clone(), chain));
+            w.push_return_type(qualname.clone(), chain);
         }
     }
     w.push_callable(&spec);
@@ -368,12 +386,12 @@ fn bind_default_export<'a>(w: &mut Walker<'a, '_, '_>, name: &str) {
         return;
     }
     let module = w.fx.module.clone();
-    w.fx.bindings.aliases.push((
-        String::new(),
+    w.push_alias(
+        "",
         "default".to_string(),
         ImportTarget::Symbol {
             module,
             name: name.to_string(),
         },
-    ));
+    );
 }
