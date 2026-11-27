@@ -25,10 +25,9 @@ import json
 import math
 import sys
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 from statistics import NormalDist
-from typing import Optional
+from typing import NamedTuple, Optional
 
 EXPECTED_LEDGER = {
     "total": 160,
@@ -44,8 +43,7 @@ EXPECTED_LEDGER = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class EvalConfig:
+class EvalConfig(NamedTuple):
     threshold: float = 0.5
     alpha: float = 0.05
     target_power: float = 0.8
@@ -229,22 +227,26 @@ def confusion_counts(
 def evaluate(
     labels_path: Path,
     predictions_path: Path,
-    config: EvalConfig,
+    threshold: float = 0.5,
     baseline_path: Optional[Path] = None,
+    alpha: float = 0.05,
+    target_power: float = 0.8,
     split_name: str = "confirmation",
+    config: Optional[EvalConfig] = None,
 ) -> dict:
+    cfg = config if config is not None else EvalConfig(threshold, alpha, target_power)
     labels = read_rows(labels_path)
     predictions = {
         row["pair_id"]: float(row["confidence"]) for row in read_rows(predictions_path)
     }
     confirmation = [row for row in labels if row["split"] == split_name]
-    tp, fp, fn, tn, missing = confusion_counts(confirmation, predictions, config.threshold)
+    tp, fp, fn, tn, missing = confusion_counts(confirmation, predictions, cfg.threshold)
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     result = {
         "labels": str(labels_path),
         "predictions": str(predictions_path),
-        "threshold": config.threshold,
+        "threshold": cfg.threshold,
         "split": split_name,
         "confirmation_pairs": len(confirmation),
         "missing_predictions": missing,
@@ -260,7 +262,7 @@ def evaluate(
         baseline = {
             row["pair_id"]: float(row["confidence"]) for row in read_rows(baseline_path)
         }
-        result["mcnemar"] = mcnemar(confirmation, predictions, baseline, config)
+        result["mcnemar"] = mcnemar(confirmation, predictions, baseline, cfg)
     return result
 
 
@@ -285,9 +287,9 @@ def main() -> int:
             result = evaluate(
                 args.labels,
                 args.predictions,
-                config,
-                args.baseline,
-                args.split,
+                baseline_path=args.baseline,
+                split_name=args.split,
+                config=config,
             )
     except (OSError, ValueError) as exc:
         print(f"reuse_oracle: {exc}", file=sys.stderr)
