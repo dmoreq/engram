@@ -4,18 +4,22 @@
 use super::*;
 
 /// Current row for one exact key plus its revision count.
-pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
+pub(super) fn run_mem_get(
+    req: &CommandRequest,
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<ArmOut> {
     let CommandRequest::MemGet { key, global } = req else {
         unreachable!("run_mem_get called with a non-get request")
     };
-    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
 
     if *global {
-        let conn = crate::db::open_global_memory_query()?;
+        let conn = open_mem_query_conn(None, true, surface)?;
         return match crate::db::memory_get(&conn, key)? {
             None => Err(mem_unknown_key(key)),
             Some((row, revs)) => {
-                let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
+                let status = check_note_ref_status(index_conn.as_deref(), root.as_deref(), &row);
                 Ok(render_mem_hit(
                     &row,
                     &store_tags(true, status, &row.source),
@@ -25,14 +29,14 @@ pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Resu
         };
     }
 
-    let stores = resolve_memory_stores(root_arg)?;
+    let stores = resolve_memory_stores(root_arg, surface)?;
     for (is_global, conn) in [
-        (false, stores.local.as_ref()),
-        (true, stores.global.as_ref()),
+        (false, stores.local.as_deref()),
+        (true, stores.global.as_deref()),
     ] {
         let Some(conn) = conn else { continue };
         if let Some((row, revs)) = crate::db::memory_get(conn, key)? {
-            let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
+            let status = check_note_ref_status(index_conn.as_deref(), root.as_deref(), &row);
             return Ok(render_mem_hit(
                 &row,
                 &store_tags(is_global, status, &row.source),
@@ -100,13 +104,17 @@ pub(super) fn run_mem_touch(req: &CommandRequest, root_arg: Option<&Path>) -> Re
 /// reads to unverified (never stale) refs. Shared by the mem query and get paths.
 pub(super) fn stale_ref_root_and_conn(
     root_arg: Option<&Path>,
-) -> (Option<std::path::PathBuf>, Option<rusqlite::Connection>) {
+    surface: Surface,
+) -> (Option<std::path::PathBuf>, Option<QueryConn>) {
     let root = root_arg
         .and_then(|r| crate::walk::discover_root(Some(r)).ok())
         .or_else(|| crate::walk::discover_root(None).ok());
-    let conn = root
-        .as_deref()
-        .and_then(|r| crate::db::open_for_query(r).ok());
+    let conn = root.as_deref().and_then(|r| match surface {
+        Surface::Mcp => crate::db::open_cached_for_mcp(r)
+            .ok()
+            .map(QueryConn::Cached),
+        Surface::Cli => crate::db::open_for_query(r).ok().map(QueryConn::Owned),
+    });
     (root, conn)
 }
 
@@ -311,20 +319,75 @@ fn mem_candidate(
     })
 }
 
+/// Read-only index connection wrapper so CLI (`Connection`) and MCP
+/// (`CachedConnection`) share a single dispatch path.
+pub(super) enum QueryConn {
+    Owned(rusqlite::Connection),
+    Cached(crate::db::CachedConnection),
+}
+
+impl std::ops::Deref for QueryConn {
+    type Target = rusqlite::Connection;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(c) => c,
+            Self::Cached(c) => c,
+        }
+    }
+}
+
 /// Resolve the repo root and open the index read-only (the shared query gate:
 /// missing -> 1, corrupt -> 3, skew -> 5).
-pub(super) fn open_query(
+pub(super) fn open_query_for_surface(
     root_arg: Option<&Path>,
-) -> Result<(std::path::PathBuf, rusqlite::Connection)> {
+    surface: Surface,
+) -> Result<(std::path::PathBuf, QueryConn)> {
     let root = crate::walk::discover_root(root_arg)?;
-    let conn = crate::db::open_for_query(&root)?;
+    let conn = match surface {
+        Surface::Mcp => QueryConn::Cached(crate::db::open_cached_for_mcp(&root)?),
+        Surface::Cli => QueryConn::Owned(crate::db::open_for_query(&root)?),
+    };
     Ok((root, conn))
+}
+
+/// Read-only memory connection wrapper so CLI and MCP share a single query path.
+pub(super) enum MemConn {
+    Owned(rusqlite::Connection),
+    Cached(crate::db::CachedMemoryConnection),
+}
+
+impl std::ops::Deref for MemConn {
+    type Target = rusqlite::Connection;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(c) => c,
+            Self::Cached(c) => c,
+        }
+    }
+}
+
+/// Open a read-only memory store (`Query` gate), using the MCP connection cache
+/// when invoked from `Surface::Mcp`.
+pub(super) fn open_mem_query_conn(
+    root_arg: Option<&Path>,
+    global: bool,
+    surface: Surface,
+) -> Result<MemConn> {
+    if global {
+        return Ok(match surface {
+            Surface::Mcp => MemConn::Cached(crate::db::open_cached_memory_for_mcp(None)?),
+            Surface::Cli => MemConn::Owned(crate::db::open_global_memory_query()?),
+        });
+    }
+    let root = crate::walk::discover_root(root_arg)?;
+    Ok(match surface {
+        Surface::Mcp => MemConn::Cached(crate::db::open_cached_memory_for_mcp(Some(&root))?),
+        Surface::Cli => MemConn::Owned(crate::db::open_memory_query(&root)?),
+    })
 }
 
 /// The three memory-store open gates, in the shared `open_query` shape.
 pub(super) enum MemoryMode {
-    /// Read-only (missing -> 1, corrupt -> 3, skew -> 5).
-    Query,
     /// Read-write mutation without creating a store (missing -> 1).
     Mutation,
     /// Read-write with first-use creation.
@@ -333,20 +396,22 @@ pub(super) enum MemoryMode {
 
 /// The single mem-command connection gate: `global` routes to the home-dir
 /// store, otherwise the project store under `root_arg`, both in `mode`.
+/// Evicts the MCP memory cache before mutating.
 pub(super) fn open_mem_conn(
     root_arg: Option<&Path>,
     global: bool,
     mode: MemoryMode,
 ) -> Result<rusqlite::Connection> {
     let store_mode = match mode {
-        MemoryMode::Query => crate::db::StoreMode::Query,
         MemoryMode::Mutation => crate::db::StoreMode::Mutation,
         MemoryMode::Store => crate::db::StoreMode::Store,
     };
     if global {
+        crate::db::evict_memory_mcp_cache(None);
         crate::db::open_memory(crate::db::StoreLocation::Global, store_mode)
     } else {
         let root = crate::walk::discover_root(root_arg)?;
+        crate::db::evict_memory_mcp_cache(Some(&root));
         crate::db::open_memory(crate::db::StoreLocation::Local(&root), store_mode)
     }
 }

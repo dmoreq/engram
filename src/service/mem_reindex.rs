@@ -22,9 +22,11 @@ pub(super) fn run_mem_reindex(req: &CommandRequest, root_arg: Option<&Path>) -> 
         } else {
             let items = crate::db::memory_current_note_bodies(&conn)?;
             for chunk in items.chunks(64) {
+                let texts: Vec<&str> = chunk.iter().map(|(_, body)| body.as_str()).collect();
+                let vectors = crate::memory::embed::embed_batch(&texts)?;
                 let mut updates = Vec::with_capacity(chunk.len());
-                for (id, body) in chunk {
-                    match crate::memory::embed::embed_text(body) {
+                for ((id, _), maybe_vec) in chunk.iter().zip(vectors) {
+                    match maybe_vec {
                         Some(vector) => {
                             updates.push((*id, crate::memory::embed::embedding_blob(&vector)));
                         }

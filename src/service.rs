@@ -328,14 +328,7 @@ mod tests {
     fn tool_specs_cover_every_request_shape() {
         let dispatchable: Vec<&str> = all_requests()
             .iter()
-            .filter(|r| {
-                !matches!(
-                    r,
-                    CommandRequest::Unresolved { .. }
-                        | CommandRequest::Stats { .. }
-                        | CommandRequest::Audit { .. }
-                )
-            })
+            .filter(|r| !matches!(r, CommandRequest::Audit { .. }))
             .map(CommandRequest::tool_name)
             .collect();
         for name in dispatchable {

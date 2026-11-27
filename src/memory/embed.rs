@@ -100,7 +100,6 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
 
 /// Embed a slice of texts in batched NDJSON `eg-judge embed --stdin` calls,
 /// avoiding `O(N)` cold Metal reloads during `mem_reindex --embed`.
-#[allow(dead_code)]
 pub fn embed_batch(texts: &[&str]) -> crate::error::Result<Vec<Option<Vec<f32>>>> {
     if texts.is_empty() {
         return Ok(Vec::new());

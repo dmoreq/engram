@@ -5,7 +5,11 @@ use super::scope::StoreScope;
 use super::*;
 
 /// Ranked search or the explicit `--all` listing.
-pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
+pub(super) fn run_mem_query(
+    req: &CommandRequest,
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<ArmOut> {
     let CommandRequest::MemQuery {
         terms,
         all,
@@ -44,7 +48,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             "mem query: --explain requires terms".to_string(),
         ));
     }
-    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
     let args = MemQueryArgs {
         terms: &clean_terms,
         all: effective_all,
@@ -56,7 +60,7 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
             include_superseded: *include_superseded,
             window,
         },
-        index_conn: index_conn.as_ref(),
+        index_conn: index_conn.as_deref(),
         root: root.as_deref(),
         reference: reference.as_deref(),
         explain: *explain,
@@ -65,16 +69,15 @@ pub(super) fn run_mem_query(req: &CommandRequest, root_arg: Option<&Path>) -> Re
 
     match store_scope {
         StoreScope::Local => {
-            let root = crate::walk::discover_root(root_arg)?;
-            let conn = crate::db::open_memory_query(&root)?;
+            let conn = open_mem_query_conn(root_arg, false, surface)?;
             query_single_store(&conn, &args, false)
         }
         StoreScope::Global => {
-            let conn = crate::db::open_global_memory_query()?;
+            let conn = open_mem_query_conn(root_arg, true, surface)?;
             query_single_store(&conn, &args, true)
         }
         StoreScope::Merged => {
-            let stores = resolve_memory_stores(root_arg)?;
+            let stores = resolve_memory_stores(root_arg, surface)?;
             match (stores.local, stores.global) {
                 (None, None) => Err(no_memory_store_error(root_arg)),
                 (Some(local), None) => query_single_store(&local, &args, false),
@@ -94,10 +97,11 @@ use crate::db::RefStatus;
 pub(super) fn check_note_ref_status_cached(
     index_conn: Option<&rusqlite::Connection>,
     root: Option<&Path>,
+    canon_root: Option<&Path>,
     row: &crate::db::MemRow,
     cache: &mut std::collections::HashMap<String, crate::db::ResolvedRef>,
 ) -> RefStatus {
-    if index_conn.is_none() || row.refs.trim().is_empty() {
+    if row.refs.trim().is_empty() {
         return RefStatus::Valid;
     }
     let anchor = row.anchor();
@@ -105,7 +109,9 @@ pub(super) fn check_note_ref_status_cached(
     for r in row.refs.split_whitespace() {
         let resolved = cache
             .entry(r.to_string())
-            .or_insert_with(|| crate::db::resolve_ref_detail(index_conn, root, r, anchor))
+            .or_insert_with(|| {
+                crate::db::resolve_ref_detail_with_canon(index_conn, root, canon_root, r, anchor)
+            })
             .with_anchor(anchor);
         match resolved.status {
             RefStatus::Broken => return RefStatus::Broken,
@@ -126,7 +132,8 @@ pub(super) fn check_note_ref_status(
     row: &crate::db::MemRow,
 ) -> RefStatus {
     let mut cache = std::collections::HashMap::new();
-    check_note_ref_status_cached(index_conn, root, row, &mut cache)
+    let canon = root.and_then(|r| std::fs::canonicalize(r).ok());
+    check_note_ref_status_cached(index_conn, root, canon.as_deref(), row, &mut cache)
 }
 
 /// The `[global] [stale-ref]` store markers shared by `mem get` output and
@@ -183,12 +190,18 @@ fn render_mem_rows(
     let total = rows.len();
     let shown = total.min(args.limit);
     let mut ref_cache = std::collections::HashMap::new();
+    let canon_root = args.root.and_then(|r| std::fs::canonicalize(r).ok());
     let rendered: Vec<String> = rows
         .iter()
         .take(shown)
         .map(|(row, is_global)| {
-            let status =
-                check_note_ref_status_cached(args.index_conn, args.root, row, &mut ref_cache);
+            let status = check_note_ref_status_cached(
+                args.index_conn,
+                args.root,
+                canon_root.as_deref(),
+                row,
+                &mut ref_cache,
+            );
             let mut line =
                 crate::memory::render_row_tagged(row, &mem_row_tag(row, *is_global, status));
             if let Some(map) = explain {

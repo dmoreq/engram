@@ -75,13 +75,10 @@ pub(super) fn run_mem_write(
     }
     let mut stderr = String::new();
     if !*global && !note.refs.is_empty() {
-        let root = crate::walk::discover_root(root_arg).ok();
-        let index_conn = root
-            .as_ref()
-            .and_then(|r| crate::db::open_for_query(r).ok());
+        let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
         for r in note.refs.split_whitespace() {
             let resolved =
-                crate::db::resolve_ref_detail(index_conn.as_ref(), root.as_deref(), r, i64::MAX);
+                crate::db::resolve_ref_detail(index_conn.as_deref(), root.as_deref(), r, i64::MAX);
             if !resolved.status.is_verified() {
                 stderr.push_str(&format!(
                     "eg: warning: unverified ref '{r}' (not found on disk or in index)\n"
@@ -263,15 +260,18 @@ pub(super) fn mem_query_args(req: &CommandRequest) -> JournalArgs {
 /// The local and global memory stores a read command resolves once: `None`
 /// means the store is absent (open errors other than "no store" propagate).
 pub(super) struct MemoryStores {
-    pub(super) local: Option<rusqlite::Connection>,
-    pub(super) global: Option<rusqlite::Connection>,
+    pub(super) local: Option<MemConn>,
+    pub(super) global: Option<MemConn>,
 }
 
 /// Open the memory stores both `mem query` and `mem get` read: the local store
 /// (only when root discovery and the open succeed) and the global one.
-pub(super) fn resolve_memory_stores(root_arg: Option<&Path>) -> Result<MemoryStores> {
+pub(super) fn resolve_memory_stores(
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<MemoryStores> {
     let local = match crate::walk::discover_root(root_arg) {
-        Ok(root) => match crate::db::open_memory_query(&root) {
+        Ok(root) => match open_mem_query_conn(Some(&root), false, surface) {
             Ok(conn) => Some(conn),
             Err(EgError::NoMemory(_)) => None,
             Err(e) => return Err(e),
@@ -281,7 +281,7 @@ pub(super) fn resolve_memory_stores(root_arg: Option<&Path>) -> Result<MemorySto
         Err(e) if root_arg.is_some() => return Err(e),
         Err(_) => None,
     };
-    let global = match crate::db::open_global_memory_query() {
+    let global = match open_mem_query_conn(None, true, surface) {
         Ok(conn) => Some(conn),
         Err(EgError::NoMemory(_)) => None,
         Err(e) => return Err(e),

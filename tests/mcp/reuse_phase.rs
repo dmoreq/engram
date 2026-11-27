@@ -335,3 +335,38 @@ fn mcp_reuse_phase1_parity() {
     );
     let _ = fs::remove_dir_all(&repo);
 }
+
+#[test]
+fn mcp_reuse_paths_with_coverage_succeeds() {
+    let repo = fixture("mcp-reuse-paths-cov");
+    fs::write(
+        repo.join("mod_a.py"),
+        "class Widget:\n    def render(self):\n        return 1\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("mod_b.py"),
+        "class Widget:\n    def render(self):\n        return 2\n",
+    )
+    .unwrap();
+    assert_eq!(
+        eg_cmd(&repo).arg("build").output().unwrap().status.code(),
+        Some(0)
+    );
+
+    let mut srv = spawn(&repo);
+    let resp = rpc(
+        &mut srv,
+        1,
+        "tools/call",
+        json!({
+            "name": "reuse",
+            "arguments": {
+                "paths": ["mod_a.py"],
+                "coverage": ["class", "unresolved", "tests"]
+            }
+        }),
+    );
+    assert_eq!(resp["result"]["isError"], false, "{resp}");
+    let _ = fs::remove_dir_all(&repo);
+}

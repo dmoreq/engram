@@ -357,6 +357,14 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             global: a.b_spec(tool, "global")?,
             embed: a.b_spec(tool, "embed")?,
         }),
+        "unresolved" => Ok(CommandRequest::Unresolved {
+            names: a.b_spec(tool, "names")?,
+            path: a.s_opt_spec(tool, "path")?,
+            limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
+        }),
+        "stats" => Ok(CommandRequest::Stats {
+            path: a.s_opt_spec(tool, "path")?,
+        }),
         _ => Err(unknown_tool(tool)),
     }
 }

@@ -423,7 +423,10 @@ mod sql;
 #[cfg(test)]
 mod tests;
 
-pub use open::{check_schema_version, open_for_query, try_open_index, IndexOpenError};
+pub use open::{
+    check_schema_version, evict_mcp_cache, open_cached_for_mcp, open_for_query, try_open_index,
+    CachedConnection, IndexOpenError,
+};
 
 pub(crate) use inserts::*;
 pub(crate) use memory_fts::*;

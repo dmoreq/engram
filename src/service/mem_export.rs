@@ -2,7 +2,7 @@
 //! suspected-secret scan. Split from `mem_ops.rs` to keep both files under
 //! the 500-line hygiene cap.
 
-use super::mem_ops::{open_mem_conn, MemoryMode};
+use super::mem_ops::open_mem_query_conn;
 use super::*;
 
 /// Export wire format selected by `--format`.
@@ -27,7 +27,11 @@ fn parse_export_format(raw: Option<&str>) -> Result<ExportFormat> {
 /// Current notes as JSONL or fenced Markdown on stdout; the caveat goes to
 /// stderr. Both formats read the same expiry-filtered current-row query, so
 /// an expired session note is never exported by either.
-pub(super) fn run_mem_export(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
+pub(super) fn run_mem_export(
+    req: &CommandRequest,
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<ArmOut> {
     let CommandRequest::MemExport {
         format,
         limit,
@@ -50,7 +54,7 @@ pub(super) fn run_mem_export(req: &CommandRequest, root_arg: Option<&Path>) -> R
             "mem export: --limit must be at least 1".to_string(),
         ));
     }
-    let conn = open_mem_conn(root_arg, *global, MemoryMode::Query)?;
+    let conn = open_mem_query_conn(root_arg, *global, surface)?;
     let rows = crate::db::memory_current_rows(
         &conn,
         &crate::db::MemFilter {
