@@ -52,7 +52,7 @@ pub fn memory_ref_candidate_rows(
             matched.push(row);
         }
     }
-    matched.sort_by(|a, b| b.id.cmp(&a.id));
+    matched.sort_by_key(|a| std::cmp::Reverse(a.id));
     matched.truncate(cap);
     Ok(matched)
 }
