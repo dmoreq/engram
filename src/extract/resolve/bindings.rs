@@ -16,11 +16,32 @@ pub(super) fn follow_binding<'a>(
     seen: &mut HashSet<Binding<'a>>,
     display: &str,
 ) -> Option<Outcome> {
+    follow_binding_inner(t, binding, depth, seen, display, true)
+}
+
+pub(super) fn follow_callable_binding<'a>(
+    t: &'a Tables,
+    binding: Binding<'a>,
+    depth: usize,
+    seen: &mut HashSet<Binding<'a>>,
+    display: &str,
+) -> Option<Outcome> {
+    follow_binding_inner(t, binding, depth, seen, display, false)
+}
+
+fn follow_binding_inner<'a>(
+    t: &'a Tables,
+    binding: Binding<'a>,
+    depth: usize,
+    seen: &mut HashSet<Binding<'a>>,
+    display: &str,
+    allow_module: bool,
+) -> Option<Outcome> {
     let (module, name) = binding;
     if !seen.insert((module, name)) {
         return None;
     }
-    if let Some(out) = bare_candidates(t.mod_child(module, name), display) {
+    if let Some(out) = bare_candidates(t, t.mod_child(module, name), display, allow_module) {
         return Some(out);
     }
     // Bounded re-export walk: a chain longer than 4 hops stays UNRESOLVED.
@@ -29,12 +50,17 @@ pub(super) fn follow_binding<'a>(
     if depth >= 4 {
         return None;
     }
-    let Some(file_idx) = t.file_by_module.get(module).copied() else {
+    let file_idx = t.file_by_module.get(module).copied().or_else(|| {
+        // Binary-only Rust crate (`src/main.rs` without `src/lib.rs`).
+        let main_mod = main_module_for(module);
+        t.file_by_module.get(&main_mod).copied()
+    });
+    let Some(file_idx) = file_idx else {
         if let Some(cands) = t.carried_reexports.get(module).and_then(|m| m.get(name)) {
-            return bare_candidates(Some(cands.as_slice()), display);
+            return bare_candidates(t, Some(cands.as_slice()), display, allow_module);
         }
         if let Some(stars) = t.carried_stars.get(module) {
-            return star_follow(t, stars, name, depth, seen, display);
+            return star_follow(t, stars, name, depth, seen, display, allow_module);
         }
         return None;
     };
@@ -47,12 +73,18 @@ pub(super) fn follow_binding<'a>(
         name: n2,
     }) = nearest_alias_scoped(fctx, &fctx.module, name).map(|(_, target)| target)
     {
-        return follow_binding(t, (m2, n2), depth + 1, seen, display);
+        return follow_binding_inner(t, (m2, n2), depth + 1, seen, display, allow_module);
     }
     // Star-import re-export fallback (`from .sub import *` / `export * from './sub'`).
     let mut star_hits: Vec<usize> = Vec::new();
-    for (star_mod, _) in &fctx.bindings.stars {
-        if let Some(out) = follow_binding(t, (star_mod, name), depth + 1, seen, display) {
+    for (star_mod, line) in &fctx.bindings.stars {
+        let star_scope = fctx.bindings.star_scope(star_mod, *line);
+        if (!star_scope.is_empty() && star_scope != fctx.module) || star_mod == &fctx.module {
+            continue;
+        }
+        if let Some(out) =
+            follow_binding_inner(t, (star_mod, name), depth + 1, seen, display, allow_module)
+        {
             match out {
                 Outcome::Extracted(idx) if !star_hits.contains(&idx) => star_hits.push(idx),
                 Outcome::Extracted(_) | Outcome::Dropped | Outcome::Unresolved => {}
@@ -74,10 +106,13 @@ fn star_follow<'a>(
     depth: usize,
     seen: &mut HashSet<Binding<'a>>,
     display: &str,
+    allow_module: bool,
 ) -> Option<Outcome> {
     let mut hits: Vec<usize> = Vec::new();
     for star_mod in stars {
-        if let Some(out) = follow_binding(t, (star_mod, name), depth + 1, seen, display) {
+        if let Some(out) =
+            follow_binding_inner(t, (star_mod, name), depth + 1, seen, display, allow_module)
+        {
             match out {
                 Outcome::Extracted(idx) if !hits.contains(&idx) => hits.push(idx),
                 Outcome::Extracted(_) | Outcome::Dropped | Outcome::Unresolved => {}
@@ -90,70 +125,6 @@ fn star_follow<'a>(
         1 => Some(Outcome::Extracted(hits[0])),
         _ => Some(Outcome::Ambiguous(display.to_string())),
     }
-}
-
-/// Latest annotation or assignment at or before `site_line` in one scope.
-/// `include_params` treats a parameter annotation as a binding at line 0.
-pub(super) fn latest_binding<'a>(
-    fctx: &'a FileCtx,
-    scope: &str,
-    var: &str,
-    site_line: usize,
-    include_params: bool,
-) -> Option<&'a Vec<String>> {
-    if let Some(events) = fctx
-        .bindings
-        .assignments
-        .get(scope)
-        .and_then(|m| m.get(var))
-    {
-        let idx = events.partition_point(|(line, _)| *line <= site_line);
-        if idx > 0 {
-            return Some(&events[idx - 1].1);
-        }
-    }
-    if include_params {
-        if let Some(ann) = fctx.bindings.params.get(scope).and_then(|m| m.get(var)) {
-            return Some(ann);
-        }
-    }
-    None
-}
-
-/// Receiver typing at a call site: the latest annotation or assignment at or
-/// before `site_line`. The exact function scope wins; module scope is the
-/// fallback. A later assignment never changes an earlier call.
-pub(super) fn resolve_var_class(
-    t: &Tables,
-    fi: usize,
-    var: &str,
-    scope: &str,
-    scope_class: Option<&str>,
-    site_line: usize,
-    depth: usize,
-) -> Option<String> {
-    let fctx = &t.file_ctx[fi];
-    // Walk the lexical parent scopes out to the module: a receiver typed in
-    // an enclosing function must be visible inside a closure or nested
-    // function whose own scope never recorded the annotation.
-    let mut scopes: Vec<(&str, bool)> = vec![(scope, true)];
-    let mut parent = scope;
-    while let Some((p, _)) = parent.rsplit_once('.') {
-        scopes.push((p, true));
-        parent = p;
-    }
-    if !scope.is_empty() {
-        scopes.push(("", true));
-    }
-    for &(s, inc_params) in &scopes {
-        if let Some(target) = latest_binding(fctx, s, var, site_line, inc_params) {
-            if target.is_empty() {
-                return None;
-            }
-            return resolve_target_class(t, fi, target, scope, scope_class, site_line, depth);
-        }
-    }
-    None
 }
 
 /// Resolve a dotted chain to a class qualname via: local module -> alias map ->
@@ -238,6 +209,21 @@ pub(super) fn resolve_class_of_chain(
     if let Some(qn) = alias_class(t, fctx, chain, scope) {
         return Some(qn);
     }
+    // 2b. Star imports: `use super::*;` / `from mod import *` for classes/traits.
+    let mut star_hits: Vec<String> = Vec::new();
+    for (star_mod, line) in &fctx.bindings.stars {
+        if !scope_visible(fctx.bindings.star_scope(star_mod, *line), scope) {
+            continue;
+        }
+        if let Some(qn) = resolve_reexported_class(t, star_mod, &chain[0], &chain[1..]) {
+            if !star_hits.contains(&qn) {
+                star_hits.push(qn);
+            }
+        }
+    }
+    if star_hits.len() == 1 {
+        return star_hits.into_iter().next();
+    }
     // 3. Absolute qualname.
     let abs = chain.join(".");
     unique_class_exists(t, &abs).then_some(abs)
@@ -254,7 +240,28 @@ pub(super) fn crate_class(t: &Tables, root: Option<&str>, chain: &[String]) -> O
         return None;
     }
     let qn = mapped.join(".");
-    unique_class_exists(t, &qn).then_some(qn)
+    if unique_class_exists(t, &qn) {
+        return Some(qn);
+    }
+    if chain.len() >= 2 {
+        if let Some(reexp) = follow_reexport(t, root, &chain[1]) {
+            if chain.len() == 2 {
+                return Some(reexp);
+            }
+            let nested = format!("{reexp}.{}", chain[2..].join("."));
+            if unique_class_exists(t, &nested) {
+                return Some(nested);
+            }
+        }
+    }
+    if !t.file_by_module.contains_key(root) && chain.len() >= 2 {
+        let main_mod = main_module_for(root);
+        let main_qn = format!("{main_mod}.{}", chain[1..].join("."));
+        if unique_class_exists(t, &main_qn) {
+            return Some(main_qn);
+        }
+    }
+    None
 }
 
 pub(super) fn alias_class(
@@ -266,42 +273,16 @@ pub(super) fn alias_class(
     let target = nearest_alias_scoped(fctx, scope, &chain[0]).map(|(_, target)| target)?;
     match target {
         ImportTarget::Symbol { module, name } => {
-            let qn = format!("{module}.{name}");
-            // Direct hit first; then follow package re-export chains.
-            let base_qn = if unique_class_exists(t, &qn) {
-                Some(qn)
-            } else {
-                follow_reexport(t, module, name)
-            }?;
-            if chain.len() == 1 {
-                return Some(base_qn);
-            }
-            let nested = format!("{}.{}", base_qn, chain[1..].join("."));
-            unique_class_exists(t, &nested).then_some(nested)
+            resolve_reexported_class(t, module, name, &chain[1..])
         }
         ImportTarget::ModuleRoot { path } => {
             let (module, rest) = longest_module_prefix(t, path, &chain[1..])?;
             if rest.is_empty() {
                 return None;
             }
-            let qn = format!("{}.{}", module, rest.join("."));
-            unique_class_exists(t, &qn).then_some(qn)
+            resolve_reexported_class(t, &module, &rest[0], &rest[1..])
         }
         ImportTarget::Module { .. } => None,
-    }
-}
-
-/// Follow package re-export chains (`from pkg import Base` where pkg/__init__
-/// re-exports it) to the defining class qualname.
-pub(super) fn follow_reexport(t: &Tables, module: &str, name: &str) -> Option<String> {
-    let mut seen: HashSet<(&str, &str)> = HashSet::new();
-    match follow_binding(t, (module, name), 0, &mut seen, name) {
-        // Traits and interfaces re-exported through a prelude/index file carry
-        // inheritance edges too; restricting to Class severed those chains.
-        Some(Outcome::Extracted(idx)) if is_class_kind(t.symbols[idx].kind) => {
-            Some(t.symbols[idx].qualname.to_string())
-        }
-        _ => None,
     }
 }
 
@@ -397,6 +378,16 @@ pub(super) fn module_chain_outcome(
                 if class_exists(t, &qn) && chain.len() == 2 {
                     return mro_outcome(t, &qn, &chain[1]);
                 }
+                // Re-exported namespace (`export * as ns from './sub'`): follow
+                // the target module's alias when it points to a ModuleRoot.
+                if let Some(&target_fi) = t.file_by_module.get(module) {
+                    let target_fctx = &t.file_ctx[target_fi];
+                    if let Some((_, ImportTarget::ModuleRoot { path })) =
+                        nearest_alias_scoped(target_fctx, &target_fctx.module, name)
+                    {
+                        return chain_from_module(t, lang, path.clone(), &chain[1..]);
+                    }
+                }
                 // An imported symbol whose origin module is not indexed
                 // (third-party or stdlib package) is an external call site,
                 // not this repo's unresolved gap.
@@ -430,21 +421,35 @@ pub(super) fn chain_from_module(
     }
     if let Some((m, r)) = longest_module_prefix(t, &module, rest) {
         if r.is_empty() {
+            // If a submodule name shadows a same-named callable or re-export in
+            // its parent (e.g. `pkg/foo.py` vs `pkg/__init__.py`'s `from .foo import foo`),
+            // fall back to `(parent_module, last_segment)` via non-module binding.
+            if let Some((parent_mod, _)) = m.rsplit_once('.') {
+                let last_seg = rest.last().unwrap();
+                let mut seen: HashSet<(&str, &str)> = HashSet::new();
+                if let Some(out) = follow_callable_binding(
+                    t,
+                    (parent_mod, last_seg.as_str()),
+                    0,
+                    &mut seen,
+                    last_seg,
+                ) {
+                    return out;
+                }
+            }
             return Outcome::Unresolved;
         }
         if r.len() == 1 {
-            if let Some(cands) = t.mod_child(&m, &r[0]) {
-                return match cands.len() {
-                    1 => Outcome::Extracted(cands[0]),
-                    0 => Outcome::Unresolved,
-                    _ => Outcome::Ambiguous(r.join(".")),
-                };
+            if let Some(out) = bare_candidates(t, t.mod_child(&m, &r[0]), &r[0], false) {
+                return out;
             }
             // Module-qualified re-exports (`pub use inner::helper` in m's
             // mod file): chase the binding chain when the direct child
             // lookup misses, so the call resolves to the re-exported symbol.
             let mut seen: HashSet<(&str, &str)> = HashSet::new();
-            if let Some(out) = follow_binding(t, (m.as_str(), r[0].as_str()), 0, &mut seen, &r[0]) {
+            if let Some(out) =
+                follow_callable_binding(t, (m.as_str(), r[0].as_str()), 0, &mut seen, &r[0])
+            {
                 return out;
             }
         }

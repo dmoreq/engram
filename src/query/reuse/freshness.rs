@@ -17,6 +17,10 @@ pub(super) struct CheckResult {
     reason: Option<UnknownReason>,
 }
 
+const fn cr(state: Freshness, reason: Option<UnknownReason>) -> CheckResult {
+    CheckResult { state, reason }
+}
+
 struct HashJob {
     path: std::path::PathBuf,
     expected: i64,
@@ -129,24 +133,66 @@ impl<'a> Checker<'a> {
         let Some((stored_mtime, stored_size, stored_hash)) = stored else {
             return Ok(Prepared::Ready(unknown(UnknownReason::NewFile)));
         };
-        if meta.len() != stored_size as u64 {
-            return Ok(Prepared::Ready(stale_without_reason()));
+        Ok(self.check_meta(
+            abs,
+            meta.len(),
+            crate::db::metadata_mtime(&meta),
+            (stored_mtime, stored_size, stored_hash),
+        ))
+    }
+
+    fn check_meta(
+        &mut self,
+        abs: std::path::PathBuf,
+        actual_size: u64,
+        actual_mtime: Option<i64>,
+        (stored_mtime, stored_size, stored_hash): (i64, i64, i64),
+    ) -> Prepared {
+        if actual_size != stored_size as u64 {
+            return Prepared::Ready(stale_without_reason());
         }
-        let Some(mtime) = crate::db::metadata_mtime(&meta) else {
-            return Ok(Prepared::Ready(stale(UnknownReason::StatError)));
+        let Some(mtime) = actual_mtime else {
+            return Prepared::Ready(stale(UnknownReason::StatError));
         };
         if mtime == stored_mtime {
-            return Ok(Prepared::Ready(fresh()));
+            return Prepared::Ready(fresh());
         }
         if self.remaining_bytes < stored_size as u64 {
-            return Ok(Prepared::Ready(unknown(UnknownReason::HashBudget)));
+            return Prepared::Ready(unknown(UnknownReason::HashBudget));
         }
         self.remaining_bytes -= stored_size as u64;
-        Ok(Prepared::Hash(HashJob {
+        Prepared::Hash(HashJob {
             path: abs,
             expected: stored_hash,
-        }))
+        })
     }
+}
+
+fn preload_files(
+    conn: &rusqlite::Connection,
+    paths: &[String],
+) -> Result<HashMap<String, (i64, i64, i64)>> {
+    let mut map = HashMap::with_capacity(paths.len());
+    let refs: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|p| *p != "<proposal>")
+        .collect();
+    if refs.is_empty() {
+        return Ok(map);
+    }
+    crate::db::for_each_chunk(conn, &refs, |conn, placeholders, chunk| {
+        let sql = format!(
+            "SELECT path, mtime, size, content_hash FROM files WHERE path IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+        while let Some(r) = rows.next()? {
+            map.insert(r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?));
+        }
+        Ok(())
+    })?;
+    Ok(map)
 }
 
 fn hash_job(job: &HashJob) -> CheckResult {
@@ -161,31 +207,16 @@ fn hash_job(job: &HashJob) -> CheckResult {
 }
 
 fn fresh() -> CheckResult {
-    CheckResult {
-        state: Freshness::Fresh,
-        reason: None,
-    }
+    cr(Freshness::Fresh, None)
 }
-
 fn stale(reason: UnknownReason) -> CheckResult {
-    CheckResult {
-        state: Freshness::Stale,
-        reason: Some(reason),
-    }
+    cr(Freshness::Stale, Some(reason))
 }
-
 fn stale_without_reason() -> CheckResult {
-    CheckResult {
-        state: Freshness::Stale,
-        reason: None,
-    }
+    cr(Freshness::Stale, None)
 }
-
 fn unknown(reason: UnknownReason) -> CheckResult {
-    CheckResult {
-        state: Freshness::Unknown,
-        reason: Some(reason),
-    }
+    cr(Freshness::Unknown, Some(reason))
 }
 
 fn reason_rank(reason: UnknownReason) -> u8 {
@@ -225,13 +256,27 @@ pub(super) fn evaluate(
             paths.push(path.clone());
             map.insert(path, (mtime, size, hash));
         }
-        (paths, Some(map))
+        (paths, map)
     } else if candidates.is_empty() {
-        (scope.files.clone(), None)
+        let map = preload_files(ctx.conn, &scope.files)?;
+        (scope.files.clone(), map)
     } else {
-        (candidate_files(candidates), None)
+        let paths = candidate_files(candidates);
+        let map = preload_files(ctx.conn, &paths)?;
+        (paths, map)
     };
-    let mut checker = Checker::new(ctx, preloaded)?;
+    let walk_stats = if candidates.is_empty()
+        && matches!(scope.kind, status::ScopeKind::Repo | status::ScopeKind::Dir)
+    {
+        Some(crate::walk::walk(ctx.root, &crate::walk::source_exts()))
+    } else {
+        None
+    };
+    let walked_map: HashMap<String, &crate::walk::WalkedFile> = match &walk_stats {
+        Some(Ok(stats)) => stats.files.iter().map(|f| (f.rel.clone(), f)).collect(),
+        _ => HashMap::new(),
+    };
+    let mut checker = Checker::new(ctx, Some(preloaded))?;
     let mut results: HashMap<String, CheckResult> = HashMap::new();
     let mut seen = HashSet::new();
     for file in files {
@@ -243,7 +288,22 @@ pub(super) fn evaluate(
         if !seen.insert(file.clone()) {
             continue;
         }
-        let res = match checker.prepare(&file)? {
+        let prepared = if let (Some(wf), Some(stored)) = (
+            walked_map.get(&file),
+            checker
+                .preloaded
+                .as_ref()
+                .and_then(|m| m.get(&file).copied()),
+        ) {
+            if !crate::query::staleness::safe_index_path(&file) {
+                Prepared::Ready(stale(UnknownReason::UnsafePath))
+            } else {
+                checker.check_meta(wf.abs.clone(), wf.size, Some(wf.mtime), stored)
+            }
+        } else {
+            checker.prepare(&file)?
+        };
+        let res = match prepared {
             Prepared::Ready(result) => result,
             Prepared::Hash(job) => hash_job(&job),
         };
@@ -251,13 +311,12 @@ pub(super) fn evaluate(
     }
 
     let mut report = FreshnessReport::default();
-    if candidates.is_empty()
-        && matches!(scope.kind, status::ScopeKind::Repo | status::ScopeKind::Dir)
-    {
-        if let Some(reason) = new_file_walk(ctx, scope, &results, &mut report)? {
+    if let Some(stats_res) = walk_stats {
+        let pre = checker.preloaded.as_ref();
+        if let Some(reason) = new_file_walk(ctx, scope, pre, &results, stats_res, &mut report)? {
             if report
                 .unknown_reason
-                .is_none_or(|cur| reason_rank(reason) > reason_rank(cur))
+                .is_none_or(|c| reason_rank(reason) > reason_rank(c))
             {
                 report.unknown_reason = Some(reason);
             }
@@ -344,23 +403,32 @@ fn candidate_files(candidates: &[ReuseCandidate]) -> Vec<String> {
 fn new_file_walk(
     ctx: &QueryCtx<'_>,
     scope: &ResolvedScope,
+    preloaded: Option<&HashMap<String, (i64, i64, i64)>>,
     results: &HashMap<String, CheckResult>,
+    walk_res: Result<crate::walk::WalkStats>,
     report: &mut FreshnessReport,
 ) -> Result<Option<UnknownReason>> {
-    let indexed: HashSet<String> = {
+    let owned_indexed: Option<HashSet<String>> = if scope.is_repo() && preloaded.is_some() {
+        None
+    } else {
         let mut stmt = ctx.conn.prepare("SELECT path FROM files")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<HashSet<_>>>()?
+        Some(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
     };
-    let stats = match crate::walk::walk(ctx.root, &crate::walk::source_exts()) {
+    let stats = match walk_res {
         Ok(stats) => stats,
         Err(_) => return Ok(Some(UnknownReason::WalkError)),
     };
     let mut unknown_files = HashSet::new();
     for file in stats.files {
         let rel = file.rel;
+        let is_indexed = match (&owned_indexed, preloaded) {
+            (Some(set), _) => set.contains(&rel),
+            (None, Some(map)) => map.contains_key(&rel),
+            (None, None) => false,
+        };
         if !in_scope(&rel, scope)
-            || indexed.contains(&rel)
+            || is_indexed
             || rel.starts_with(".git/")
             || rel.starts_with(".engram/")
             || rel.starts_with(".tmp/")

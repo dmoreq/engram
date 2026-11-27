@@ -10,6 +10,22 @@ pub(crate) fn record_export_ts(node: Node<'_>, src: &[u8], fx: &mut FileExtracti
         // Barrel re-exports (`export { Base } from './types'` and `export * from './sub'`).
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
+            if child.kind() == "namespace_export" {
+                let mut ns_cur = child.walk();
+                if let Some(id) = child
+                    .children(&mut ns_cur)
+                    .find(|c| c.kind() == "identifier")
+                {
+                    fx.bindings.aliases.push((
+                        String::new(),
+                        text(id, src),
+                        ImportTarget::ModuleRoot {
+                            path: module.clone(),
+                        },
+                    ));
+                }
+                continue;
+            }
             if child.kind() == "*" || node_str(child, src) == "*" {
                 fx.bindings.stars.push((module.clone(), line));
                 fx.import_edges
@@ -43,6 +59,37 @@ pub(crate) fn record_export_ts(node: Node<'_>, src: &[u8], fx: &mut FileExtracti
             }
         }
         return;
+    }
+    // Local `export { local as renamed }`: bind `renamed` to `(fx.module, local)`.
+    let mut clause_cur = node.walk();
+    for child in node.children(&mut clause_cur) {
+        if child.kind() != "export_clause" {
+            continue;
+        }
+        let mut spec_cur = child.walk();
+        for spec in child.children(&mut spec_cur) {
+            if spec.kind() != "export_specifier" {
+                continue;
+            }
+            let Some(name_node) = spec.child_by_field_name("name") else {
+                continue;
+            };
+            let Some(alias_node) = spec.child_by_field_name("alias") else {
+                continue;
+            };
+            let local = text(name_node, src);
+            let renamed = text(alias_node, src);
+            if renamed != local {
+                fx.bindings.aliases.push((
+                    String::new(),
+                    renamed,
+                    ImportTarget::Symbol {
+                        module: fx.module.clone(),
+                        name: local,
+                    },
+                ));
+            }
+        }
     }
     // `export default foo;` (identifier form): bind the file-local name
     // "default" to the referenced symbol so `import X from './this'` in

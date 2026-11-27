@@ -328,6 +328,13 @@ fn consider_d3<'a>(
 
 /// Detector D3: Raw Client / Abstraction Bypass.
 fn check_d3(target: &SymbolData, corpus: &Corpus<'_>) -> Option<ReuseCandidate> {
+    if !target
+        .all_callees
+        .iter()
+        .any(|callee| is_raw_client(callee))
+    {
+        return None;
+    }
     let mut best_wrapper: Option<(&SymbolData, &str)> = None;
     let family = target.lang_family;
     match corpus.index {

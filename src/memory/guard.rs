@@ -242,19 +242,17 @@ fn collect_guards(
         return;
     }
     let placeholders = crate::db::sql_placeholders(kinds.len());
-    let make_sql = |order_by: &str| {
+    let make_sql = |cols: &str| {
         format!(
-            "SELECT id, key, kind, refs FROM memories
+            "SELECT {cols} FROM memories
              WHERE superseded_by IS NULL AND kind IN ({placeholders})
                AND (expires_at = 0 OR expires_at > ?) AND refs != ''
-             ORDER BY {order_by}"
+             ORDER BY created_at DESC"
         )
     };
     let Ok(mut stmt) = conn
-        .prepare(&make_sql(
-            "MAX(anchored_at, created_at) DESC, created_at DESC, key ASC",
-        ))
-        .or_else(|_| conn.prepare(&make_sql("created_at DESC, key ASC")))
+        .prepare(&make_sql("id, key, kind, refs, anchored_at, created_at"))
+        .or_else(|_| conn.prepare(&make_sql("id, key, kind, refs, 0, created_at")))
     else {
         return;
     };
@@ -269,15 +267,14 @@ fn collect_guards(
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
         ))
     }) else {
         return;
     };
-    let mut matched: Vec<(i64, String, String, String)> = Vec::new();
-    for (id, key, kind, refs) in rows.flatten() {
-        if out.len() + matched.len() >= limit {
-            break;
-        }
+    let mut matched = Vec::new();
+    for (id, key, kind, refs, anchored_at, created_at) in rows.flatten() {
         if seen_keys.contains(&key) {
             continue;
         }
@@ -287,25 +284,34 @@ fn collect_guards(
             .find(|t| ref_matches_target(&refs, t))
         {
             seen_keys.insert(key.clone());
-            matched.push((id, key, kind, target.to_string()));
+            matched.push((
+                (anchored_at.max(created_at), created_at, id),
+                key,
+                kind,
+                target.to_string(),
+            ));
         }
     }
     if matched.is_empty() {
         return;
     }
+    matched.sort_by(|a, b| b.0.cmp(&a.0));
+    matched.truncate(limit - out.len());
     let id_placeholders = crate::db::sql_placeholders(matched.len());
     let id_sql = format!("SELECT id, body FROM memories WHERE id IN ({id_placeholders})");
     let mut bodies = std::collections::HashMap::new();
     if let Ok(mut b_stmt) = conn.prepare(&id_sql) {
-        let ids: Vec<rusqlite::types::Value> =
-            matched.iter().map(|(id, _, _, _)| (*id).into()).collect();
+        let ids: Vec<rusqlite::types::Value> = matched
+            .iter()
+            .map(|((_, _, id), _, _, _)| (*id).into())
+            .collect();
         if let Ok(b_rows) = b_stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         }) {
             bodies.extend(b_rows.flatten());
         }
     }
-    for (id, key, kind, target) in matched {
+    for ((_, _, id), key, kind, target) in matched {
         let body = bodies.get(&id).map(String::as_str).unwrap_or("");
         out.push(GuardedNote {
             key,

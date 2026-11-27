@@ -30,22 +30,87 @@ pub fn callers(ctx: &QueryCtx<'_>, name: &str, opts: GraphQueryOpts) -> Result<Q
     let QueryCtx { conn, .. } = *ctx;
     let (limit, depth, ids) = prepare_graph_query(ctx, name, opts)?;
     if depth > 1 {
-        return callers_transitive(ctx, &ids, limit, depth);
+        return callers_transitive(ctx, &ids, name, limit, depth);
     }
 
     let (callers, total) = direct_callers(conn, &ids, limit)?;
     if total == 0 {
-        return Err(EgError::NoResults(
-            "0 callers found (dynamic dispatch possible — grep fallback recommended)".to_string(),
-        ));
+        return Err(EgError::NoResults(callers_empty_reason(conn, &ids, name)));
     }
     collect_output(ctx, callers.into_iter().map(Ok), limit, total)
+}
+
+fn callers_empty_reason(conn: &Connection, ids: &[i64], name: &str) -> String {
+    let base = "0 callers found (dynamic dispatch possible — grep fallback recommended)";
+    if ids.is_empty() {
+        return base.to_string();
+    }
+    let placeholders = crate::db::sql_placeholders(ids.len());
+    let params = id_params(ids);
+    let type_sql = format!(
+        "SELECT 1 FROM symbols WHERE id IN ({placeholders}) AND kind IN ('{}', '{}', '{}') LIMIT 1",
+        SymbolKind::Class.as_str(),
+        SymbolKind::Trait.as_str(),
+        SymbolKind::Interface.as_str(),
+    );
+    let is_type = conn
+        .query_row(&type_sql, rusqlite::params_from_iter(params.iter()), |_| {
+            Ok(())
+        })
+        .is_ok();
+    if !is_type {
+        return base.to_string();
+    }
+    let edge_sql = format!(
+        "SELECT kind, COUNT(*) FROM edges
+         WHERE dst_id IN ({placeholders}) AND kind IN ('{}', '{}', '{}')
+         GROUP BY kind",
+        EdgeKind::Imports.as_str(),
+        EdgeKind::Inherits.as_str(),
+        EdgeKind::TypeRef.as_str(),
+    );
+    let Ok(mut stmt) = conn.prepare(&edge_sql) else {
+        return base.to_string();
+    };
+    let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    }) else {
+        return base.to_string();
+    };
+    let (mut imports, mut inherits, mut type_refs) = (0i64, 0i64, 0i64);
+    for row in rows.flatten() {
+        match EdgeKind::parse(&row.0) {
+            Some(EdgeKind::Imports) => imports = row.1,
+            Some(EdgeKind::Inherits) => inherits = row.1,
+            Some(EdgeKind::TypeRef) => type_refs = row.1,
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    if imports > 0 {
+        parts.push(format!("{imports} imports"));
+    }
+    if inherits > 0 {
+        parts.push(format!("{inherits} inherits"));
+    }
+    if type_refs > 0 {
+        parts.push(format!("{type_refs} type_refs"));
+    }
+    if parts.is_empty() {
+        return base.to_string();
+    }
+    let s_name = sanitize(name);
+    format!(
+        "0 callers found (dynamic dispatch possible — grep fallback recommended; referenced by {} — try 'eg impact {s_name} --edges all' or 'eg context {s_name}')",
+        parts.join(", ")
+    )
 }
 
 /// Transitive callers (depth > 1), symmetric with `callees_transitive`.
 fn callers_transitive(
     ctx: &QueryCtx<'_>,
     ids: &[i64],
+    name: &str,
     limit: usize,
     depth: usize,
 ) -> Result<QueryOutput> {
@@ -66,12 +131,7 @@ fn callers_transitive(
             order_by: "lvl, path, line, qn",
             caveat: Some(caveat),
         },
-        || {
-            Ok(
-                "0 callers found (dynamic dispatch possible — grep fallback recommended)"
-                    .to_string(),
-            )
-        },
+        || Ok(callers_empty_reason(ctx.conn, ids, name)),
         |r| {
             let line: i64 = r.get(0)?;
             let conf: String = r.get(1)?;
@@ -252,5 +312,39 @@ mod tests {
             out.total, 2,
             "resolved dst_id=2 and dst-less edge_id=2 must not collide"
         );
+    }
+
+    #[test]
+    fn callers_on_type_with_zero_callers_surfaces_non_call_edge_hint() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER DEFAULT 0, mtime INTEGER DEFAULT 0, content_hash INTEGER DEFAULT 0);
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualname TEXT, file_id INTEGER, file_path TEXT, line_start INTEGER, line_end INTEGER);
+             CREATE TABLE edges (id INTEGER PRIMARY KEY, src_id INTEGER, dst_id INTEGER, dst_name TEXT, kind TEXT, confidence TEXT, site_line INTEGER);
+             INSERT INTO files (id, path) VALUES (1, 'a.py');
+             INSERT INTO symbols VALUES (1, 'class', 'Widget', 'a.Widget', 1, 'a.py', 1, 10);
+             INSERT INTO symbols VALUES (2, 'module', 'b', 'b', 1, 'a.py', 1, 1);
+             INSERT INTO edges VALUES (1, 2, 1, 'Widget', 'imports', 'resolved', 1);
+             INSERT INTO edges VALUES (2, 2, 1, 'Widget', 'type_ref', 'resolved', 2);",
+        )
+        .unwrap();
+        let ctx = QueryCtx {
+            conn: &conn,
+            root: std::path::Path::new("."),
+        };
+        let Err(err) = callers(
+            &ctx,
+            "a.Widget",
+            GraphQueryOpts {
+                limit: 10,
+                depth: 1,
+            },
+        ) else {
+            panic!("expected NoResults");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("0 callers found"), "{msg}");
+        assert!(msg.contains("1 imports, 1 type_refs"), "{msg}");
+        assert!(msg.contains("eg impact a.Widget --edges all"), "{msg}");
     }
 }

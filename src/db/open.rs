@@ -86,15 +86,15 @@ pub fn try_open_index(root: &Path) -> std::result::Result<Connection, IndexOpenE
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct McpIndexStamp {
-    path: std::path::PathBuf,
+pub(super) struct McpIndexStamp {
+    pub(super) path: std::path::PathBuf,
     dev: u64,
     ino: u64,
     mtime_ns: i128,
     len: u64,
 }
 
-fn index_stamp(path: &Path, meta: &fs::Metadata) -> McpIndexStamp {
+pub(super) fn index_stamp(path: &Path, meta: &fs::Metadata) -> McpIndexStamp {
     let mtime_ns = meta
         .modified()
         .ok()
@@ -155,7 +155,7 @@ impl Drop for CachedConnection {
 /// Process-local read-only `Connection` cache for `eg mcp`, validated by
 /// `(PathBuf, dev, ino, mtime_ns, len)` via `symlink_metadata`.
 #[allow(dead_code)]
-pub(crate) fn open_cached_for_mcp(root: &Path) -> Result<CachedConnection> {
+pub fn open_cached_for_mcp(root: &Path) -> Result<CachedConnection> {
     reject_tracked_eg_dir(root)?;
     reject_symlink(&eg_dir(root), ".engram directory")?;
     let path = db_path(root);
@@ -192,7 +192,7 @@ pub(crate) fn open_cached_for_mcp(root: &Path) -> Result<CachedConnection> {
 /// Evict the cached MCP index connection (all or for a specific root) before
 /// `build` or memory mutations.
 #[allow(dead_code)]
-pub(crate) fn evict_mcp_cache(root: Option<&Path>) {
+pub fn evict_mcp_cache(root: Option<&Path>) {
     let Some(cell) = MCP_INDEX_CACHE.get() else {
         return;
     };
@@ -202,8 +202,8 @@ pub(crate) fn evict_mcp_cache(root: Option<&Path>) {
                 *guard = None;
             }
             Some(r) => {
-                let target = db_path(r);
-                let target_canon = std::fs::canonicalize(&target).unwrap_or(target);
+                let root_canon = fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf());
+                let target_canon = db_path(&root_canon);
                 if guard.as_ref().is_some_and(|c| c.stamp.path == target_canon) {
                     *guard = None;
                 }

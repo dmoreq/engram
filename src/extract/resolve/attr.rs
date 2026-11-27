@@ -221,17 +221,10 @@ pub(super) fn resolve_rust_keyword_path(ctx: &CallCtx<'_>, chain: &[String]) -> 
     None
 }
 
-/// Shared full-qualname lookup: exactly one match -> Extracted, several ->
-/// Ambiguous, none -> Unresolved.
+/// Shared full-qualname lookup at call sites: excludes `SymbolKind::Module`.
 pub(super) fn qualname_outcome(t: &Tables, full: &str) -> Outcome {
-    match t.by_qualname.get(full) {
-        Some(cands) => match cands.len() {
-            1 => Outcome::Extracted(cands[0]),
-            0 => Outcome::Unresolved,
-            _ => Outcome::Ambiguous(full.to_string()),
-        },
-        None => Outcome::Unresolved,
-    }
+    bare_candidates(t, t.by_qualname.get(full).map(Vec::as_slice), full, false)
+        .unwrap_or(Outcome::Unresolved)
 }
 
 pub(super) fn crate_keyword_path(ctx: &CallCtx<'_>, chain: &[String]) -> Outcome {
@@ -251,7 +244,29 @@ pub(super) fn crate_keyword_path(ctx: &CallCtx<'_>, chain: &[String]) -> Outcome
     // mod.rs): look the whole path up as a qualname under the crate root
     // (Amendment 7a).
     let full = format!("{}.{}", root, chain[1..].join("."));
-    qualname_outcome(ctx.t, &full)
+    let out = qualname_outcome(ctx.t, &full);
+    if !matches!(out, Outcome::Unresolved) {
+        return out;
+    }
+    // Binary-only crate (`src/main.rs` without `src/lib.rs`): `crate::`
+    // re-exports and items live in `<root>.main` (or `"main"` at repo root).
+    if !ctx.t.file_by_module.contains_key(root.as_str()) {
+        let main_mod = main_module_for(root);
+        let out = chain_from_module(ctx.t, ctx.fctx.lang, main_mod.clone(), &chain[1..]);
+        if !matches!(out, Outcome::Unresolved) {
+            return out;
+        }
+        return qualname_outcome(ctx.t, &format!("{main_mod}.{}", chain[1..].join(".")));
+    }
+    Outcome::Unresolved
+}
+
+pub(super) fn main_module_for(root: &str) -> String {
+    if root.is_empty() {
+        "main".to_string()
+    } else {
+        format!("{root}.main")
+    }
 }
 
 /// Method names so common that a same-file match is not evidence of the
@@ -346,14 +361,32 @@ pub(super) fn chain_is_module_start(t: &Tables, fi: usize, first: &str, scope: &
 }
 
 /// Candidate outcome for a bare-name lookup across one namespace.
-/// by_mod_name already holds only direct module children (function/class).
-pub(super) fn bare_candidates(cands: Option<&[usize]>, display: &str) -> Option<Outcome> {
+/// When `allow_module` is false (call sites), `SymbolKind::Module` is excluded.
+pub(super) fn bare_candidates(
+    t: &Tables,
+    cands: Option<&[usize]>,
+    display: &str,
+    allow_module: bool,
+) -> Option<Outcome> {
     let v = cands?;
-    match v.len() {
-        1 => Some(Outcome::Extracted(v[0])),
-        0 => None,
-        _ => Some(Outcome::Ambiguous(display.to_string())),
+    let mut filtered = v
+        .iter()
+        .copied()
+        .filter(|&i| allow_module || t.symbols[i].kind != SymbolKind::Module);
+    let first = filtered.next()?;
+    if filtered.next().is_some() {
+        Some(Outcome::Ambiguous(display.to_string()))
+    } else {
+        Some(Outcome::Extracted(first))
     }
+}
+
+pub(super) fn scope_visible(binding_scope: &str, scope: &str) -> bool {
+    binding_scope.is_empty()
+        || scope == binding_scope
+        || scope
+            .strip_prefix(binding_scope)
+            .is_some_and(|r| r.starts_with('.'))
 }
 
 /// Nearest import binding for `name` at `scope`: an exact local scope (or a
@@ -367,12 +400,9 @@ pub(super) fn nearest_alias_scoped<'a>(
     let mut best: Option<&'a (String, ImportTarget)> = None;
     for entry in entries {
         let binding_scope = entry.0.as_str();
-        let visible = binding_scope.is_empty()
-            || scope == binding_scope
-            || scope
-                .strip_prefix(binding_scope)
-                .is_some_and(|r| r.starts_with('.'));
-        if visible && best.is_none_or(|b| binding_scope.len() >= b.0.len()) {
+        if scope_visible(binding_scope, scope)
+            && best.is_none_or(|b| binding_scope.len() >= b.0.len())
+        {
             best = Some(entry);
         }
     }

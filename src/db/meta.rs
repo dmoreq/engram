@@ -92,18 +92,28 @@ fn git_cmd(root: &Path, args: &[&str]) -> Option<std::process::Output> {
         .filter(|o| o.status.success())
 }
 
-/// Probe the source repo's git revision with a `-dirty` suffix on a dirty tree.
-pub fn source_rev(root: &Path) -> String {
+/// Probe whether the source repo's git working tree has uncommitted changes.
+/// Callers inside a SQLite write transaction should compute this before `BEGIN`.
+pub fn source_dirty(root: &Path) -> bool {
+    git_cmd(root, &["status", "--porcelain"]).is_some_and(|o| !o.stdout.is_empty())
+}
+
+/// Build the source revision string from `git rev-parse HEAD` and a precomputed `dirty` flag.
+pub fn source_rev_with_dirty(root: &Path, dirty: bool) -> String {
     let head = git_cmd(root, &["rev-parse", "HEAD"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     let Some(mut rev) = head else {
         return "unknown".to_string();
     };
-    let dirty = git_cmd(root, &["status", "--porcelain"]).is_some_and(|o| !o.stdout.is_empty());
     if dirty {
         rev.push_str("-dirty");
     }
     rev
+}
+
+/// Probe the source repo's git revision with a `-dirty` suffix on a dirty tree.
+pub fn source_rev(root: &Path) -> String {
+    source_rev_with_dirty(root, source_dirty(root))
 }
 
 /// Nanosecond-precision mtime from already-captured metadata; `None` when

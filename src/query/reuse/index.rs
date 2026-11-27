@@ -41,14 +41,25 @@ pub(super) struct CorpusIndex {
     /// their union cost while preserving the exact shared-key counts.
     deep_group_rep: Vec<i64>,
     deep_key_group: HashMap<i64, usize>,
-    by_token_pair: HashMap<(String, String), Vec<i64>>,
+    token_ids: HashMap<String, u32>,
+    by_token_pair: HashMap<(u32, u32), Vec<i64>>,
     by_raw_client: HashMap<(String, LangFamily), Vec<i64>>,
 }
 
 impl CorpusIndex {
+    fn intern_token(&mut self, token: &str) -> u32 {
+        if let Some(&id) = self.token_ids.get(token) {
+            return id;
+        }
+        let id = self.token_ids.len() as u32;
+        self.token_ids.insert(token.to_string(), id);
+        id
+    }
+
     /// Build the posting lists in one pass over the corpus.
     pub(super) fn build(symbols: &HashMap<i64, SymbolData>, deep_callee: bool) -> Self {
         let mut index = CorpusIndex::default();
+        let mut token_buf: Vec<u32> = Vec::new();
         for sym in symbols.values() {
             if deep_callee {
                 for callee in sym.deep_weights.keys() {
@@ -63,13 +74,14 @@ impl CorpusIndex {
                     index.by_callee.entry(*callee).or_default().push(sym.id);
                 }
             }
-            let mut tokens: Vec<&String> = sym.name_tokens.iter().collect();
-            tokens.sort_unstable();
-            for (i, left) in tokens.iter().enumerate() {
-                for right in &tokens[i + 1..] {
+            token_buf.clear();
+            token_buf.extend(sym.name_tokens.iter().map(|t| index.intern_token(t)));
+            token_buf.sort_unstable();
+            for (i, &left) in token_buf.iter().enumerate() {
+                for &right in &token_buf[i + 1..] {
                     index
                         .by_token_pair
-                        .entry(((*left).clone(), (*right).clone()))
+                        .entry((left, right))
                         .or_default()
                         .push(sym.id);
                 }
@@ -175,14 +187,15 @@ impl CorpusIndex {
                 }
             }
             PostingKind::TokenPair => {
-                let mut tokens: Vec<&String> = target.name_tokens.iter().collect();
+                let mut tokens: Vec<u32> = target
+                    .name_tokens
+                    .iter()
+                    .filter_map(|t| self.token_ids.get(t).copied())
+                    .collect();
                 tokens.sort_unstable();
-                for (i, left) in tokens.iter().enumerate() {
-                    for right in &tokens[i + 1..] {
-                        add_postings(
-                            self.by_token_pair.get(&((*left).clone(), (*right).clone())),
-                            &mut counts,
-                        );
+                for (i, &left) in tokens.iter().enumerate() {
+                    for &right in &tokens[i + 1..] {
+                        add_postings(self.by_token_pair.get(&(left, right)), &mut counts);
                     }
                 }
             }

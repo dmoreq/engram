@@ -3,6 +3,8 @@
 
 use super::*;
 
+const HASH_BUDGET: u64 = 16 * 1024 * 1024;
+
 /// Count result files changed since the build and render the standard header.
 /// Every query surface uses the same wording and the same stat short-circuit.
 pub(super) fn staleness_header(
@@ -14,6 +16,7 @@ pub(super) fn staleness_header(
     }
     let paths: Vec<&str> = files.iter().map(String::as_str).collect();
     let mut changed = 0usize;
+    let mut remaining_bytes = HASH_BUDGET;
     let _ = crate::db::for_each_chunk(ctx.conn, &paths, |conn, placeholders, chunk| {
         let sql = format!(
             "SELECT path, mtime, size, content_hash FROM files WHERE path IN ({placeholders})"
@@ -29,7 +32,12 @@ pub(super) fn staleness_header(
         })?;
         for row in rows {
             let (path, mtime, size, hash) = row?;
-            if file_meta_changed(ctx.root, &path, (mtime, size, hash)) {
+            if file_meta_changed_budgeted(
+                ctx.root,
+                &path,
+                (mtime, size, hash),
+                &mut remaining_bytes,
+            ) {
                 changed += 1;
             }
         }
@@ -60,6 +68,16 @@ pub(crate) fn file_changed(ctx: &QueryCtx<'_>, rel: &str) -> bool {
 
 /// Compare on-disk metadata/content against stored `(mtime, size, content_hash)`.
 pub(crate) fn file_meta_changed(root: &Path, rel: &str, stored: (i64, i64, i64)) -> bool {
+    let mut unlimited = u64::MAX;
+    file_meta_changed_budgeted(root, rel, stored, &mut unlimited)
+}
+
+fn file_meta_changed_budgeted(
+    root: &Path,
+    rel: &str,
+    stored: (i64, i64, i64),
+    remaining_bytes: &mut u64,
+) -> bool {
     let (stored_mtime, stored_size, stored_hash) = stored;
     // Index rows are attacker-authored in a cloned repository. Never join an
     // absolute, parent-traversing, or backslash path onto the root, and never
@@ -81,6 +99,14 @@ pub(crate) fn file_meta_changed(root: &Path, rel: &str, stored: (i64, i64, i64))
         return true;
     };
     if mtime != stored_mtime {
+        // Cap synchronous re-hashing so dirty-mtime checkouts never cause
+        // unbounded I/O spikes; files past the budget are treated conservatively
+        // as changed.
+        let size_u64 = stored_size as u64;
+        if *remaining_bytes < size_u64 {
+            return true;
+        }
+        *remaining_bytes -= size_u64;
         // Same guard as the walk (regular file + hard 1 MiB cap): a FIFO,
         // socket, or over-cap replacement must not block or blow up the
         // re-hash. Any such oddity is conservatively treated as changed.
@@ -161,5 +187,24 @@ mod tests {
         let (header, stale) = super::staleness_header(&ctx, &set);
         assert!(stale);
         assert!(header.unwrap().contains("1 of 2 result files changed"));
+    }
+
+    #[test]
+    fn hash_budget_stops_rehashing_after_exhaustion() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let abs = root.join("Cargo.toml");
+        let meta = std::fs::symlink_metadata(&abs).unwrap();
+        let size = meta.len() as i64;
+        let hash = super::fnv1a64(&std::fs::read(&abs).unwrap()) as i64;
+        let mut budget = 0u64;
+        // Dirty mtime with 0 remaining budget returns true conservatively
+        // without reading/hashing even though content hash matches.
+        assert!(super::file_meta_changed_budgeted(
+            root,
+            "Cargo.toml",
+            (0, size, hash),
+            &mut budget
+        ));
+        assert_eq!(budget, 0);
     }
 }

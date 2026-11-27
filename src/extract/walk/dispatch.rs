@@ -201,7 +201,7 @@ pub(super) fn record_call(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, c
         .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("constructor"));
     let Some(f) = f else { return };
-    if try_ts_module_import(node, f, src, fx) {
+    if try_ts_module_import(node, f, src, fx, ctx) {
         return;
     }
     let callee = match dotted_chain(f, src) {
@@ -227,7 +227,13 @@ pub(super) fn record_call(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, c
     });
 }
 
-fn try_ts_module_import(node: Node<'_>, f: Node<'_>, src: &[u8], fx: &mut FileExtraction) -> bool {
+fn try_ts_module_import(
+    node: Node<'_>,
+    f: Node<'_>,
+    src: &[u8],
+    fx: &mut FileExtraction,
+    ctx: &WalkCtx,
+) -> bool {
     if !matches!(fx.lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
         return false;
     }
@@ -242,8 +248,81 @@ fn try_ts_module_import(node: Node<'_>, f: Node<'_>, src: &[u8], fx: &mut FileEx
     else {
         return false;
     };
-    typescript::push_ts_module_edge(fx, src, arg, node.start_position().row + 1);
+    let line = node.start_position().row + 1;
+    let module = typescript::push_ts_module_edge(fx, src, arg, line);
+    if callee == "require" {
+        bind_commonjs_require(node, &module, line, src, fx, &ctx.scope_func());
+    }
     true
+}
+
+fn bind_commonjs_require(
+    call_node: Node<'_>,
+    module: &str,
+    line: usize,
+    src: &[u8],
+    fx: &mut FileExtraction,
+    scope: &str,
+) {
+    let Some(parent) = call_node.parent() else {
+        return;
+    };
+    if parent.kind() != "variable_declarator"
+        || parent
+            .child_by_field_name("value")
+            .is_none_or(|v| v.id() != call_node.id())
+    {
+        return;
+    }
+    let Some(lhs) = parent.child_by_field_name("name") else {
+        return;
+    };
+    match lhs.kind() {
+        "identifier" => {
+            fx.bindings.aliases.push((
+                scope.to_string(),
+                text(lhs, src),
+                ImportTarget::ModuleRoot {
+                    path: module.to_string(),
+                },
+            ));
+        }
+        "object_pattern" => {
+            let mut cur = lhs.walk();
+            for child in lhs.children(&mut cur) {
+                let (orig, bound) = match child.kind() {
+                    "shorthand_property_identifier_pattern" => {
+                        let name = text(child, src);
+                        (name.clone(), name)
+                    }
+                    "pair_pattern" => {
+                        let (Some(k), Some(v)) = (
+                            child.child_by_field_name("key"),
+                            child.child_by_field_name("value"),
+                        ) else {
+                            continue;
+                        };
+                        if v.kind() != "identifier" {
+                            continue;
+                        }
+                        (text(k, src), text(v, src))
+                    }
+                    _ => continue,
+                };
+                fx.bindings.aliases.push((
+                    scope.to_string(),
+                    bound,
+                    ImportTarget::Symbol {
+                        module: module.to_string(),
+                        name: orig.clone(),
+                    },
+                ));
+                fx.import_edges
+                    .push(ImportEdgeCandidate::symbol(line, module.to_string(), orig));
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn define_function<'a>(w: &mut Walker<'a, '_, '_>, kind: SymbolKind) {

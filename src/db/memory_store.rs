@@ -4,6 +4,10 @@
 use super::memory_fts::ensure_memory_fts_v2;
 use super::*;
 
+mod mcp_cache;
+#[allow(unused_imports)]
+pub use mcp_cache::{evict_memory_mcp_cache, open_cached_memory_for_mcp, CachedMemoryConnection};
+
 /// Compiled memory schema version; gates `.engram/memory.db` like SCHEMA_VERSION
 /// gates the index, with a diverging policy: older-but-structurally-complete
 /// stores open read-write (memory cannot be rebuilt), only newer-than-binary

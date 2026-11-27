@@ -39,6 +39,9 @@ struct ResolvedBindings {
     /// Anonymous callback parameters, scoped by source line range.
     arrow_params: Vec<ArrowParam>,
     stars: Vec<(String, usize)>,
+    star_scopes: HashMap<(String, usize), String>,
+    maybe_external_stars: HashSet<(String, usize)>,
+    maybe_external_aliases: HashSet<(String, String)>,
     from_import_parents: HashSet<(usize, String)>,
     /// scope_func -> (var -> ordered (site_line, constructor target chain)).
     assignments: BindingEvents,
@@ -48,6 +51,15 @@ struct ResolvedBindings {
     self_fields: Vec<SelfField>,
     /// Raw function/method/`@property` return type chains, resolved in `resolve_types_and_fields`.
     return_types: Vec<(String, Vec<String>)>,
+}
+
+impl ResolvedBindings {
+    pub(super) fn star_scope(&self, star_mod: &str, line: usize) -> &str {
+        self.star_scopes
+            .get(&(star_mod.to_string(), line))
+            .map(String::as_str)
+            .unwrap_or("")
+    }
 }
 
 struct Tables {
@@ -139,6 +151,7 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
     };
     merge_fresh(&mut t, &mut files);
     merge_carried(&mut t, carried);
+    prune_external_rust_imports(&mut t);
     let mut unresolved_calls = seed_unresolved_inherits(&t);
     emit_inherit_phase(EmitCtx {
         t: &mut t,
@@ -180,12 +193,15 @@ fn collect_module_exports(t: &Tables) -> (Vec<ResolvedModuleExport>, Vec<Resolve
     let mut stars = Vec::new();
     for fctx in &t.file_ctx {
         let file_idx = t.symbols[fctx.module_sym_idx].file_idx;
-        for (star_mod, _) in &fctx.bindings.stars {
-            stars.push(ResolvedModuleStar {
-                file_idx,
-                module_qualname: fctx.module.clone(),
-                star_module: star_mod.clone(),
-            });
+        for (star_mod, line) in &fctx.bindings.stars {
+            let scope = fctx.bindings.star_scope(star_mod, *line);
+            if (scope.is_empty() || scope == fctx.module) && star_mod != &fctx.module {
+                stars.push(ResolvedModuleStar {
+                    file_idx,
+                    module_qualname: fctx.module.clone(),
+                    star_module: star_mod.clone(),
+                });
+            }
         }
         for (alias, entries) in &fctx.bindings.aliases {
             for (scope, target) in entries {
@@ -289,11 +305,53 @@ fn fold_binding_maps(fx: &mut FileBindings) -> ResolvedBindings {
         locals,
         arrow_params: bindings.arrow_params,
         stars: bindings.stars,
+        star_scopes: bindings.star_scopes,
+        maybe_external_stars: bindings.maybe_external_stars,
+        maybe_external_aliases: bindings.maybe_external_aliases,
         from_import_parents: bindings.from_import_parents,
         assignments,
         params,
         self_fields: bindings.self_fields,
         return_types: bindings.return_types,
+    }
+}
+
+fn is_indexed_rust_import(module_paths: &HashSet<String>, target: &ImportTarget) -> bool {
+    match target {
+        ImportTarget::Module { path } | ImportTarget::ModuleRoot { path } => {
+            module_paths.contains(path)
+        }
+        ImportTarget::Symbol { module, name } => {
+            module_paths.contains(module) || module_paths.contains(&format!("{module}.{name}"))
+        }
+    }
+}
+
+fn prune_external_rust_imports(t: &mut Tables) {
+    for fctx in &mut t.file_ctx {
+        if fctx.lang != Lang::Rust {
+            continue;
+        }
+        fctx.import_edges
+            .retain(|e| !e.maybe_external || is_indexed_rust_import(&t.module_paths, &e.target));
+        let ext_stars = std::mem::take(&mut fctx.bindings.maybe_external_stars);
+        if !ext_stars.is_empty() {
+            fctx.bindings.stars.retain(|(m, line)| {
+                !ext_stars.contains(&(m.clone(), *line)) || t.module_paths.contains(m)
+            });
+        }
+        let ext_aliases = std::mem::take(&mut fctx.bindings.maybe_external_aliases);
+        if !ext_aliases.is_empty() {
+            for (alias, entries) in &mut fctx.bindings.aliases {
+                entries.retain(|(scope, target)| {
+                    !ext_aliases.contains(&(scope.clone(), alias.clone()))
+                        || is_indexed_rust_import(&t.module_paths, target)
+                });
+            }
+            fctx.bindings
+                .aliases
+                .retain(|_, entries| !entries.is_empty());
+        }
     }
 }
 

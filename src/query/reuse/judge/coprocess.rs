@@ -108,7 +108,18 @@ fn spawn(setup: &Setup) -> Option<Session> {
 /// when the session cannot answer (tears itself down; the caller falls
 /// back to the one-shot batch).
 pub(super) fn judge_batch(setup: &Setup, pairs: &[(String, String)]) -> Option<Vec<String>> {
-    if !ENABLED.load(Ordering::SeqCst) || pairs.is_empty() {
+    let requests: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|(left, right)| serde_json::json!({"text_a": left, "text_b": right}))
+        .collect();
+    query_lines(setup, &requests)
+}
+
+/// Send arbitrary NDJSON request objects to the persistent coprocess and read
+/// one response line per request. Exposed internally for `embed`/`judge_hint`
+/// integration without altering the similarity NDJSON protocol.
+pub(super) fn query_lines(setup: &Setup, requests: &[serde_json::Value]) -> Option<Vec<String>> {
+    if !ENABLED.load(Ordering::SeqCst) || requests.is_empty() {
         return None;
     }
     let mut guard = slot().lock().ok()?;
@@ -126,9 +137,8 @@ pub(super) fn judge_batch(setup: &Setup, pairs: &[(String, String)]) -> Option<V
         }
     }
     let session = state.session.as_mut()?;
-    let mut lines = Vec::with_capacity(pairs.len());
-    for (left, right) in pairs {
-        let request = serde_json::json!({"text_a": left, "text_b": right});
+    let mut lines = Vec::with_capacity(requests.len());
+    for request in requests {
         if writeln!(session.stdin, "{request}").is_err() || session.stdin.flush().is_err() {
             state.session = None;
             if fresh && lines.is_empty() {
