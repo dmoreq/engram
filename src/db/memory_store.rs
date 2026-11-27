@@ -63,10 +63,16 @@ pub(crate) fn map_memory_err(e: rusqlite::Error) -> EgError {
 }
 
 fn memory_manifest_complete(conn: &Connection) -> Result<bool> {
-    for (table, column) in MEMORY_REQUIRED {
-        if !column_present(conn, table, column).map_err(map_memory_err)? {
-            return Ok(false);
-        }
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info('memories')")
+        .map_err(map_memory_err)?;
+    let cols: std::collections::HashSet<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(map_memory_err)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(map_memory_err)?;
+    if !MEMORY_REQUIRED.iter().all(|(_, col)| cols.contains(*col)) {
+        return Ok(false);
     }
     let fts: i64 = conn
         .query_row(
@@ -102,13 +108,15 @@ fn memory_version_gate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn memory_pragmas(conn: &Connection) -> Result<()> {
+fn memory_pragmas(conn: &Connection, read_only: bool) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_millis(MEMORY_BUSY_TIMEOUT_MS))
         .map_err(map_memory_err)?;
-    // synchronous = FULL is the rollback-journal default; stated explicitly so
-    // the durability contract survives a future default change.
-    conn.execute_batch("PRAGMA synchronous = FULL;")
-        .map_err(map_memory_err)?;
+    if !read_only {
+        // synchronous = FULL is the rollback-journal default; stated explicitly so
+        // the durability contract survives a future default change.
+        conn.execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(map_memory_err)?;
+    }
     Ok(())
 }
 
@@ -312,7 +320,7 @@ fn open_memory_conn_path(
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )
     .map_err(map_memory_err)?;
-    memory_pragmas(&conn)?;
+    memory_pragmas(&conn, false)?;
     if !memory_manifest_complete(&conn)? {
         create_memory_schema(&conn)?;
     }
@@ -439,7 +447,7 @@ fn open_memory_query_path(
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(map_memory_err)?;
-    memory_pragmas(&conn)?;
+    memory_pragmas(&conn, true)?;
     memory_version_gate(&conn)?;
     Ok(conn)
 }
@@ -452,4 +460,41 @@ pub fn open_memory_query(root: &Path) -> Result<Connection> {
 
 pub fn open_global_memory_query() -> Result<Connection> {
     open_memory(StoreLocation::Global, StoreMode::Query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_complete_checks_full_and_partial_schemas() {
+        let full = Connection::open_in_memory().unwrap();
+        full.execute_batch(include_str!("../../schema/memory.sql"))
+            .unwrap();
+        assert!(memory_manifest_complete(&full).unwrap());
+
+        let partial = Connection::open_in_memory().unwrap();
+        partial
+            .execute_batch(
+                "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT);
+                 CREATE VIRTUAL TABLE memories_fts USING fts5(text);",
+            )
+            .unwrap();
+        assert!(!memory_manifest_complete(&partial).unwrap());
+    }
+
+    #[test]
+    fn query_path_opens_read_only_store() {
+        let dir = crate::db::temp_root("mem-query-ro");
+        let writer = open_memory_store(&dir).unwrap();
+        drop(writer);
+        let reader = open_memory_query(&dir).unwrap();
+        let ro: i32 = reader
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .unwrap_or(0);
+        // SQLite opens with SQLITE_OPEN_READ_ONLY; attempting a write must fail.
+        assert!(reader.execute("DELETE FROM memories", []).is_err() || ro == 1);
+        drop(reader);
+        crate::db::test_support::remove_tree(&dir);
+    }
 }

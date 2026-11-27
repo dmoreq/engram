@@ -79,19 +79,56 @@ pub(crate) fn ensure_global_dir(path: &Path) -> Result<()> {
 /// hands every querying agent attacker-authored memories and index rows, so a
 /// tracked confinement directory is rejected (exit 2) instead of trusted.
 ///
-/// No process-lifetime cache: `git add`, checkout, or a branch switch can
-/// change provenance while a long-lived MCP/dashboard process is running.
-/// The probe is one `git ls-files` spawn per open; correctness wins over that
-/// cost, and a failed probe still means "not tracked" (a broken git must not
-/// brick local queries).
+/// Uses a short-lived process-local cache (5s TTL, 64-entry cap) keyed by
+/// canonicalized `root` and invalidated by `.git/index` mtime so `git add`,
+/// checkout, or a branch switch takes effect immediately without spawning `git`
+/// on every query. A failed probe still means "not tracked" (a broken git must
+/// not brick local queries).
 pub(crate) fn reject_tracked_eg_dir(root: &Path) -> Result<()> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const TTL: Duration = Duration::from_secs(5);
+    const MAX_ENTRIES: usize = 64;
+    type CacheEntry = (Instant, Option<i64>, bool);
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CacheEntry>>> = OnceLock::new();
+
     let dir = eg_dir(root);
     if !dir.exists() {
         return Ok(());
     }
-    match git_tracked_engram(root) {
-        Some(detail) => Err(EgError::Security(detail)),
-        None => Ok(()),
+
+    let key = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let idx_mtime = stat_mtime(&key.join(".git/index"));
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, cached_mtime, tracked)) = guard.get(&key) {
+            if at.elapsed() < TTL && *cached_mtime == idx_mtime {
+                return if *tracked {
+                    Err(EgError::Security(tracked_detail()))
+                } else {
+                    Ok(())
+                };
+            }
+        }
+    }
+
+    let tracked = git_tracked_engram(root).is_some();
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= MAX_ENTRIES && !guard.contains_key(&key) {
+            guard.retain(|_, (at, _, _)| at.elapsed() < TTL);
+            if guard.len() >= MAX_ENTRIES {
+                guard.clear();
+            }
+        }
+        guard.insert(key, (Instant::now(), idx_mtime, tracked));
+    }
+
+    if tracked {
+        Err(EgError::Security(tracked_detail()))
+    } else {
+        Ok(())
     }
 }
 
@@ -116,6 +153,7 @@ fn git_tracked_engram(root: &Path) -> Option<String> {
             command.env_remove(key);
         }
     }
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     let out = command.output().ok()?;
     if !out.status.success() || out.stdout.is_empty() {
         return None;
@@ -146,4 +184,41 @@ fn git_tracked_engram(root: &Path) -> Option<String> {
 fn tracked_detail() -> String {
     ".engram/ contains git-tracked files — untrack and remove to prevent malicious memory injection"
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{make_dir_all, remove_tree, stripped_git, temp_root, write_file};
+
+    #[test]
+    fn tracked_cache_hits_and_invalidates_when_git_index_changes() {
+        let dir = temp_root("sec-cache");
+        make_dir_all(dir.join(".engram")).unwrap();
+        write_file(dir.join(".engram/index.db"), b"x").unwrap();
+        let init = stripped_git()
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status();
+        if !matches!(init, Ok(status) if status.success()) {
+            remove_tree(&dir);
+            return;
+        }
+        reject_tracked_eg_dir(&dir).expect("initial untracked check");
+        reject_tracked_eg_dir(&dir).expect("cached untracked check");
+
+        let add = stripped_git()
+            .arg("-C")
+            .arg(&dir)
+            .args(["add", "-f", ".engram/index.db"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        assert!(matches!(
+            reject_tracked_eg_dir(&dir),
+            Err(EgError::Security(_))
+        ));
+        remove_tree(&dir);
+    }
 }

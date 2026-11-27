@@ -71,9 +71,14 @@ pub fn context(ctx: &QueryCtx<'_>, name: &str, limit: usize) -> Result<LineQuery
         .map(|(_, s)| s.to_string())
         .unwrap_or_else(|| qualname.clone());
     let last_segment = last_segment.as_str();
-    let guards =
-        crate::memory::find_guarding_notes(ctx.root, &[&def_path], &[&qualname, last_segment]);
-    for g in guards.iter().take(2) {
+    let guards = crate::memory::find_guarding_notes_filtered(
+        ctx.root,
+        &[&def_path],
+        &[&qualname, last_segment],
+        &["decision", "gotcha"],
+        2,
+    );
+    for g in &guards {
         out.push(format!(
             "memory: [{}] {}: {}",
             sanitize(&g.kind),

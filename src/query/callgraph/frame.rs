@@ -21,6 +21,9 @@ fn count_then_page(
         conn.query_row(count_sql, rusqlite::params_from_iter(params.iter()), |r| {
             r.get::<_, i64>(0)
         })? as usize;
+    if total == 0 {
+        return Ok((Vec::new(), 0));
+    }
     params.push(rusqlite::types::Value::from(limit as i64));
     let mut stmt = conn.prepare(page_sql)?;
     let rows = stmt

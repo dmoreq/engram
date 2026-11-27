@@ -156,6 +156,12 @@ pub struct GuardedNote {
     pub target: String,
 }
 
+fn ends_with_delim(haystack: &str, needle: &str) -> bool {
+    haystack.strip_suffix(needle).is_some_and(|prefix| {
+        prefix.ends_with('/') || prefix.ends_with("::") || prefix.ends_with('.')
+    })
+}
+
 /// Check if a note's `refs` matches a target path or symbol.
 pub fn ref_matches_target(refs: &str, target: &str) -> bool {
     let target = target.trim();
@@ -166,12 +172,8 @@ pub fn ref_matches_target(refs: &str, target: &str) -> bool {
     refs.split_whitespace().any(|r| {
         let r_norm = r.trim_start_matches("./");
         r_norm == target_norm
-            || r_norm.ends_with(&format!("/{target_norm}"))
-            || target_norm.ends_with(&format!("/{r_norm}"))
-            || r_norm.ends_with(&format!("::{target_norm}"))
-            || target_norm.ends_with(&format!("::{r_norm}"))
-            || r_norm.ends_with(&format!(".{target_norm}"))
-            || target_norm.ends_with(&format!(".{r_norm}"))
+            || ends_with_delim(r_norm, target_norm)
+            || ends_with_delim(target_norm, r_norm)
             || target_norm.split("::").any(|seg| seg == r_norm)
             || target_norm.split('.').any(|seg| seg == r_norm)
             || r_norm.split("::").any(|seg| seg == target_norm)
@@ -193,82 +195,90 @@ pub fn compact_summary(body: &str) -> String {
 /// Find active gotchas and decisions in local and global memory stores
 /// that reference any of the provided paths or symbols.
 pub fn find_guarding_notes(root: &Path, paths: &[&str], symbols: &[&str]) -> Vec<GuardedNote> {
-    let now = crate::db::unix_now();
-    let filter = crate::db::MemFilter {
-        kind: None,
-        scope: None,
-        now,
-        include_superseded: false,
-        window: crate::memory::TimeWindow::default(),
-    };
+    find_guarding_notes_filtered(root, paths, symbols, &["decision", "gotcha"], usize::MAX)
+}
 
+/// Find active guarding notes filtered by `kinds` and capped at `limit`.
+pub fn find_guarding_notes_filtered(
+    root: &Path,
+    paths: &[&str],
+    symbols: &[&str],
+    kinds: &[&str],
+    limit: usize,
+) -> Vec<GuardedNote> {
+    if limit == 0 || kinds.is_empty() || (paths.is_empty() && symbols.is_empty()) {
+        return Vec::new();
+    }
+    let q = GuardQuery(crate::db::unix_now(), paths, symbols, kinds, limit);
     let mut results = Vec::new();
     let mut seen_keys = HashSet::new();
-
     if let Ok(local_conn) = crate::db::open_memory_query(root) {
-        collect_guards(
-            &local_conn,
-            &filter,
-            paths,
-            symbols,
-            &mut seen_keys,
-            &mut results,
-        );
+        collect_guards(&local_conn, &q, &mut seen_keys, &mut results);
     }
-
-    if let Ok(global_conn) = crate::db::open_global_memory_query() {
-        collect_guards(
-            &global_conn,
-            &filter,
-            paths,
-            symbols,
-            &mut seen_keys,
-            &mut results,
-        );
+    if results.len() < limit {
+        if let Ok(global_conn) = crate::db::open_global_memory_query() {
+            collect_guards(&global_conn, &q, &mut seen_keys, &mut results);
+        }
     }
-
     results
 }
 
+struct GuardQuery<'a>(i64, &'a [&'a str], &'a [&'a str], &'a [&'a str], usize);
+
 fn collect_guards(
     conn: &rusqlite::Connection,
-    filter: &crate::db::MemFilter,
-    paths: &[&str],
-    symbols: &[&str],
+    q: &GuardQuery<'_>,
     seen_keys: &mut HashSet<String>,
     out: &mut Vec<GuardedNote>,
 ) {
-    let sql = "SELECT key, kind, body, refs FROM memories
-               WHERE superseded_by IS NULL
-                 AND (expires_at = 0 OR expires_at > ?1)
-                 AND kind IN ('decision', 'gotcha')
-                 AND refs != ''
-               ORDER BY anchored_at DESC";
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(_) => return,
+    let GuardQuery(now, paths, symbols, kinds, limit) = *q;
+    if out.len() >= limit || kinds.is_empty() {
+        return;
+    }
+    let placeholders = crate::db::sql_placeholders(kinds.len());
+    let make_sql = |order_by: &str| {
+        format!(
+            "SELECT key, kind, body, refs FROM memories
+             WHERE superseded_by IS NULL AND kind IN ({placeholders})
+               AND (expires_at = 0 OR expires_at > ?) AND refs != ''
+             ORDER BY {order_by}"
+        )
     };
-    let rows = match stmt.query_map([filter.now], |r| {
+    let Ok(mut stmt) = conn
+        .prepare(&make_sql(
+            "MAX(anchored_at, created_at) DESC, created_at DESC, key ASC",
+        ))
+        .or_else(|_| conn.prepare(&make_sql("created_at DESC, key ASC")))
+    else {
+        return;
+    };
+    let params: Vec<rusqlite::types::Value> = kinds
+        .iter()
+        .map(|k| rusqlite::types::Value::from((*k).to_string()))
+        .chain(std::iter::once(rusqlite::types::Value::from(now)))
+        .collect();
+    let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
         ))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return,
+    }) else {
+        return;
     };
-    for r in rows.flatten() {
-        let (key, kind, body, refs) = r;
+    for (key, kind, body, refs) in rows.flatten() {
+        if out.len() >= limit {
+            break;
+        }
         if seen_keys.contains(&key) {
             continue;
         }
-        let matched = paths
+        if let Some(target) = paths
             .iter()
             .chain(symbols.iter())
-            .find(|target| ref_matches_target(&refs, target));
-        if let Some(target) = matched {
+            .find(|t| ref_matches_target(&refs, t))
+        {
             seen_keys.insert(key.clone());
             out.push(GuardedNote {
                 key,
@@ -436,5 +446,50 @@ mod tests {
             false_alarms <= 10,
             "false alarms {false_alarms}% above gate"
         );
+    }
+
+    #[test]
+    fn ref_matches_target_boundary_checks() {
+        assert!(ref_matches_target("src/query/impact.rs", "impact.rs"));
+        assert!(ref_matches_target("./a/b.rs", "a/b.rs"));
+        assert!(ref_matches_target("crate::memory::guard", "guard"));
+        assert!(ref_matches_target("Context.render", "render"));
+        assert!(!ref_matches_target("src/query/my_impact.rs", "impact.rs"));
+        assert!(!ref_matches_target("src/query/impact.rs", ""));
+    }
+
+    fn run_collect(conn: &rusqlite::Connection, kinds: &[&str], limit: usize) -> Vec<String> {
+        let (mut seen, mut out) = (HashSet::new(), Vec::new());
+        collect_guards(
+            conn,
+            &GuardQuery(1000, &["src/a.rs"], &[], kinds, limit),
+            &mut seen,
+            &mut out,
+        );
+        out.into_iter().map(|g| g.key).collect()
+    }
+
+    #[test]
+    fn collect_guards_orders_filters_and_falls_back_on_v1() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../schema/memory.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, anchored_at, expires_at) VALUES
+             ('d1', 1, 'decision', 'durable', '', 'first', '', 'src/a.rs', 1, 'cli', 100, 0, 0),
+             ('g1', 1, 'gotcha',   'durable', '', 'anchored', '', 'src/a.rs', 2, 'cli', 50, 300, 0),
+             ('d2', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 3, 'cli', 200, 0, 0);",
+        ).unwrap();
+        assert_eq!(run_collect(&conn, &["decision", "gotcha"], 2), ["g1", "d2"]);
+        assert_eq!(run_collect(&conn, &["decision"], 1), vec!["d2"]);
+
+        let v1 = rusqlite::Connection::open_in_memory().unwrap();
+        v1.execute_batch(
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT, rev INTEGER, kind TEXT, scope TEXT, session TEXT, body TEXT, tags TEXT, refs TEXT, content_hash INTEGER, source TEXT, created_at INTEGER, expires_at INTEGER, superseded_by TEXT, superseded_at INTEGER);
+             INSERT INTO memories (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at) VALUES
+             ('k-old', 1, 'decision', 'durable', '', 'older', '', 'src/a.rs', 1, 'cli', 10, 0),
+             ('k-new', 1, 'decision', 'durable', '', 'newer', '', 'src/a.rs', 2, 'cli', 20, 0);",
+        ).unwrap();
+        assert_eq!(run_collect(&v1, &["decision"], 2), vec!["k-new", "k-old"]);
     }
 }
