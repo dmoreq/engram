@@ -390,13 +390,7 @@ pub(super) fn module_chain_outcome(
     let start: Option<String> =
         match nearest_alias_scoped(fctx, scope, &chain[0]).map(|(_, target)| target) {
             Some(ImportTarget::ModuleRoot { path }) => {
-                let out = chain_from_module(t, path.to_string(), &chain[1..]);
-                if matches!(out, Outcome::Unresolved)
-                    && longest_module_prefix(t, path, &chain[1..]).is_none()
-                {
-                    return Outcome::Dropped;
-                }
-                return out;
+                return chain_from_module(t, path.to_string(), &chain[1..]);
             }
             Some(ImportTarget::Module { .. }) => None,
             Some(ImportTarget::Symbol { module, name }) => {

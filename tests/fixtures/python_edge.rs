@@ -226,14 +226,7 @@ def main():
             && e.dst_name == "svc.Service.execute"),
         "module-level annotated SVC.execute() must resolve"
     );
-    // pl.col and pytest.approx must be dropped; body_field.rank() at module scope must NOT resolve via class-body field leak.
-    assert!(
-        !res.unresolved_calls
-            .iter()
-            .any(|u| u.name == "pl.col" || u.name == "pytest.approx"),
-        "external ModuleRoot calls must be dropped: {:?}",
-        res.unresolved_calls
-    );
+    // body_field.rank() at module scope must NOT resolve via class-body field leak.
     assert!(
         res.unresolved_calls
             .iter()

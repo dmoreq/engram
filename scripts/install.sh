@@ -170,11 +170,11 @@ rule_marker = "- **Code Navigation Invariant**:"
 rule_text = (
     "- **Code Navigation Invariant**:\n"
     "  When locating callers, callees, the impact of a change, the call route between two symbols, "
-    "a symbol's surroundings, a file's imports, or searching existing helpers, query `eg` (CLI or MCP `engram`) "
+    "a symbol's surroundings, a file's imports, or searching existing helpers, query `eg` (prefer MCP `engram` when configured, else CLI `eg`) "
     "first before reading entire source files or running broad greps. Verify pointed lines directly.\n"
-    "  - **Pre-Task**: Run `eg mem query --limit 3` as the first command of a session; cite any matching decision or gotcha, and verify a `[stale-ref]` note before relying on it.\n"
-    "  - **Pre-Write / Post-Edit**: Run `eg search '<terms>'` before implementing helpers; run `eg reuse <paths>` to prevent duplicate functions.\n"
-    "  - **Post-Fix**: Run `eg mem write <key> --kind gotcha --refs \"<path> <path>\" --body ...` to persist a durable learning before the task ends; reuse the same key to supersede.\n"
+    "  - **Pre-Task**: Run targeted `mem_query` (`terms` / `--ref` with `--limit 5`, or `--limit 10` for broad recall) as the first command of a session; cite any matching decision or gotcha, and verify + `mem_touch` any `[stale-ref]` note before relying on it.\n"
+    "  - **Pre-Write / Post-Edit**: Run `eg search '<terms>'` before implementing helpers; run `eg reuse <edited_files> --judge` after edits to prevent duplicate functions, and record `reuse-allow/<target>-><canonical>` for intentional exceptions.\n"
+    "  - **Staleness & Post-Fix**: Run `eg build` immediately when a query warns about stale files; run `eg mem write <key> --kind gotcha --refs \"<code_path>\" --body ...` before the task ends; reuse the same key to supersede.\n"
 )
 
 def update_json_file(path, updater_fn):
@@ -241,7 +241,6 @@ def inject_rule(rules_path):
     with open(rules_path, "w", encoding="utf-8") as f:
         f.write(new_content)
     return True
-    return True
 
 # --- 1. Antigravity ---
 print("1. Antigravity:")
@@ -292,7 +291,13 @@ try:
             with open(os.path.join(anti_mcp_schemas, f"{t['name']}.json"), "w", encoding="utf-8") as f:
                 json.dump({"name": t["name"], "description": t.get("description", ""), "parameters": params}, f, indent=2)
         with open(os.path.join(anti_mcp_schemas, "instructions.md"), "w", encoding="utf-8") as f:
-            f.write("# engram (eg) Best Practices\n\nQuery eg for code graph navigation before reading files or grepping.\n")
+            f.write(
+                "# engram (eg) Best Practices\n\n"
+                "Prefer MCP `engram` tools over shell CLI calls:\n"
+                "- **Pre-Task**: `mem_query` with `terms` or `ref` (`limit: 5`, or `10` for broad recall); `mem_touch` verified `[modified-ref]` notes.\n"
+                "- **Navigation**: `context`/`callers`/`callees` take exact symbol names (not file paths or sentences); `symbols` takes a repo-relative file or directory path; `search` handles natural-language keywords.\n"
+                "- **Anti-Reinvention**: `reuse` scoped to edited `paths` with `judge: true`; run `build` immediately when stale warnings appear.\n"
+            )
         print(f"  ├─ Generated {len(tools_data)} MCP tool schemas in ~/.gemini/antigravity/mcp/engram/")
 
         # Grant Antigravity MCP execution permissions in ~/.gemini/config/config.json
@@ -351,9 +356,9 @@ if os.path.exists(zcode_dir):
     def update_zcode(data):
         mcp = data.setdefault("mcp", {})
         servers = mcp.setdefault("servers", {})
-        if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"]:
+        if "engram" not in servers or servers["engram"].get("args") != ["mcp", "--all-tools"] or servers["engram"].get("type") != "stdio":
             servers["engram"] = {
-                "type": "process",
+                "type": "stdio",
                 "command": eg_bin,
                 "args": ["mcp", "--all-tools"]
             }

@@ -112,7 +112,8 @@ fn load_carried_reexports(
              JOIN symbols ss ON ss.id = e.src_id
              JOIN files f ON f.id = ss.file_id
              WHERE e.kind = '{}' AND ss.kind = '{}' AND e.dst_id IS NOT NULL
-               AND f.path IN ({placeholders})",
+               AND f.path IN ({placeholders})
+             ORDER BY e.id",
             EdgeKind::Imports.as_str(),
             SymbolKind::Module.as_str()
         ))?;

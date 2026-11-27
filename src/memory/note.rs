@@ -150,7 +150,9 @@ fn normalize_token_set(
         });
     }
     tokens.sort();
-    tokens.dedup();
+    if strip_dot_slash {
+        tokens.dedup();
+    }
     Ok(tokens.join(" "))
 }
 

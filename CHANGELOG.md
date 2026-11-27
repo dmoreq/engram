@@ -14,6 +14,29 @@ changes bump the minor while 0.x is unstable.
 - Read [evaluation](docs/evaluation.md) for the public evidence summary and its limitations, not replacement original evidence.
 - Internal evaluation corpus names are neutralized as `corpus-a` and `corpus-b`.
 
+## [1.1.2] - 2026-11-27
+
+### Added
+- Python static resolution now unwraps `Optional[T]`, `Annotated[T, ...]`, `ClassVar[T]`, `Final[T]`, single-target `Union[T, None]` / `T | None`, generic classes and superclasses (`Generic[T]`), and quoted forward references, while keeping ambiguous multi-class unions unresolved.
+- Python extraction and resolution now track typed `self.attr: T`, class-body/dataclass fields, constructor injection (`self.field = param`), local alias copies, module-level annotated constants, module-qualified constructor chains (`pkg.Cls().m()`), function/method/`@property` return annotations, MRO-inherited `self.field` lookups across files, multi-hop receiver chains (`obj.field.m()`), and `__init__.py` re-exports (`pkg.Cls.m()`, `from .sub import *`, and carried re-exports). Index schema advances to `v11` (and extraction revision `4`) to persist `symbols.return_type` and `class_fields` across incremental builds.
+- `eg mem write --refs` emits non-blocking advisory warnings on `stderr` when local refs do not match any indexed symbol or on-disk repository file.
+- `eg` navigation and `symbols` misses emit actionable command-boundary hints (`eg symbols <path>`, `eg search "<terms>"`, `eg context <name>`) without altering exit codes; `eg reuse` accepts contained absolute paths, advises scoping repo-wide scans when candidates are omitted, and suggests `--judge` when gray-band candidates and a local judge model are present.
+- MCP `mem_export` exposes the `scan` flag for parity with the CLI.
+
+### Changed
+- `eg usage --global` now includes the `query resolution` breakdown alongside `engine health`, and `Reliability` surfaces `query misses` (`exit 1/2`) separately from operational crashes (`exit >= 3`).
+- `eg audit --global` folds linked git worktrees onto their main repository and filters ephemeral temporary repositories, matching `eg usage --global`.
+- `ENGRAM_SESSION` takes precedence over the process-scoped `MCP_SESSION` tag so multi-task MCP runners can attribute per-task sessions.
+- MCP tool descriptions and schemas fix `impact` default `edges` (`calls,imports,inherits`), allow `reuse` `limit: 0` (count-only), clarify input boundaries, and forward exit-0 `stderr` notices (staleness warnings, cap notices, advisory tips) across navigation, search, memory, and reuse tools.
+- `eg-first` skill and `install.sh` guidance update pre-task recall to targeted `mem_query` (`terms`/`--ref`/`--limit 5–10`), prefer MCP tools when configured, and reinforce scoped `reuse --judge`, immediate `eg build` on stale warnings, and `eg mem touch` after verifying modified refs.
+
+### Fixed
+- Eliminated `context` and `impact` latency spikes by caching `reject_tracked_eg_dir` (5s TTL, `.git/index` mtime invalidation, `GIT_OPTIONAL_LOCKS=0`), probing `memory.db` schema columns in one `pragma_table_info` query, skipping `PRAGMA synchronous = FULL` on read-only opens, filtering guarding notes by `kind` and `limit` in SQL with deterministic `MAX(anchored_at, created_at) DESC, created_at DESC, key ASC` ordering, removing per-ref `format!` allocations, reusing `symlink_metadata` mtime in staleness checks, and returning early in `count_then_page` when `total == 0`.
+- Fixed false-positive `broken` memory refs on valid non-indexed repository files (`.md`, `.html`, `.toml`, `.sql`, `.json`) by falling back to contained on-disk file and `mtime` checks in `resolve_single_ref` and `check_ref_status_with_root`; normalized leading `./` and duplicate tokens in `normalize_refs`.
+- Guarded `memory_embeddings` against un-migrated v2 memory stores missing the `embedding` column, eliminated the double FTS5 rebuild in `eg mem reindex`, and deduplicated `embed_text` across merged local/global `mem_query` calls.
+- Dropped external `import pkg` module calls (`Outcome::Dropped`) from Python `unresolved_calls` so third-party libraries no longer inflate unresolved counts.
+- `pointer_qualname` now strips the `kind` column from `eg symbols` output lines (`path:line kind qualname`).
+
 ## [1.1.1] - 2026-11-19
 
 ### Added
