@@ -1,7 +1,10 @@
 //! Python annotation and inherit-edge fixtures: annotated-assignment
 //! receiver typing, untyped-receiver negatives, and the AMBIGUOUS base edge.
 
-use engram::extract::{extract_file, resolve, Confidence, EdgeKind, EdgeSiteKind};
+use engram::extract::{
+    extract_file, resolve, CarriedIndex, CarriedSymbol, Confidence, EdgeKind, EdgeSiteKind,
+    SymbolKind,
+};
 use engram::parse::{parse_source, Lang};
 
 #[test]
@@ -88,5 +91,295 @@ fn python_ambiguous_inherit_keeps_dst_less_edge() {
             .any(|u| u.name == "Base" && u.kind == EdgeSiteKind::Inherit),
         "ambiguous base site must surface in unresolved_calls: {:?}",
         resolution.unresolved_calls
+    );
+}
+
+#[test]
+fn tier1_type_unwrapping_and_union_negatives() {
+    let pkg_src = "class PlaceRanker:\n    def rank(self):\n        return 1\n\nclass GenericRepo:\n    def fetch(self):\n        return 2\n";
+    let app_src = r#"from typing import Optional, Annotated, ClassVar, Final, Union
+import pkg
+from pkg import PlaceRanker, GenericRepo
+
+class Svc:
+    cv: ClassVar[PlaceRanker]
+    fin: Final["pkg.PlaceRanker"]
+
+    def run(
+        self,
+        a: Optional[PlaceRanker],
+        b: Annotated[PlaceRanker, "meta"],
+        c: Union[PlaceRanker, None],
+        d: Union[None, PlaceRanker],
+        e: PlaceRanker | None,
+        f: None | "PlaceRanker",
+        g: pkg.GenericRepo[PlaceRanker],
+        amb_u: Union[PlaceRanker, GenericRepo],
+        amb_p: PlaceRanker | GenericRepo,
+    ):
+        a.rank()
+        b.rank()
+        c.rank()
+        d.rank()
+        e.rank()
+        f.rank()
+        self.cv.rank()
+        self.fin.rank()
+        g.fetch()
+        pkg.PlaceRanker().rank()
+        amb_u.rank()
+        amb_p.rank()
+"#;
+    let p1 = parse_source(pkg_src.as_bytes(), Lang::Python).unwrap();
+    let p2 = parse_source(app_src.as_bytes(), Lang::Python).unwrap();
+    let fx1 = extract_file(0, "pkg.py", pkg_src.as_bytes(), &p1);
+    let fx2 = extract_file(1, "app.py", app_src.as_bytes(), &p2);
+    let res = resolve(vec![fx1, fx2], Default::default());
+    let rank_lines: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "pkg.PlaceRanker.rank"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    // Lines 21..28 are a..f + self.cv + self.fin; line 30 is pkg.PlaceRanker().rank().
+    assert_eq!(
+        rank_lines,
+        vec![21, 22, 23, 24, 25, 26, 27, 28, 30],
+        "expected unwrapped rank() calls, got {rank_lines:?}"
+    );
+    assert!(
+        res.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.confidence == Confidence::Extracted
+            && e.dst_name == "pkg.GenericRepo.fetch"),
+        "GenericRepo[T] must resolve fetch()"
+    );
+    // Multi-type unions amb_u (line 31) and amb_p (line 32) must remain unresolved.
+    let unres_lines: Vec<usize> = res
+        .unresolved_calls
+        .iter()
+        .filter(|u| u.name.ends_with(".rank"))
+        .map(|u| u.site_line)
+        .collect();
+    assert_eq!(
+        unres_lines,
+        vec![31, 32],
+        "multi-class Union/pipe must stay unresolved: {unres_lines:?}"
+    );
+}
+
+#[test]
+fn tier1_bindings_and_external_module_root_drop() {
+    let src = r#"import polars as pl
+import pytest
+
+class Ranker:
+    def rank(self):
+        return 1
+
+class Service:
+    body_field: Ranker
+
+    def __init__(self, injected: Ranker):
+        self.typed_attr: Ranker = build()
+        self.injected = injected
+        r = injected
+        r.rank()
+
+    def execute(self):
+        self.body_field.rank()
+        self.typed_attr.rank()
+        self.injected.rank()
+
+SVC: Service
+
+def main():
+    pl.col("a")
+    pytest.approx(1.0)
+    SVC.execute()
+    body_field.rank()
+"#;
+    let parsed = parse_source(src.as_bytes(), Lang::Python).unwrap();
+    let fx = extract_file(0, "svc.py", src.as_bytes(), &parsed);
+    let res = resolve(vec![fx], Default::default());
+
+    let rank_count = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "svc.Ranker.rank"
+        })
+        .count();
+    assert_eq!(
+        rank_count, 4,
+        "4 Ranker.rank() calls expected: {:?}",
+        res.edges
+    );
+    assert!(
+        res.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.confidence == Confidence::Extracted
+            && e.dst_name == "svc.Service.execute"),
+        "module-level annotated SVC.execute() must resolve"
+    );
+    // pl.col and pytest.approx must be dropped; body_field.rank() at module scope must NOT resolve via class-body field leak.
+    assert!(
+        !res.unresolved_calls
+            .iter()
+            .any(|u| u.name == "pl.col" || u.name == "pytest.approx"),
+        "external ModuleRoot calls must be dropped: {:?}",
+        res.unresolved_calls
+    );
+    assert!(
+        res.unresolved_calls
+            .iter()
+            .any(|u| u.name == "body_field.rank"),
+        "class-body field must not leak to module scope: {:?}",
+        res.unresolved_calls
+    );
+}
+
+#[test]
+fn tier2_return_types_mro_fields_property_multihop_and_reexports() {
+    let ranker_src = "class Leaf:\n    def ping(self):\n        return 1\n\nclass Ranker:\n    leaf: Leaf\n    def rank(self):\n        return 2\n";
+    let base_src = "from pkg.ranker import Ranker\n\ndef make_ranker() -> Ranker:\n    return Ranker()\n\nclass Base:\n    def __init__(self):\n        self.r = make_ranker()\n\n    @property\n    def prop(self) -> Ranker:\n        return self.r\n";
+    let init_src = "from .ranker import *\n";
+    let app_src = "import pkg\nfrom pkg import Ranker\nfrom base import Base, make_ranker\n\nclass Sub(Base):\n    def go(self):\n        x = make_ranker()\n        x.rank()\n        self.r.rank()\n        self.prop.rank()\n        self.r.leaf.ping()\n        pkg.Ranker.rank()\n";
+    let files = [
+        ("pkg/ranker.py", ranker_src),
+        ("base.py", base_src),
+        ("pkg/__init__.py", init_src),
+        ("app.py", app_src),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (p, s))| {
+        let parsed = parse_source(s.as_bytes(), Lang::Python).unwrap();
+        extract_file(i, p, s.as_bytes(), &parsed)
+    })
+    .collect();
+    let res = resolve(files, Default::default());
+    let rank_calls: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "pkg.ranker.Ranker.rank"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    assert_eq!(
+        rank_calls,
+        vec![8, 9, 10, 12],
+        "expected x.rank, self.r.rank, self.prop.rank, pkg.Ranker.rank: {rank_calls:?}"
+    );
+    assert!(
+        res.edges.iter().any(|e| e.kind == EdgeKind::Calls
+            && e.confidence == Confidence::Extracted
+            && e.dst_name == "pkg.ranker.Leaf.ping"),
+        "multi-hop self.r.leaf.ping() must resolve"
+    );
+    assert!(
+        res.edges.iter().any(|e| e.kind == EdgeKind::Imports
+            && e.confidence == Confidence::Extracted
+            && e.dst_name == "pkg.Ranker"),
+        "from pkg import Ranker via star re-export must emit Imports edge"
+    );
+    assert!(
+        res.edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::TypeRef && e.dst_name == "pkg.ranker.Ranker"),
+        "TypeRef edge to Ranker must be emitted"
+    );
+}
+
+#[test]
+fn tier2_carried_index_preserves_return_types_fields_and_reexports() {
+    let carried = CarriedIndex {
+        symbols: vec![
+            CarriedSymbol {
+                row_id: 1,
+                kind: SymbolKind::Module,
+                name: "base".into(),
+                qualname: "base".into(),
+                module: "base".into(),
+                return_type: String::new(),
+            },
+            CarriedSymbol {
+                row_id: 2,
+                kind: SymbolKind::Class,
+                name: "Ranker".into(),
+                qualname: "base.Ranker".into(),
+                module: "base".into(),
+                return_type: String::new(),
+            },
+            CarriedSymbol {
+                row_id: 3,
+                kind: SymbolKind::Method,
+                name: "rank".into(),
+                qualname: "base.Ranker.rank".into(),
+                module: "base".into(),
+                return_type: String::new(),
+            },
+            CarriedSymbol {
+                row_id: 4,
+                kind: SymbolKind::Function,
+                name: "make_ranker".into(),
+                qualname: "base.make_ranker".into(),
+                module: "base".into(),
+                return_type: "base.Ranker".into(),
+            },
+            CarriedSymbol {
+                row_id: 5,
+                kind: SymbolKind::Class,
+                name: "CarriedBase".into(),
+                qualname: "base.CarriedBase".into(),
+                module: "base".into(),
+                return_type: String::new(),
+            },
+            CarriedSymbol {
+                row_id: 6,
+                kind: SymbolKind::Method,
+                name: "prop".into(),
+                qualname: "base.CarriedBase.prop".into(),
+                module: "base".into(),
+                return_type: "base.Ranker".into(),
+            },
+            CarriedSymbol {
+                row_id: 7,
+                kind: SymbolKind::Module,
+                name: "pkg".into(),
+                qualname: "pkg".into(),
+                module: "pkg".into(),
+                return_type: String::new(),
+            },
+        ],
+        inherits: vec![],
+        class_fields: vec![("base.CarriedBase".into(), "r".into(), "base.Ranker".into())],
+        reexports: vec![("pkg".into(), "Ranker".into(), 2)],
+    };
+    let app_src = "from base import CarriedBase, make_ranker\nimport pkg\n\nclass Sub(CarriedBase):\n    def run(self):\n        x = make_ranker()\n        x.rank()\n        self.r.rank()\n        self.prop.rank()\n        pkg.Ranker.rank()\n";
+    let parsed = parse_source(app_src.as_bytes(), Lang::Python).unwrap();
+    let fx = extract_file(0, "app.py", app_src.as_bytes(), &parsed);
+    let res = resolve(vec![fx], carried);
+    let rank_lines: Vec<usize> = res
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::Calls
+                && e.confidence == Confidence::Extracted
+                && e.dst_name == "base.Ranker.rank"
+        })
+        .map(|e| e.site_line)
+        .collect();
+    assert_eq!(
+        rank_lines,
+        vec![7, 8, 9, 10],
+        "carried return_type, class_fields, @property, and reexports must resolve: {rank_lines:?}"
     );
 }

@@ -34,18 +34,42 @@ pub(super) fn follow_binding<'a>(
     if depth >= 4 {
         return None;
     }
-    let file_idx = *t.file_by_module.get(module)?;
+    let Some(file_idx) = t.file_by_module.get(module).copied() else {
+        if let Some(cands) = t
+            .carried_reexports
+            .get(&(module.to_string(), name.to_string()))
+        {
+            return bare_candidates(Some(cands.as_slice()), display);
+        }
+        return None;
+    };
     let fctx = &t.file_ctx[file_idx];
     // Look the binding up under the file's own module scope: top-level Rust
     // `use` items record under it, and a scope-"" lookup would miss every
     // Rust re-export link. Python file-level imports record under "" and
     // stay visible from any scope.
-    match nearest_alias_scoped(fctx, &fctx.module, name).map(|(_, target)| target) {
-        Some(ImportTarget::Symbol {
-            module: m2,
-            name: n2,
-        }) => follow_binding(t, (m2, n2), depth + 1, seen, display),
-        _ => None,
+    if let Some(ImportTarget::Symbol {
+        module: m2,
+        name: n2,
+    }) = nearest_alias_scoped(fctx, &fctx.module, name).map(|(_, target)| target)
+    {
+        return follow_binding(t, (m2, n2), depth + 1, seen, display);
+    }
+    // Star-import re-export fallback (`from .sub import *` inside `__init__.py`).
+    let mut star_hits: Vec<usize> = Vec::new();
+    for (star_mod, _) in &fctx.bindings.stars {
+        if let Some(out) = follow_binding(t, (star_mod, name), depth + 1, seen, display) {
+            match out {
+                Outcome::Extracted(idx) => star_hits.push(idx),
+                Outcome::Ambiguous(_) => return Some(out),
+                Outcome::Dropped | Outcome::Unresolved => {}
+            }
+        }
+    }
+    match star_hits.len() {
+        0 => None,
+        1 => Some(Outcome::Extracted(star_hits[0])),
+        _ => Some(Outcome::Ambiguous(display.to_string())),
     }
 }
 
@@ -125,14 +149,14 @@ pub(super) fn resolve_var_class(
         parent = p;
     }
     if !scope.is_empty() {
-        scopes.push(("", false));
+        scopes.push(("", true));
     }
     for &(s, inc_params) in &scopes {
         if let Some(target) = latest_binding(fctx, s, var, site_line, inc_params) {
             if target.is_empty() {
                 return None;
             }
-            return resolve_class_of_chain(t, fi, target, scope);
+            return resolve_target_class(t, fi, target, scope, 0);
         }
     }
     None
@@ -365,7 +389,15 @@ pub(super) fn module_chain_outcome(
     let fctx = &t.file_ctx[fi];
     let start: Option<String> =
         match nearest_alias_scoped(fctx, scope, &chain[0]).map(|(_, target)| target) {
-            Some(ImportTarget::ModuleRoot { path }) => Some(path.to_string()),
+            Some(ImportTarget::ModuleRoot { path }) => {
+                let out = chain_from_module(t, path.to_string(), &chain[1..]);
+                if matches!(out, Outcome::Unresolved)
+                    && longest_module_prefix(t, path, &chain[1..]).is_none()
+                {
+                    return Outcome::Dropped;
+                }
+                return out;
+            }
             Some(ImportTarget::Module { .. }) => None,
             Some(ImportTarget::Symbol { module, name }) => {
                 let qn = format!("{module}.{name}");
@@ -434,6 +466,25 @@ pub(super) fn chain_from_module(t: &Tables, module: String, rest: &[String]) -> 
             let class_qn = format!("{}.{}", m, r[..r.len() - 1].join("."));
             if class_exists(t, &class_qn) {
                 return mro_outcome(t, &class_qn, r.last().unwrap());
+            }
+            // Re-exported class or submodule via `__init__.py`: `pkg.ReExportedCls.m()`.
+            let mut seen: HashSet<(&str, &str)> = HashSet::new();
+            if let Some(Outcome::Extracted(idx)) =
+                follow_binding(t, (m.as_str(), r[0].as_str()), 0, &mut seen, &r[0])
+            {
+                if is_class_kind(t.symbols[idx].kind) {
+                    let mut cur_class = t.symbols[idx].qualname.clone();
+                    for field in &r[1..r.len() - 1] {
+                        let Some(next) = resolve_self_attr_type(t, &cur_class, field) else {
+                            return Outcome::Unresolved;
+                        };
+                        cur_class = next;
+                    }
+                    return mro_outcome(t, &cur_class, r.last().unwrap());
+                }
+                if t.symbols[idx].kind == SymbolKind::Module {
+                    return chain_from_module(t, t.symbols[idx].qualname.clone(), &r[1..]);
+                }
             }
         }
         if STDLIB_MODULES.contains(&m.split('.').next().unwrap_or(&m)) {

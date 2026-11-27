@@ -18,7 +18,7 @@ use tree_sitter::Node;
 
 use crate::parse::{Lang, ParsedFile, SOURCE_EXTENSIONS};
 
-pub const SCHEMA_VERSION: i32 = 10;
+pub const SCHEMA_VERSION: i32 = 11;
 
 #[derive(Debug, Clone, Default)]
 pub struct NewSymbol {
@@ -33,10 +33,10 @@ pub struct NewSymbol {
     /// line-wrapped parameters, whitespace collapsed, hard cap 160 chars.
     /// Empty for module/synthetic symbols. No body text.
     pub signature: String,
-    /// Test-symbol flag (schema v8), classified once at extraction from path,
-    /// name shape, Rust `#[test]`/`#[cfg(test)]` context, and TS describe/it
-    /// scope.
+    /// Test-symbol flag (schema v8), classified from path, name, and test attrs.
     pub is_test: bool,
+    /// Resolved return-type class qualname (schema v11), empty when absent.
+    pub return_type: String,
 }
 
 /// Test classification (schema v8). One source of truth for every `is_test`
@@ -96,12 +96,22 @@ pub struct UnresolvedSite {
     pub site_line: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResolvedClassField {
+    pub file_idx: usize,
+    pub class_qualname: String,
+    pub field: String,
+    pub target_qualname: String,
+}
+
 pub struct Resolution {
     pub symbols: Vec<NewSymbol>,
     /// Parallel to `symbols`: Some(row_id) for symbols carried forward from the
     /// previous index (already stored; not re-inserted), None for fresh rows.
     pub existing_ids: Vec<Option<i64>>,
     pub edges: Vec<NewEdge>,
+    /// Resolved `self.field` / class-body field types for fresh files (schema v11).
+    pub class_fields: Vec<ResolvedClassField>,
     /// Kept for the lib surface (integration tests assert builtin_dropped);
     /// the binary's meta total is the per-file SQL sum instead.
     #[allow(dead_code)]
@@ -113,26 +123,26 @@ pub struct Resolution {
     pub unresolved_per_file: Vec<usize>,
 }
 
-/// Symbols loaded from the previous index's fast-path files. They join the
-/// resolution tables so fresh->carried calls still resolve; their rows are
-/// already in the DB and are never re-inserted.
+/// Symbols loaded from the previous index's fast-path files.
 pub struct CarriedSymbol {
     pub row_id: i64,
     pub kind: SymbolKind,
     pub name: String,
     pub qualname: String,
-    /// Module path of the carrying file (drives module_paths + bare-name table).
     pub module: String,
+    pub return_type: String,
 }
 
 /// Inheritance pairs read from the previous index (subclass qualname, base qualname).
 pub type CarriedInherits = Vec<(String, String)>;
 
-/// Previous-index symbols joined into resolution (fast path).
+/// Previous-index state joined into resolution (fast path).
 #[derive(Default)]
 pub struct CarriedIndex {
     pub symbols: Vec<CarriedSymbol>,
     pub inherits: CarriedInherits,
+    pub class_fields: Vec<(String, String, String)>,
+    pub reexports: Vec<(String, String, i64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +175,7 @@ struct SelfField {
     class_qn: String,
     field: String,
     target_dotted: Vec<String>,
+    site_line: usize,
 }
 
 struct ParamType {
@@ -248,6 +259,8 @@ struct FileBindings {
     stars: Vec<(String, usize)>,
     /// Python `from pkg import ...` parent module edges: (line, module).
     from_import_parents: HashSet<(usize, String)>,
+    /// Python function/method/`@property` return type annotations: (qualname, chain).
+    return_types: Vec<(String, Vec<String>)>,
 }
 
 pub struct FileExtraction {
@@ -320,6 +333,7 @@ impl FileExtraction {
                 signature: String::new(),
 
                 is_test: is_test_file,
+                return_type: String::new(),
             }],
             symbol_index: HashMap::from([(module, 0usize)]),
             inherits: Vec::new(),

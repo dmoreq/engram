@@ -185,41 +185,63 @@ pub(super) fn record_assignment(w: &mut Walker<'_, '_, '_>) {
     };
     // Python `x: T = v` / bare `x: T` (annotated_assignment): the annotation
     // types the variable even when no value is assigned yet, so later calls
-    // on x resolve through its class.
+    // on x resolve through its class. Class-body fields (`scope_func` empty
+    // inside a class) record into `self_fields` instead of leaking into
+    // module-level `params`.
+    let scope_func = w.ctx.scope_func();
+    let line = node.start_position().row + 1;
     if left.kind() == "identifier" {
         if let Some(ty) = node.child_by_field_name("type") {
-            push_param_type(
-                w.fx,
-                text(left, src),
-                dotted_chain(ty, src),
-                &w.ctx.scope_func(),
-            );
+            let chain = type_dotted_chain(ty, src);
+            if scope_func.is_empty() {
+                if let Some(class_qn) = w.ctx.class_stack.last().cloned() {
+                    if let Some(target_dotted) = chain {
+                        w.fx.bindings.self_fields.push(SelfField {
+                            class_qn,
+                            field: text(left, src),
+                            target_dotted,
+                            site_line: line,
+                        });
+                    }
+                } else {
+                    push_param_type(w.fx, text(left, src), chain, &scope_func);
+                }
+            } else {
+                push_param_type(w.fx, text(left, src), chain, &scope_func);
+            }
+        }
+    } else if left.kind() == "attribute" {
+        if let Some(ty) = node.child_by_field_name("type") {
+            if let Some(target_dotted) = type_dotted_chain(ty, src) {
+                record_self_field_assignment(left, target_dotted, w.ctx, w.fx, src);
+            }
         }
     }
     if matches!(
         left.kind(),
         "pattern_list" | "tuple_pattern" | "list_pattern" | "expression_list" | "list"
     ) {
-        record_pattern_shadow(left, src, w.fx, w.ctx, node.start_position().row + 1);
+        record_pattern_shadow(left, src, w.fx, w.ctx, line);
         return;
     }
     let Some(right) = node.child_by_field_name("right") else {
         return;
     };
-    let Some(target) = direct_call_target(right, src) else {
+    let target = direct_call_target(right, src).or_else(|| {
+        if right.kind() == "identifier" {
+            same_scope_var_chain(&w.fx.bindings, &scope_func, node_str(right, src), line)
+        } else {
+            None
+        }
+    });
+    let Some(target) = target else {
         // A simple `x = <unknown>` still overwrites an earlier constructor
         // type; record it as an unknown binding instead of leaving the old
         // assignment in place. An annotated assignment (`x: T = unknown`)
         // keeps its annotation instead: the empty binding would shadow the
         // type recorded above.
         if left.kind() == "identifier" && node.child_by_field_name("type").is_none() {
-            push_assignment(
-                w.fx,
-                text(left, src),
-                Vec::new(),
-                w.ctx,
-                node.start_position().row + 1,
-            );
+            push_assignment(w.fx, text(left, src), Vec::new(), w.ctx, line);
         }
         return;
     };
@@ -229,18 +251,38 @@ pub(super) fn record_assignment(w: &mut Walker<'_, '_, '_>) {
             // RHS call suggests: the annotation is already recorded above,
             // and a plain-call target (build()) must not shadow it.
             if node.child_by_field_name("type").is_none() {
-                push_assignment(
-                    w.fx,
-                    text(left, src),
-                    target,
-                    w.ctx,
-                    node.start_position().row + 1,
-                );
+                push_assignment(w.fx, text(left, src), target, w.ctx, line);
             }
         }
-        "attribute" => record_self_field_assignment(left, target, w.ctx, w.fx, src),
+        "attribute" if node.child_by_field_name("type").is_none() => {
+            record_self_field_assignment(left, target, w.ctx, w.fx, src);
+        }
         _ => {}
     }
+}
+
+/// Look up a variable's type chain from prior same-scope assignments or
+/// parameter annotations (constructor injection `self.r = r`, local alias `y = x`).
+fn same_scope_var_chain(
+    bindings: &FileBindings,
+    scope: &str,
+    var: &str,
+    line: usize,
+) -> Option<Vec<String>> {
+    if let Some(a) = bindings
+        .assignments
+        .iter()
+        .rev()
+        .find(|a| a.scope_func == scope && a.var == var && a.site_line <= line)
+    {
+        return (!a.target_dotted.is_empty()).then(|| a.target_dotted.clone());
+    }
+    bindings
+        .params
+        .iter()
+        .rev()
+        .find(|p| p.scope_func == scope && p.var == var)
+        .map(|p| p.ann_dotted.clone())
 }
 
 /// `self.field = Ctor(...)` -> class-wide receiver typing.
@@ -265,6 +307,7 @@ fn record_self_field_assignment(
         class_qn,
         field,
         target_dotted: target,
+        site_line: left.start_position().row + 1,
     });
 }
 

@@ -118,7 +118,20 @@ impl ImportEmitter<'_> {
                         self.push_edge(Some(dst), &dst_name, Confidence::Extracted, line);
                     }
                     Some(_) => {}
-                    None => self.push_unresolved(&dst_name, line),
+                    None => {
+                        let mut seen: HashSet<(&str, &str)> = HashSet::new();
+                        match super::follow_binding(self.t, (module, name), 0, &mut seen, &dst_name)
+                        {
+                            Some(Outcome::Extracted(dst)) if dst != self.module_sym_idx => {
+                                self.push_edge(Some(dst), &dst_name, Confidence::Extracted, line);
+                            }
+                            Some(Outcome::Extracted(_)) => {}
+                            Some(Outcome::Ambiguous(_)) => {
+                                self.push_edge(None, &dst_name, Confidence::Ambiguous, line);
+                            }
+                            _ => self.push_unresolved(&dst_name, line),
+                        }
+                    }
                 }
             }
         }

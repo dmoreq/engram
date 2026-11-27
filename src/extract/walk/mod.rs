@@ -151,6 +151,7 @@ impl NewSymbol {
             line_start: line_node.start_position().row + 1,
             line_end: line_node.end_position().row + 1,
             is_test,
+            return_type: String::new(),
         }
     }
 }

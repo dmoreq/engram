@@ -56,23 +56,26 @@ pub(super) fn resolve_attr_callee(ctx: &CallCtx<'_>, chain: &[String]) -> Outcom
 }
 
 /// A typed local receiver shadows a same-named module even when the method
-/// miss leaves the call unresolved.
+/// miss leaves the call unresolved. Supports multi-hop `obj.field.m()`.
 pub(super) fn receiver_typing(
     ctx: &CallCtx<'_>,
     chain: &[String],
     method: &str,
 ) -> Option<Outcome> {
-    if chain.len() != 2 {
+    if chain.len() < 2 {
         return None;
     }
-    let var_class = resolve_var_class(
+    let mut cur_class = resolve_var_class(
         ctx.t,
         ctx.fi,
         &chain[0],
         &ctx.site.scope_func,
         ctx.site.line,
     )?;
-    Some(mro_outcome(ctx.t, &var_class, method))
+    for field in &chain[1..chain.len() - 1] {
+        cur_class = resolve_self_attr_type(ctx.t, &cur_class, field)?;
+    }
+    Some(mro_outcome(ctx.t, &cur_class, method))
 }
 
 pub(super) fn class_path_lookup(
@@ -129,19 +132,15 @@ pub(super) fn resolve_receiver_method(
         if chain.len() == 2 {
             return Some(mro_outcome(ctx.t, class_qn, method));
         }
-        if chain.len() == 3 && chain[0] == "self" {
-            if let Some(field_chain) = ctx
-                .fctx
-                .bindings
-                .self_fields
-                .get(&(class_qn.clone(), chain[1].clone()))
-            {
-                if let Some(field_class) =
-                    resolve_class_of_chain(ctx.t, ctx.fi, field_chain, &ctx.site.scope_func)
-                {
-                    return Some(mro_outcome(ctx.t, &field_class, &chain[2]));
-                }
+        if chain.len() >= 3 && chain[0] == "self" {
+            let mut cur_class = class_qn.clone();
+            for field in &chain[1..chain.len() - 1] {
+                let Some(next_class) = resolve_self_attr_type(ctx.t, &cur_class, field) else {
+                    return Some(Outcome::Unresolved);
+                };
+                cur_class = next_class;
             }
+            return Some(mro_outcome(ctx.t, &cur_class, method));
         }
         return Some(Outcome::Unresolved);
     }

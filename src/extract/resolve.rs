@@ -44,8 +44,10 @@ struct ResolvedBindings {
     assignments: BindingEvents,
     /// (scope_func, var) -> annotation chain.
     params: HashMap<(String, String), Vec<String>>,
-    /// (class qualname, field) -> constructor target chain.
-    self_fields: HashMap<(String, String), Vec<String>>,
+    /// Raw `self.field` / class-body field bindings, resolved in `resolve_types_and_fields`.
+    self_fields: Vec<SelfField>,
+    /// Raw function/method/`@property` return type chains, resolved in `resolve_types_and_fields`.
+    return_types: Vec<(String, Vec<String>)>,
 }
 
 struct Tables {
@@ -62,6 +64,12 @@ struct Tables {
     methods_by_name: HashMap<String, Vec<usize>>,
     /// class qualname -> resolved base qualnames
     class_bases: HashMap<String, Vec<String>>,
+    /// (class qualname, field) -> resolved target class qualname
+    class_fields: HashMap<(String, String), String>,
+    /// function/method qualname -> resolved return class qualname
+    return_types: HashMap<String, String>,
+    /// Carried `__init__.py` / module re-exports: `(module_qn, name) -> sym_idxs`
+    carried_reexports: HashMap<(String, String), Vec<usize>>,
     module_paths: HashSet<String>,
     file_ctx: Vec<FileCtx>,
     /// module -> file_ctx index (first fresh file wins, matching the linear
@@ -118,6 +126,9 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
         class_methods: HashMap::new(),
         methods_by_name: HashMap::new(),
         class_bases: HashMap::new(),
+        class_fields: HashMap::new(),
+        return_types: HashMap::new(),
+        carried_reexports: HashMap::new(),
         module_paths: HashSet::new(),
         file_ctx: Vec::new(),
         file_by_module: HashMap::new(),
@@ -137,6 +148,7 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
     });
     dedup_import_edges(&mut t, &mut unresolved_calls);
     reconcile_python_imports(&mut t);
+    let class_fields = resolve_types_and_fields(&mut t);
     resolve_call_sites(
         EmitCtx {
             t: &mut t,
@@ -149,6 +161,7 @@ pub fn resolve(mut files: Vec<FileExtraction>, carried: CarriedIndex) -> Resolut
         symbols: t.symbols,
         existing_ids: t.existing_ids,
         edges: t.edges,
+        class_fields,
         stats,
         unresolved_per_file,
         unresolved_calls,
@@ -218,10 +231,6 @@ fn fold_binding_maps(fx: &mut FileBindings) -> ResolvedBindings {
     for p in bindings.params {
         params.insert((p.scope_func, p.var), p.ann_dotted);
     }
-    let mut self_fields = HashMap::new();
-    for sf in bindings.self_fields {
-        self_fields.insert((sf.class_qn, sf.field), sf.target_dotted);
-    }
     ResolvedBindings {
         aliases,
         locals,
@@ -230,7 +239,8 @@ fn fold_binding_maps(fx: &mut FileBindings) -> ResolvedBindings {
         from_import_parents: bindings.from_import_parents,
         assignments,
         params,
-        self_fields,
+        self_fields: bindings.self_fields,
+        return_types: bindings.return_types,
     }
 }
 
@@ -240,7 +250,10 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
     let CarriedIndex {
         symbols: carried_syms,
         inherits: carried_inherits,
+        class_fields: carried_fields,
+        reexports: carried_reexports,
     } = carried;
+    let mut row_to_idx: HashMap<i64, usize> = HashMap::with_capacity(carried_syms.len());
     for c in carried_syms {
         t.module_paths.insert(c.module.clone());
         // Carried rows are never re-extracted, so they have no fresh file:
@@ -251,6 +264,12 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
             t.file_ctx.len() < usize::MAX,
             "carried file_idx sentinel collided with a real file index"
         );
+        if !c.return_type.is_empty() {
+            t.return_types
+                .insert(c.qualname.clone(), c.return_type.clone());
+        }
+        let sym_idx = t.symbols.len();
+        row_to_idx.insert(c.row_id, sym_idx);
         let sym = NewSymbol {
             kind: c.kind,
             name: c.name.clone(),
@@ -259,6 +278,7 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
             line_start: 0,
             line_end: 0,
             signature: String::new(),
+            return_type: c.return_type,
 
             ..Default::default()
         };
@@ -266,6 +286,17 @@ fn merge_carried(t: &mut Tables, carried: CarriedIndex) {
     }
     for (sub_qn, base_qn) in carried_inherits {
         t.class_bases.entry(sub_qn).or_default().push(base_qn);
+    }
+    for (class_qn, field, target_qn) in carried_fields {
+        t.class_fields.insert((class_qn, field), target_qn);
+    }
+    for (mod_qn, exported_name, dst_row_id) in carried_reexports {
+        if let Some(&sym_idx) = row_to_idx.get(&dst_row_id) {
+            t.carried_reexports
+                .entry((mod_qn, exported_name))
+                .or_default()
+                .push(sym_idx);
+        }
     }
 }
 

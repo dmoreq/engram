@@ -151,6 +151,7 @@ pub(super) fn push_scope_symbol(
         line_start: node.start_position().row + 1,
         line_end: node.end_position().row + 1,
         is_test,
+        return_type: String::new(),
     });
 }
 
