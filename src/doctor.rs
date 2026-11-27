@@ -217,18 +217,88 @@ fn memory_report_line(root: &Path) -> String {
 }
 
 fn stale_ratio(conn: &Connection, root: &Path) -> Result<f64> {
-    let mut stmt = conn.prepare("SELECT path FROM files")?;
-    let paths = stmt
-        .query_map(rusqlite::params![], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<String>, _>>()?;
-    if paths.is_empty() {
-        return Ok(0.0);
+    Ok(stale_ratio_bounded(conn, root, None)?.unwrap_or(0.0))
+}
+
+/// Compute the fraction of indexed files that changed on disk using a single
+/// `files` scan. Returns `Ok(None)` when `max_files` is exceeded.
+pub(crate) fn stale_ratio_bounded(
+    conn: &Connection,
+    root: &Path,
+    max_files: Option<usize>,
+) -> Result<Option<f64>> {
+    let mut stmt = conn.prepare("SELECT path, mtime, size, content_hash FROM files")?;
+    let rows = stmt
+        .query_map(rusqlite::params![], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if rows.is_empty() {
+        return Ok(Some(0.0));
     }
-    let changed = paths
+    if max_files.is_some_and(|cap| rows.len() > cap) {
+        return Ok(None);
+    }
+    let changed = rows
         .iter()
-        .filter(|p| crate::query::file_changed(&crate::query::QueryCtx { conn, root }, p))
+        .filter(|(rel, stored_mtime, stored_size, stored_hash)| {
+            row_changed(root, rel, *stored_mtime, *stored_size, *stored_hash)
+        })
         .count();
-    Ok(changed as f64 / paths.len() as f64)
+    Ok(Some(changed as f64 / rows.len() as f64))
+}
+
+fn row_changed(
+    root: &Path,
+    rel: &str,
+    stored_mtime: i64,
+    stored_size: i64,
+    stored_hash: i64,
+) -> bool {
+    let safe = !rel.is_empty()
+        && !rel.contains('\\')
+        && !Path::new(rel).is_absolute()
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !safe {
+        return true;
+    }
+    let abs = root.join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+        return true;
+    };
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != stored_size as u64 {
+        return true;
+    }
+    let Some(mtime) = db::metadata_mtime(&meta) else {
+        return true;
+    };
+    if mtime != stored_mtime {
+        let Ok(bytes) = crate::walk::read_bounded(&abs) else {
+            return true;
+        };
+        return crate::hash::fnv1a64(&bytes) as i64 != stored_hash;
+    }
+    false
+}
+
+/// Probe `.engram/build.lock` without acquiring it: read-only observers
+/// (`eg doctor`, `eg audit`) use this to detect an active build.
+pub(crate) fn build_lock_held(root: &Path) -> bool {
+    let lock = db::eg_dir(root).join("build.lock");
+    if !std::fs::symlink_metadata(&lock).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    match std::fs::File::open(&lock) {
+        Ok(file) => matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
 }
 
 fn report_orphans(root: &Path, out: &mut Vec<String>) {
@@ -244,15 +314,11 @@ fn report_orphans(root: &Path, out: &mut Vec<String>) {
     // A leftover lock file after a completed build is normal: the advisory
     // flock is released on drop. Only a lock another process still holds is
     // actionable, so probe it instead of testing path existence.
-    if std::fs::symlink_metadata(&lock).is_ok_and(|meta| meta.is_file()) {
-        if let Ok(file) = std::fs::File::open(&lock) {
-            if matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)) {
-                out.push(format!(
-                    "  lock file: {} held by a running build",
-                    lock.display()
-                ));
-            }
-        }
+    if build_lock_held(root) {
+        out.push(format!(
+            "  lock file: {} held by a running build",
+            lock.display()
+        ));
     }
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
