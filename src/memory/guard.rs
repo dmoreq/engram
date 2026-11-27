@@ -295,7 +295,7 @@ fn collect_guards(
     if matched.is_empty() {
         return;
     }
-    matched.sort_by(|a, b| b.0.cmp(&a.0));
+    matched.sort_by_key(|a| std::cmp::Reverse(a.0));
     matched.truncate(limit - out.len());
     let id_placeholders = crate::db::sql_placeholders(matched.len());
     let id_sql = format!("SELECT id, body FROM memories WHERE id IN ({id_placeholders})");
