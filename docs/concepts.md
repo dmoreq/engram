@@ -66,13 +66,9 @@ shop/models.py:20 [ambiguous] shop.models.DiscountedOrder.discount
 `eg path` prints hop call sites and a final `eg: chain ...` line. `eg impact`
 groups rows by caller file by default; `--sites` lists each site.
 
-`--explain` on `callers`, `callees`, or `context` adds the metadata the index
-stores for each edge: kind, confidence, site line, destination, grouped edge
-count, and a typed-receiver hint when a `type_ref` edge exists. It does not
-reconstruct the resolver branch: import chains, `self`/MRO choices, and
-ambiguous candidate sets are not persisted. On transitive rows, the metadata
-describes one traversed edge or a path projection, not a complete resolution
-trace.
+`--explain` is supported on `eg reuse` (appending detector and reason codes to each
+candidate) and `eg mem query` (appending one causal `why:` line per shown
+ranked note).
 
 ## Exit codes
 
@@ -99,10 +95,11 @@ index recorded. It is not a complete model of runtime behavior.
 
 These surfaces are **candidates**, not proof:
 
-- `dead`: symbols without indexed inbound references; it does not prove deadness.
+- `reuse`: structural duplication candidates; verify before merging or deleting.
 - `unresolved`: locations where the static resolver failed; it does not prove
   that a call is external or dynamic.
-- `complexity`: a static effective-line-count ranking, not runtime cost.
+- `mem query` / `mem get`: agent-authored project notes; verify anchored code
+  before relying on them.
 
 Source reads still gate edits and behavioral claims.
 

@@ -43,7 +43,7 @@ Read the governing specifications before changing schemas, resolution semantics,
 
 - **Dual-Database Schema Evolution**:
   - **Code Index (`.engram/index.db`, `SCHEMA_VERSION = 10`)**: Evolve [`schema/index.sql`](schema/index.sql) and [`schema/indexes.sql`](schema/indexes.sql) additively. Never migrate `.engram/index.db` in place. Any schema mismatch (`PRAGMA user_version != SCHEMA_VERSION`) must exit `5`; `eg build` replaces the database atomically after `fsync`. Keep secondary indexes in [`schema/indexes.sql`](schema/indexes.sql) so fresh builds create them after bulk inserts.
-  - **Memory Store (`.engram/memory.db` & `~/.engram/memory.db`, `MEMORY_SCHEMA_VERSION = 2`)**: Defined in [`schema/memory.sql`](schema/memory.sql). Preserves primary agent-authored notes across index rebuilds with dual FTS5 indexes (legacy ASCII + Unicode), revision chains, content-hash deduplication, and JSONL backup (`eg mem export`).
+  - **Memory Store (`.engram/memory.db` & `~/.engram/memory.db`, `MEMORY_SCHEMA_VERSION = 3`)**: Defined in [`schema/memory.sql`](schema/memory.sql). Preserves primary agent-authored notes across index rebuilds with dual FTS5 indexes (legacy ASCII + Unicode), revision chains, soft-retire (`RETIRED_SENTINEL = -1`), content-hash deduplication, and JSONL backup (`eg mem export`).
 - **CLI & MCP Parity**:
   - Route all shared query, analysis, and memory operations through [`src/service.rs`](src/service.rs) so CLI and MCP outputs remain byte-identical.
 - **SQL Safety & Deterministic Ordering**:
@@ -68,7 +68,7 @@ When adding, removing, or modifying any subcommand, flag, MCP tool, output forma
    - *Pillar 1 (Graph Navigation)*: `build`, `callers`, `callees`, `path`, `context`, `impact`, `imports`, `symbols`.
    - *Pillar 2 (Anti-Reinvention)*: Pre-write `search` (prioritizing `[callers=N]`) and post-edit `reuse`.
    - *Pillar 3 (Project Memory)*: Pre-task `mem query` and post-fix `mem write`.
-   - Keep human-audit commands (`tests`, `dead`, `complexity`, `hotspots`, `report`, `stats`, `files`) out of mandatory agent routing.
+   - Keep human-audit commands (`stats`, `unresolved`, `usage`, `audit`, `doctor`) out of mandatory agent routing.
 4. **Public Docs**: [`README.md`](README.md), [`docs/getting-started.md`](docs/getting-started.md), [`docs/usage.md`](docs/usage.md), [`docs/cli-reference.md`](docs/cli-reference.md), [`docs/agent-integration.md`](docs/agent-integration.md), and [`CHANGELOG.md`](CHANGELOG.md).
 5. **Packaging**: [`Cargo.toml`](Cargo.toml) (`include` list), [`tests/scripts/allowlist.txt`](tests/scripts/allowlist.txt), [`scripts/install.sh`](scripts/install.sh), and [`.github/workflows/`](.github/workflows/).
 

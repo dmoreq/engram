@@ -42,7 +42,8 @@ fn tracked_store_is_reported_not_read() {
         guard_root: Some(repo),
     };
     let mut notes = Vec::new();
-    let err = collect_store_notes(&store, &HashMap::new(), &mut notes).unwrap_err();
+    let mut errs = Vec::new();
+    let err = collect_store_notes(&store, &HashMap::new(), &mut notes, &mut errs).unwrap_err();
     assert_eq!(err["stage"], "security", "{err}");
     assert!(err["message"].as_str().unwrap().contains("git-tracked"));
     assert!(notes.is_empty());
@@ -115,6 +116,7 @@ fn write_session_note(root: &Path, key: &str, body: &str, expires_at: i64, now: 
             embedding: None,
             supersedes: None,
             touch: false,
+            expected_rev: None,
         },
         now,
     )

@@ -42,10 +42,17 @@ pub(crate) fn classify(tool: &str) -> ToolClass {
         ),
         reuse: matches!(tool, "search" | "reuse"),
         memory: tool.starts_with("mem_"),
-        mem_read: matches!(tool, "mem_query" | "mem_get" | "mem_export"),
+        mem_read: matches!(tool, "mem_query" | "mem_get" | "mem_export" | "mem_triage"),
         mem_write: matches!(
             tool,
-            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import"
+            "mem_write"
+                | "mem_touch"
+                | "mem_delete"
+                | "mem_retire"
+                | "mem_restore"
+                | "mem_gc"
+                | "mem_import"
+                | "mem_reindex"
         ),
     }
 }
@@ -160,30 +167,19 @@ impl SummaryState {
     fn record_error(&mut self, v: &EntryView<'_>) {
         self.errors += 1;
         self.tool_mut(v.tool).errors += 1;
-        self.repo_mut(folded_key(v), &v.repo_display).errors += 1;
-        self.agent_mut(v.agent_name).errors += 1;
         if v.facts.is_graph {
             self.graph_errors += 1;
-            self.repo_mut(folded_key(v), &v.repo_display).graph_errors += 1;
-            self.agent_mut(v.agent_name).graph_errors += 1;
         }
-        if v.facts.is_reuse {
-            self.repo_mut(folded_key(v), &v.repo_display).reuse_errors += 1;
-            self.agent_mut(v.agent_name).reuse_errors += 1;
-        }
-        if v.facts.is_mem {
-            self.repo_mut(folded_key(v), &v.repo_display).memory_errors += 1;
-            self.agent_mut(v.agent_name).memory_errors += 1;
-        }
-        if v.repo_main.is_some() && v.facts.is_graph {
-            if let Some(wt) = self
-                .repo_mut(folded_key(v), &v.repo_display)
-                .worktrees
-                .get_mut(v.repo_name)
-            {
-                wt.errors += 1;
+        {
+            let repo = self.repo_mut(folded_key(v), &v.repo_display);
+            repo.record_error(v.facts);
+            if v.repo_main.is_some() && v.facts.is_graph {
+                if let Some(wt) = repo.worktrees.get_mut(v.repo_name) {
+                    wt.errors += 1;
+                }
             }
         }
+        self.agent_mut(v.agent_name).record_error(v.facts);
     }
 
     fn record_success(&mut self, v: &EntryView<'_>) {
@@ -191,59 +187,44 @@ impl SummaryState {
         {
             let t = self.tool_mut(v.tool);
             t.ok_calls += 1;
-            t.ok_shown += v.shown;
-            t.ok_results += v.result_count;
-        }
-        if v.facts.is_search && v.shown > 0 {
-            self.repo_mut(folded_key(v), &v.repo_display)
-                .search_hit_calls += 1;
-            self.agent_mut(v.agent_name).search_hit_calls += 1;
-        }
-        // Memory recall effectiveness: a read that returned content (query
-        // results, an exact-key get, exported rows) counts as a hit.
-        if v.facts.is_mem_read && v.shown > 0 {
-            self.repo_mut(folded_key(v), &v.repo_display)
-                .memory_read_hits += 1;
-            self.agent_mut(v.agent_name).memory_read_hits += 1;
-        }
-        if v.tool == "reuse" && v.mode.is_none_or(|mode| mode == "scan") {
-            // Proposal and coverage runs journal as tool "reuse" too; only a
-            // scan is a duplicate-census snapshot. Truncation comes from the
-            // journaled verdict, not from comparing against args.limit (a
-            // pool of exactly `limit` candidates is not a truncated scan).
-            let scan = LastReuseScan {
-                ts: v.ts,
-                result_count: v.result_count,
-                limit_capped: v.truncated,
-                prev_result_count: None,
-                prev_ts: 0.0,
-            };
-            let repo = self.repo_mut(folded_key(v), &v.repo_display);
-            if repo.last_reuse_scan.as_ref().is_none_or(|s| v.ts >= s.ts) {
-                let mut demoted = scan;
-                if let Some(prev) = repo.last_reuse_scan {
-                    // Keep the previous snapshot so the cell can show the
-                    // pool delta — the consolidation-loop signal.
-                    demoted.prev_result_count = Some(prev.result_count);
-                    demoted.prev_ts = prev.ts;
-                }
-                repo.last_reuse_scan = Some(demoted);
-            }
+            t.saved_tokens += saved;
         }
         self.saved_tokens += saved;
-        self.repo_mut(folded_key(v), &v.repo_display).tokens_saved += saved;
-        self.agent_mut(v.agent_name).tokens_saved += saved;
         if v.facts.is_graph {
             self.graph_saved_tokens += saved;
-            self.repo_mut(folded_key(v), &v.repo_display)
-                .graph_tokens_saved += saved;
-            self.agent_mut(v.agent_name).graph_tokens_saved += saved;
         }
-        if v.facts.is_reuse {
-            self.repo_mut(folded_key(v), &v.repo_display)
-                .reuse_tokens_saved += saved;
-            self.agent_mut(v.agent_name).reuse_tokens_saved += saved;
+        let search_hit = v.facts.is_search && v.shown > 0;
+        let mem_hit = v.facts.is_mem_read && v.shown > 0;
+        let reuse_scan = v.tool == "reuse" && v.mode.is_none_or(|mode| mode == "scan");
+        {
+            let repo = self.repo_mut(folded_key(v), &v.repo_display);
+            repo.record_success(v.facts, saved, search_hit, mem_hit);
+            if reuse_scan {
+                // Proposal and coverage runs journal as tool "reuse" too; only a
+                // scan is a duplicate-census snapshot. Truncation comes from the
+                // journaled verdict, not from comparing against args.limit (a
+                // pool of exactly `limit` candidates is not a truncated scan).
+                let scan = LastReuseScan {
+                    ts: v.ts,
+                    result_count: v.result_count,
+                    limit_capped: v.truncated,
+                    prev_result_count: None,
+                    prev_ts: 0.0,
+                };
+                if repo.last_reuse_scan.as_ref().is_none_or(|s| v.ts >= s.ts) {
+                    let mut demoted = scan;
+                    if let Some(prev) = repo.last_reuse_scan {
+                        // Keep the previous snapshot so the cell can show the
+                        // pool delta — the consolidation-loop signal.
+                        demoted.prev_result_count = Some(prev.result_count);
+                        demoted.prev_ts = prev.ts;
+                    }
+                    repo.last_reuse_scan = Some(demoted);
+                }
+            }
         }
+        self.agent_mut(v.agent_name)
+            .record_success(v.facts, saved, search_hit, mem_hit);
     }
 
     fn record_latency(&mut self, v: &EntryView<'_>) {
@@ -306,10 +287,9 @@ struct ToolAgg {
     errors: usize,
     shown: usize,
     results: usize,
-    /// Success-only inputs for the token-savings arm; mirrors the global fold.
+    /// Success-only call count and per-call accumulated token savings.
     ok_calls: usize,
-    ok_shown: usize,
-    ok_results: usize,
+    saved_tokens: usize,
     latencies: Vec<f64>,
 }
 
@@ -390,6 +370,37 @@ struct EntryFacts {
     is_mem_write: bool,
 }
 
+impl RepoAgg {
+    fn record_error(&mut self, facts: EntryFacts) {
+        self.errors += 1;
+        if facts.is_graph {
+            self.graph_errors += 1;
+        }
+        if facts.is_reuse {
+            self.reuse_errors += 1;
+        }
+        if facts.is_mem {
+            self.memory_errors += 1;
+        }
+    }
+
+    fn record_success(&mut self, facts: EntryFacts, saved: usize, search_hit: bool, mem_hit: bool) {
+        if search_hit {
+            self.search_hit_calls += 1;
+        }
+        if mem_hit {
+            self.memory_read_hits += 1;
+        }
+        self.tokens_saved += saved;
+        if facts.is_graph {
+            self.graph_tokens_saved += saved;
+        }
+        if facts.is_reuse {
+            self.reuse_tokens_saved += saved;
+        }
+    }
+}
+
 fn record_entry_into(agg: &mut RepoAgg, facts: EntryFacts, ts: f64, worktree: bool) {
     agg.calls += 1;
     agg.worktree = agg.worktree || worktree;
@@ -418,3 +429,38 @@ fn record_entry_into(agg: &mut RepoAgg, facts: EntryFacts, ts: f64, worktree: bo
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stream5_tests {
+    use super::*;
+
+    #[test]
+    fn reuse_saved_tokens_and_shown_null_fallback_parity() {
+        let dir = crate::db::temp_root("summary-stream5");
+        crate::db::test_support::make_dir_all(&dir).unwrap();
+        let repo = dir.to_string_lossy().into_owned();
+        let entries = vec![
+            json!({
+                "tool": "reuse", "repo": repo, "result_count": 3, "shown": 3, "exit_code": 0
+            }),
+            json!({
+                "tool": "reuse", "repo": repo, "result_count": 2, "shown": Value::Null, "exit_code": 0
+            }),
+            json!({
+                "tool": "callers", "repo": repo, "result_count": 4, "shown": Value::Null, "exit_code": 0
+            }),
+        ];
+        let payload = compute_summary(&entries);
+        let expected_reuse = crate::journal::estimated_tokens_saved("reuse", 3, 3, 1)
+            + crate::journal::estimated_tokens_saved("reuse", 2, 2, 1);
+        let expected_callers = crate::journal::estimated_tokens_saved("callers", 4, 4, 1);
+        assert_eq!(payload["tool_aggs"]["reuse"]["shown"], 5);
+        assert_eq!(
+            payload["tool_aggs"]["reuse"]["saved_tokens"],
+            expected_reuse
+        );
+        assert_eq!(payload["tool_aggs"]["callers"]["shown"], 4);
+        assert_eq!(payload["saved_tokens"], expected_reuse + expected_callers);
+        crate::db::test_support::remove_tree(&dir);
+    }
+}

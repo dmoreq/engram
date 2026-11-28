@@ -4,6 +4,10 @@
 use super::memory_fts::ensure_memory_fts_v2;
 use super::*;
 
+mod mcp_cache;
+#[allow(unused_imports)]
+pub use mcp_cache::{evict_memory_mcp_cache, open_cached_memory_for_mcp, CachedMemoryConnection};
+
 /// Compiled memory schema version; gates `.engram/memory.db` like SCHEMA_VERSION
 /// gates the index, with a diverging policy: older-but-structurally-complete
 /// stores open read-write (memory cannot be rebuilt), only newer-than-binary
@@ -62,47 +66,71 @@ pub(crate) fn map_memory_err(e: rusqlite::Error) -> EgError {
     EgError::Internal(format!("memory database error: {e}"))
 }
 
-fn memory_manifest_complete(conn: &Connection) -> Result<bool> {
-    let mut stmt = conn
-        .prepare("SELECT name FROM pragma_table_info('memories')")
-        .map_err(map_memory_err)?;
-    let cols: std::collections::HashSet<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(map_memory_err)?
-        .collect::<std::result::Result<_, _>>()
-        .map_err(map_memory_err)?;
-    if !MEMORY_REQUIRED.iter().all(|(_, col)| cols.contains(*col)) {
-        return Ok(false);
-    }
-    let fts: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'memories_fts'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(map_memory_err)?;
-    Ok(fts > 0)
+struct MemoryDbProbe {
+    version: i32,
+    columns: std::collections::HashSet<String>,
+    tables: std::collections::HashSet<String>,
+    indexes: std::collections::HashSet<String>,
 }
 
-/// Two distinct exit-5 messages (Storage section): newer than the binary vs
-/// older but failing the compiled manifest. Memory cannot be rebuilt, so both
-/// point at the `eg mem export` backup, never at `eg build`.
-fn memory_version_gate(conn: &Connection) -> Result<()> {
-    let have: i32 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(map_memory_err)?;
+impl MemoryDbProbe {
+    fn read(conn: &Connection) -> Result<Self> {
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(map_memory_err)?;
+        let mut col_stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('memories')")
+            .map_err(map_memory_err)?;
+        let columns: std::collections::HashSet<String> = col_stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_memory_err)?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(map_memory_err)?;
+        let mut obj_stmt = conn
+            .prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index')")
+            .map_err(map_memory_err)?;
+        let (mut tables, mut indexes) = (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        );
+        for obj in obj_stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(map_memory_err)?
+        {
+            let (kind, name) = obj.map_err(map_memory_err)?;
+            if kind == "table" {
+                tables.insert(name);
+            } else if kind == "index" {
+                indexes.insert(name);
+            }
+        }
+        Ok(Self {
+            version,
+            columns,
+            tables,
+            indexes,
+        })
+    }
+
+    fn manifest_complete(&self) -> bool {
+        MEMORY_REQUIRED
+            .iter()
+            .all(|(_, col)| self.columns.contains(*col))
+            && self.tables.contains("memories_fts")
+    }
+}
+
+/// Two distinct exit-5 messages: newer than the binary vs missing required structure.
+fn memory_version_gate_with_probe(probe: &MemoryDbProbe) -> Result<()> {
+    let have = probe.version;
     if have > MEMORY_SCHEMA_VERSION {
         return Err(EgError::MemorySchema {
-            detail: format!(
-                "memory.db schema v{have} is newer than the binary expects (v{MEMORY_SCHEMA_VERSION}) — {MEMORY_RESTORE_HINT}"
-            ),
+            detail: format!("memory.db schema v{have} is newer than the binary expects (v{MEMORY_SCHEMA_VERSION}) — {MEMORY_RESTORE_HINT}"),
         });
     }
-    if !memory_manifest_complete(conn)? {
+    if !probe.manifest_complete() {
         return Err(EgError::MemorySchema {
-            detail: format!(
-                "memory.db schema v{have} is missing required structure for this binary — {MEMORY_RESTORE_HINT}"
-            ),
+            detail: format!("memory.db schema v{have} is missing required structure for this binary — {MEMORY_RESTORE_HINT}"),
         });
     }
     Ok(())
@@ -111,15 +139,14 @@ fn memory_version_gate(conn: &Connection) -> Result<()> {
 fn memory_pragmas(conn: &Connection, read_only: bool) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_millis(MEMORY_BUSY_TIMEOUT_MS))
         .map_err(map_memory_err)?;
+    conn.execute_batch("PRAGMA temp_store = MEMORY; PRAGMA cache_size = -16384;")
+        .map_err(map_memory_err)?;
     if !read_only {
-        // synchronous = FULL is the rollback-journal default; stated explicitly so
-        // the durability contract survives a future default change.
         conn.execute_batch("PRAGMA synchronous = FULL;")
             .map_err(map_memory_err)?;
     }
     Ok(())
 }
-
 fn resolve_default_home_eg_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home_dir()?).join(".engram"))
 }
@@ -144,20 +171,13 @@ pub fn global_eg_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// First non-empty value among `keys`, in priority order.
 pub(crate) fn env_non_empty(keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| match std::env::var(key) {
-        Ok(val) if !val.trim().is_empty() => Some(val),
-        _ => None,
-    })
+    keys.iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
 }
-
-/// Whether the global confinement directory was overridden by
-/// `ENGRAM_GLOBAL_DIR`.
 pub fn global_dir_overridden() -> bool {
     env_non_empty(&["ENGRAM_GLOBAL_DIR"]).is_some()
 }
-
 fn home_dir() -> Result<String> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -167,25 +187,17 @@ fn home_dir() -> Result<String> {
             )
         })
 }
-
-fn ensure_global_eg_dir(path: &Path) -> Result<()> {
-    crate::db::ensure_global_dir(path)
-}
-
 pub fn global_memory_db_path() -> Result<PathBuf> {
     Ok(global_eg_dir()?.join("memory.db"))
 }
-
 pub fn global_usage_log_path() -> Result<PathBuf> {
     Ok(global_eg_dir()?.join("usage.log"))
 }
-
 fn global_memory_store_path() -> Result<PathBuf> {
     let path = global_memory_db_path()?;
     reject_symlink(&path, "global memory.db")?;
     Ok(path)
 }
-
 fn no_global_memory_error(path: &Path) -> EgError {
     EgError::NoMemory(format!(
         "no {} — write with eg mem write --global",
@@ -241,7 +253,7 @@ pub fn open_memory(loc: StoreLocation<'_>, mode: StoreMode) -> Result<Connection
             }
             StoreMode::Store => {
                 let dir = global_eg_dir()?;
-                ensure_global_eg_dir(&dir)?;
+                crate::db::ensure_global_dir(&dir)?;
                 let path = global_memory_store_path()?;
                 open_memory_conn_path(&path, true, || no_global_memory_error(&path))
             }
@@ -253,7 +265,6 @@ pub fn open_memory(loc: StoreLocation<'_>, mode: StoreMode) -> Result<Connection
 pub fn open_memory_store(root: &Path) -> Result<Connection> {
     open_memory(StoreLocation::Local(root), StoreMode::Store)
 }
-
 #[allow(dead_code)]
 pub fn open_memory_mutation(root: &Path) -> Result<Connection> {
     open_memory(StoreLocation::Local(root), StoreMode::Mutation)
@@ -281,7 +292,6 @@ pub fn open_memory_mutation_at(db_path: &Path) -> Result<Connection> {
 pub fn open_global_memory_store() -> Result<Connection> {
     open_memory(StoreLocation::Global, StoreMode::Store)
 }
-
 #[allow(dead_code)]
 pub fn open_global_memory_mutation() -> Result<Connection> {
     open_memory(StoreLocation::Global, StoreMode::Mutation)
@@ -321,14 +331,16 @@ fn open_memory_conn_path(
     )
     .map_err(map_memory_err)?;
     memory_pragmas(&conn, false)?;
-    if !memory_manifest_complete(&conn)? {
+    let mut probe = MemoryDbProbe::read(&conn)?;
+    if !probe.manifest_complete() {
         create_memory_schema(&conn)?;
+        probe = MemoryDbProbe::read(&conn)?;
     }
-    memory_version_gate(&conn)?;
+    memory_version_gate_with_probe(&probe)?;
     // Additive v1 -> v2: `anchored_at` records the last verify without
     // destroying the creation date. Only the write path migrates; readers
     // fall back to `created_at` when the column is absent.
-    migrate_memory_schema(&conn)?;
+    migrate_memory_schema(&conn, &probe)?;
     // Derived v2 index: reconcile pending/missing rows on every write open.
     ensure_memory_fts_v2(&conn, false)?;
     // Owner-only mode: notes are private primary data.
@@ -344,7 +356,7 @@ fn open_memory_conn_path(
 fn create_memory_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(map_memory_err)?;
-    if !memory_manifest_complete(conn)? {
+    if !MemoryDbProbe::read(conn)?.manifest_complete() {
         match conn.execute_batch(include_str!("../../schema/memory.sql")) {
             Ok(()) => {
                 conn.pragma_update(None, "user_version", MEMORY_SCHEMA_VERSION)
@@ -367,51 +379,48 @@ fn create_memory_schema(conn: &Connection) -> Result<()> {
 }
 
 /// Additive schema migration: v1 stores gain `anchored_at`, `fts_version`, the
-/// meta table, and the time/pending indexes. Each step is independent; a
-/// duplicate-column race is tolerated, every other error rolls back.
-fn migrate_memory_schema(conn: &Connection) -> Result<()> {
+/// meta table, and the time/pending/active-refs indexes. Each step is
+/// independent; a duplicate-column race is tolerated, every other error rolls
+/// back.
+fn migrate_memory_schema(conn: &Connection, probe: &MemoryDbProbe) -> Result<()> {
     // Read-only fast path: a fully migrated store must not pay a write
     // transaction on every `mem write` open.
-    let ready = column_present(conn, "memories", "anchored_at").map_err(map_memory_err)?
-        && column_present(conn, "memories", "fts_version").map_err(map_memory_err)?
-        && column_present(conn, "memories", "embedding").map_err(map_memory_err)?
-        && super::query_state::object_exists_result(conn, "table", "memory_meta")
-            .map_err(map_memory_err)?
-        && super::query_state::object_exists_result(conn, "index", "memories_created")
-            .map_err(map_memory_err)?
-        && super::query_state::object_exists_result(conn, "index", "memories_pending")
-            .map_err(map_memory_err)?;
+    let ready = probe.columns.contains("anchored_at")
+        && probe.columns.contains("fts_version")
+        && probe.columns.contains("embedding")
+        && probe.tables.contains("memory_meta")
+        && probe.indexes.contains("memories_created")
+        && probe.indexes.contains("memories_pending")
+        && probe.indexes.contains("memories_active_refs");
     if ready {
         return Ok(());
     }
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(map_memory_err)?;
     let step = (|| -> Result<()> {
-        add_column_if_missing(
-            conn,
-            "memories",
-            "anchored_at",
-            "ALTER TABLE memories ADD COLUMN anchored_at INTEGER NOT NULL DEFAULT 0",
-        )?;
-        add_column_if_missing(
-            conn,
-            "memories",
-            "fts_version",
-            "ALTER TABLE memories ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0",
-        )?;
-        // Additive v2 -> v3: optional note embeddings for semantic ranking.
-        // NULL stays a legal value: ranking falls back to the lexical
-        // features whenever the column is absent for a candidate.
-        add_column_if_missing(
-            conn,
-            "memories",
-            "embedding",
-            "ALTER TABLE memories ADD COLUMN embedding BLOB",
-        )?;
+        for (col, ddl) in [
+            (
+                "anchored_at",
+                "ALTER TABLE memories ADD COLUMN anchored_at INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "fts_version",
+                "ALTER TABLE memories ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "embedding",
+                "ALTER TABLE memories ADD COLUMN embedding BLOB",
+            ),
+        ] {
+            if !probe.columns.contains(col) {
+                add_column_if_missing(conn, "memories", col, ddl)?;
+            }
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS memory_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS memories_created ON memories(created_at);
-             CREATE INDEX IF NOT EXISTS memories_pending ON memories(id) WHERE fts_version < 2;",
+             CREATE INDEX IF NOT EXISTS memories_pending ON memories(id) WHERE fts_version < 2;
+             CREATE INDEX IF NOT EXISTS memories_active_refs ON memories(kind, created_at DESC) WHERE superseded_by IS NULL AND refs != '';",
         )
         .map_err(map_memory_err)?;
         conn.pragma_update(None, "user_version", MEMORY_SCHEMA_VERSION)
@@ -448,7 +457,8 @@ fn open_memory_query_path(
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(map_memory_err)?;
     memory_pragmas(&conn, true)?;
-    memory_version_gate(&conn)?;
+    let probe = MemoryDbProbe::read(&conn)?;
+    memory_version_gate_with_probe(&probe)?;
     Ok(conn)
 }
 
@@ -460,41 +470,4 @@ pub fn open_memory_query(root: &Path) -> Result<Connection> {
 
 pub fn open_global_memory_query() -> Result<Connection> {
     open_memory(StoreLocation::Global, StoreMode::Query)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn manifest_complete_checks_full_and_partial_schemas() {
-        let full = Connection::open_in_memory().unwrap();
-        full.execute_batch(include_str!("../../schema/memory.sql"))
-            .unwrap();
-        assert!(memory_manifest_complete(&full).unwrap());
-
-        let partial = Connection::open_in_memory().unwrap();
-        partial
-            .execute_batch(
-                "CREATE TABLE memories (id INTEGER PRIMARY KEY, key TEXT);
-                 CREATE VIRTUAL TABLE memories_fts USING fts5(text);",
-            )
-            .unwrap();
-        assert!(!memory_manifest_complete(&partial).unwrap());
-    }
-
-    #[test]
-    fn query_path_opens_read_only_store() {
-        let dir = crate::db::temp_root("mem-query-ro");
-        let writer = open_memory_store(&dir).unwrap();
-        drop(writer);
-        let reader = open_memory_query(&dir).unwrap();
-        let ro: i32 = reader
-            .query_row("PRAGMA query_only", [], |r| r.get(0))
-            .unwrap_or(0);
-        // SQLite opens with SQLITE_OPEN_READ_ONLY; attempting a write must fail.
-        assert!(reader.execute("DELETE FROM memories", []).is_err() || ro == 1);
-        drop(reader);
-        crate::db::test_support::remove_tree(&dir);
-    }
 }

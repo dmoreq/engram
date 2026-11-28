@@ -1,5 +1,7 @@
 //! P1.5 insight command: `stats`.
 
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 use crate::db;
@@ -30,14 +32,20 @@ pub fn stats(ctx: &QueryCtx<'_>, path: Option<&str>) -> Result<String> {
         }
         None => None,
     };
+    let meta = load_meta_map(conn)?;
     let totals = match &scope {
-        None => global_totals(conn)?,
+        None => global_totals(conn, &meta)?,
         Some(scope) => scoped_totals(conn, scope)?,
     };
     let size = db::file_size(&db::db_path(root));
-    let eg_version =
-        db::meta_get(conn, db::meta_keys::ENGRAM_VERSION).unwrap_or_else(|| "?".into());
-    let grammar = db::meta_get(conn, db::meta_keys::GRAMMAR_VERSION).unwrap_or_else(|| "?".into());
+    let eg_version = meta
+        .get(db::meta_keys::ENGRAM_VERSION)
+        .cloned()
+        .unwrap_or_else(|| "?".into());
+    let grammar = meta
+        .get(db::meta_keys::GRAMMAR_VERSION)
+        .cloned()
+        .unwrap_or_else(|| "?".into());
     Ok(stats_line(
         scope.as_deref(),
         &totals,
@@ -47,23 +55,36 @@ pub fn stats(ctx: &QueryCtx<'_>, path: Option<&str>) -> Result<String> {
     ))
 }
 
-fn global_totals(conn: &Connection) -> Result<StatsTotals> {
-    // Build-time counters first (R7 L4): every filtered COUNT scanned rows;
-    // the manifest already stores the authoritative totals (written from SQL
-    // at build end), so stats is O(1). The (key, fallback SQL) pairs and the
-    // meta-or-COUNT fallback live in db (META_COUNTERS / meta_count), shared
-    // with the no-op build line.
+fn load_meta_map(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT key, value FROM meta")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
+fn global_totals(conn: &Connection, meta: &HashMap<String, String>) -> Result<StatsTotals> {
+    let counter = |key: &str| -> Result<i64> {
+        if let Some(val) = meta.get(key).and_then(|v| v.parse::<i64>().ok()) {
+            return Ok(val);
+        }
+        db::meta_count(conn, key)
+    };
     Ok(StatsTotals {
-        files: db::meta_count(conn, db::meta_keys::FILE_COUNT)?,
-        symbols: db::meta_count(conn, db::meta_keys::SYMBOL_COUNT)?,
-        edges: db::meta_count(conn, db::meta_keys::EDGE_COUNT)?,
-        calls: db::meta_count(conn, db::meta_keys::EDGE_CALLS)?,
-        imports: db::meta_count(conn, db::meta_keys::EDGE_IMPORTS)?,
-        inherits: db::meta_count(conn, db::meta_keys::EDGE_INHERITS)?,
-        perr: db::meta_count(conn, db::meta_keys::PARSE_ERROR_COUNT)?,
+        files: counter(db::meta_keys::FILE_COUNT)?,
+        symbols: counter(db::meta_keys::SYMBOL_COUNT)?,
+        edges: counter(db::meta_keys::EDGE_COUNT)?,
+        calls: counter(db::meta_keys::EDGE_CALLS)?,
+        imports: counter(db::meta_keys::EDGE_IMPORTS)?,
+        inherits: counter(db::meta_keys::EDGE_INHERITS)?,
+        perr: counter(db::meta_keys::PARSE_ERROR_COUNT)?,
         // Meta only: this read path has no COUNT fallback (pre-counter
         // indexes report 0 here, as before).
-        unresolved: db::meta_get(conn, db::meta_keys::UNRESOLVED_CALLEE_COUNT)
+        unresolved: meta
+            .get(db::meta_keys::UNRESOLVED_CALLEE_COUNT)
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0),
     })
@@ -75,14 +96,14 @@ fn global_totals(conn: &Connection) -> Result<StatsTotals> {
 /// one per kind).
 fn scoped_totals(conn: &Connection, scope: &str) -> Result<StatsTotals> {
     let (clause, params) = crate::query::scoped_params("f", "path", Some(scope), 1);
-    let scalar = |expr: &str, from: &str, extra: &str| -> Result<i64> {
-        Ok(conn.query_row(
-            &format!("SELECT {expr} FROM {from} WHERE 1=1 {extra} {clause}"),
-            rusqlite::params_from_iter(params.iter()),
-            |r| r.get(0),
-        )?)
-    };
-    let files = scalar("COUNT(*)", "files f", "")?;
+    let (files, perr, unresolved) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*), COALESCE(SUM(f.parse_status != 'ok'), 0), COALESCE(SUM(f.unresolved), 0)
+             FROM files f WHERE 1=1 {clause}"
+        ),
+        rusqlite::params_from_iter(params.iter()),
+        crate::db::ints3,
+    )?;
     if files == 0 {
         return Err(EgError::NoResults(format!("no indexed files in '{scope}'")));
     }
@@ -101,15 +122,22 @@ fn scoped_totals(conn: &Connection, scope: &str) -> Result<StatsTotals> {
         rusqlite::params_from_iter(params.iter()),
         crate::db::ints4,
     )?;
+    let symbols: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id WHERE 1=1 {clause}"
+        ),
+        rusqlite::params_from_iter(params.iter()),
+        |r| r.get(0),
+    )?;
     Ok(StatsTotals {
         files,
-        symbols: scalar("COUNT(*)", "symbols s JOIN files f ON f.id = s.file_id", "")?,
+        symbols,
         edges,
         calls,
         imports,
         inherits,
-        perr: scalar("COALESCE(SUM(f.parse_status != 'ok'), 0)", "files f", "")?,
-        unresolved: scalar("COALESCE(SUM(f.unresolved), 0)", "files f", "")?,
+        perr,
+        unresolved,
     })
 }
 

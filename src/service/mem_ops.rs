@@ -4,40 +4,52 @@
 use super::*;
 
 /// Current row for one exact key plus its revision count.
-pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let CommandRequest::MemGet { key, global } = req else {
+pub(super) fn run_mem_get(
+    req: &CommandRequest,
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<ArmOut> {
+    let CommandRequest::MemGet {
+        key,
+        global,
+        include_superseded,
+    } = req
+    else {
         unreachable!("run_mem_get called with a non-get request")
     };
-    let (root, index_conn) = stale_ref_root_and_conn(root_arg);
+    let (root, index_conn) = stale_ref_root_and_conn(root_arg, surface);
 
     if *global {
-        let conn = crate::db::open_global_memory_query()?;
-        return match crate::db::memory_get(&conn, key)? {
+        let conn = open_mem_query_conn(None, true, surface)?;
+        return match crate::db::memory_get_with_options(&conn, key, *include_superseded)? {
             None => Err(mem_unknown_key(key)),
             Some((row, revs)) => {
-                let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
-                Ok(render_mem_hit(
-                    &row,
-                    &store_tags(true, status, &row.source),
-                    revs,
-                ))
+                let ref_statuses = collect_ref_statuses(None, None, &row);
+                let status = aggregate_ref_status(&ref_statuses);
+                let tag = mem_get_tag(&row, true, status);
+                Ok(render_mem_hit(&row, &tag, revs, &ref_statuses))
             }
         };
     }
 
-    let stores = resolve_memory_stores(root_arg)?;
+    let stores = resolve_memory_stores(root_arg, surface)?;
     for (is_global, conn) in [
-        (false, stores.local.as_ref()),
-        (true, stores.global.as_ref()),
+        (false, stores.local.as_deref()),
+        (true, stores.global.as_deref()),
     ] {
         let Some(conn) = conn else { continue };
-        if let Some((row, revs)) = crate::db::memory_get(conn, key)? {
-            let status = check_note_ref_status(index_conn.as_ref(), root.as_deref(), &row);
-            return Ok(render_mem_hit(
-                &row,
-                &store_tags(is_global, status, &row.source),
-                revs,
-            ));
+        if let Some((row, revs)) =
+            crate::db::memory_get_with_options(conn, key, *include_superseded)?
+        {
+            let (ic, r) = if is_global {
+                (None, None)
+            } else {
+                (index_conn.as_deref(), root.as_deref())
+            };
+            let ref_statuses = collect_ref_statuses(ic, r, &row);
+            let status = aggregate_ref_status(&ref_statuses);
+            let tag = mem_get_tag(&row, is_global, status);
+            return Ok(render_mem_hit(&row, &tag, revs, &ref_statuses));
         }
     }
 
@@ -47,51 +59,42 @@ pub(super) fn run_mem_get(req: &CommandRequest, root_arg: Option<&Path>) -> Resu
     Err(mem_unknown_key(key))
 }
 
-/// Hard-delete every revision of one key.
-pub(super) fn run_mem_delete(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let CommandRequest::MemDelete { key, global } = req else {
-        unreachable!("run_mem_delete called with a non-delete request")
-    };
-    let mut conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
-    match crate::db::memory_delete(&mut conn, key)? {
-        None => Err(mem_unknown_key(key)),
-        Some(revs) => {
-            crate::journal::record_result(
-                crate::journal::OutcomeCounts::uniform(revs.max(0) as usize),
-                false,
-                0,
-            );
-            Ok(ArmOut::plain(
-                format!(
-                    "{}\ndeleted '{key}' revs={revs}\n",
-                    crate::memory::MEMORY_CAVEAT
-                ),
-                String::new(),
-            ))
-        }
+fn mem_get_tag(row: &crate::db::MemRow, is_global: bool, status: crate::db::RefStatus) -> String {
+    let mut tag = String::new();
+    match row.superseded_by {
+        Some(crate::db::RETIRED_SENTINEL) => tag.push_str(" [retired]"),
+        Some(_) => tag.push_str(" [superseded]"),
+        None => {}
     }
+    tag.push_str(&store_tags(is_global, status, &row.source));
+    tag
 }
 
-/// Refresh anchored_at (last verified) on the active revision, leaving
-/// created_at (the last assertion date) untouched.
-pub(super) fn run_mem_touch(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
-    let CommandRequest::MemTouch { key, global } = req else {
-        unreachable!("run_mem_touch called with a non-touch request")
-    };
-    let now = crate::db::unix_now();
-    let mut conn = open_mem_conn(root_arg, *global, MemoryMode::Mutation)?;
-    match crate::db::memory_touch(&mut conn, key, now)? {
-        None => Err(mem_unknown_key(key)),
-        Some(rev) => {
-            crate::journal::record_result(crate::journal::OutcomeCounts::uniform(1), false, 0);
-            Ok(ArmOut::plain(
-                format!(
-                    "{}\nok: '{key}' rev {rev} touched\n",
-                    crate::memory::MEMORY_CAVEAT
-                ),
-                String::new(),
-            ))
-        }
+fn collect_ref_statuses(
+    index_conn: Option<&rusqlite::Connection>,
+    root: Option<&Path>,
+    row: &crate::db::MemRow,
+) -> Vec<(String, crate::db::RefStatus)> {
+    let anchor = row.anchored_at.max(row.created_at);
+    row.refs
+        .split_whitespace()
+        .map(|r| {
+            let st = crate::db::resolve_ref_detail(index_conn, root, r, anchor).status;
+            (r.to_string(), st)
+        })
+        .collect()
+}
+
+fn aggregate_ref_status(statuses: &[(String, crate::db::RefStatus)]) -> crate::db::RefStatus {
+    use crate::db::RefStatus;
+    if statuses.iter().any(|(_, s)| *s == RefStatus::Broken) {
+        RefStatus::Broken
+    } else if statuses.iter().any(|(_, s)| *s == RefStatus::Modified) {
+        RefStatus::Modified
+    } else if statuses.iter().any(|(_, s)| *s == RefStatus::Unverified) {
+        RefStatus::Unverified
+    } else {
+        RefStatus::Valid
     }
 }
 
@@ -100,13 +103,17 @@ pub(super) fn run_mem_touch(req: &CommandRequest, root_arg: Option<&Path>) -> Re
 /// reads to unverified (never stale) refs. Shared by the mem query and get paths.
 pub(super) fn stale_ref_root_and_conn(
     root_arg: Option<&Path>,
-) -> (Option<std::path::PathBuf>, Option<rusqlite::Connection>) {
+    surface: Surface,
+) -> (Option<std::path::PathBuf>, Option<QueryConn>) {
     let root = root_arg
         .and_then(|r| crate::walk::discover_root(Some(r)).ok())
         .or_else(|| crate::walk::discover_root(None).ok());
-    let conn = root
-        .as_deref()
-        .and_then(|r| crate::db::open_for_query(r).ok());
+    let conn = root.as_deref().and_then(|r| match surface {
+        Surface::Mcp => crate::db::open_cached_for_mcp(r)
+            .ok()
+            .map(QueryConn::Cached),
+        Surface::Cli => crate::db::open_for_query(r).ok().map(QueryConn::Owned),
+    });
     (root, conn)
 }
 
@@ -121,8 +128,15 @@ pub(super) fn mem_empty(detail: &str) -> EgError {
 
 /// The mem_empty error for a key with no current row: shared by mem get and
 /// mem delete so the message cannot drift.
-fn mem_unknown_key(key: &str) -> EgError {
+pub(super) fn mem_unknown_key(key: &str) -> EgError {
     mem_empty(&format!("unknown memory key '{key}'"))
+}
+
+struct RankCtx<'a> {
+    query_tokens: &'a std::collections::BTreeSet<String>,
+    filter: &'a crate::db::MemFilter,
+    is_global: bool,
+    legacy: bool,
 }
 
 /// The resolver: FTS candidates capped at CANDIDATE_CAP, ref/tag token
@@ -163,7 +177,10 @@ pub(super) fn mem_ranked(
         query_tokens_vec.iter().cloned().collect();
 
     let fts_ids: std::collections::HashSet<i64> = hits.iter().map(|(id, _)| *id).collect();
-    let mut hit_map: std::collections::HashMap<i64, f64> = hits.into_iter().collect();
+    let mut hit_map: std::collections::HashMap<i64, Option<f64>> = hits
+        .into_iter()
+        .map(|(id, bm25)| (id, Some(bm25)))
+        .collect();
     let ref_rows = if !query_tokens_vec.is_empty() {
         crate::db::memory_ref_candidate_rows(
             conn,
@@ -179,12 +196,9 @@ pub(super) fn mem_ranked(
     let mut by_id: std::collections::HashMap<i64, crate::db::MemRow> =
         std::collections::HashMap::new();
     for row in ref_rows {
-        // Ref hits carry no lexical score of their own; seeding with the
-        // graph-lex raw ceiling (not 0.0) keeps min-max normalization from
-        // inflating them above every FTS-matched note.
-        hit_map
-            .entry(row.id)
-            .or_insert(crate::memory::GRAPH_LEX_RAW);
+        // Ref-only hits carry `None` for `lex_raw` so they receive `lex = 0.0`
+        // without distorting FTS min-max bounds.
+        hit_map.entry(row.id).or_insert(None);
         by_id.insert(row.id, row);
     }
 
@@ -203,77 +217,79 @@ pub(super) fn mem_ranked(
         }
     }
 
+    let ctx = RankCtx {
+        query_tokens: &query_tokens,
+        filter,
+        is_global,
+        legacy,
+    };
     let mut candidates: Vec<crate::memory::Candidate> = hit_map
         .into_iter()
         .filter_map(|(id, lex_raw)| {
-            mem_candidate(
-                by_id.get(&id)?,
-                lex_raw,
-                &query_tokens,
-                filter,
-                is_global,
-                legacy,
-                fts_ids.contains(&id),
-            )
+            mem_candidate(by_id.get(&id)?, lex_raw, &ctx, fts_ids.contains(&id))
         })
         .collect();
 
-    // Graph expansion is best-effort: any index error already degraded to an
-    // empty expansion inside `graph_expand`, so the lexical ranking survives.
     if let Some(index) = index_conn {
-        let known_ids: std::collections::HashSet<i64> =
-            candidates.iter().map(|c| c.row.id).collect();
-        let expansion = crate::memory::graph_expand(
-            index,
-            conn,
-            &query_tokens,
-            filter,
-            &known_ids,
-            crate::memory::CANDIDATE_CAP,
-        );
-        for candidate in &mut candidates {
-            candidate.graph_raw = expansion
-                .scores
-                .get(&candidate.row.id)
-                .copied()
-                .unwrap_or(0.0);
-        }
-        for (row, decay) in expansion.extra {
-            let Some(mut candidate) = mem_candidate(
-                &row,
-                crate::memory::GRAPH_LEX_RAW,
-                &query_tokens,
-                filter,
-                is_global,
-                legacy,
-                false,
-            ) else {
-                continue;
-            };
-            candidate.graph_raw = decay;
-            candidates.push(candidate);
-        }
+        apply_graph_expansion(index, conn, &ctx, &mut candidates);
     }
-
-    // Semantic feature (best-effort): only when the text model is configured,
-    // the query embeds, and EVERY candidate carries an embedding. Partial
-    // coverage would grade embedded notes against unembedded ones on a shared
-    // constant offset, so it is skipped outright.
     if let Some(query_vector) = query_vec {
-        let ids: Vec<i64> = candidates.iter().map(|c| c.row.id).collect();
-        let embeddings = crate::db::memory_embeddings(conn, &ids)?;
-        if !candidates.is_empty() && embeddings.len() == candidates.len() {
-            for candidate in &mut candidates {
-                if let Some(vector) = embeddings.get(&candidate.row.id) {
-                    candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
-                        query_vector,
-                        vector,
-                    )));
-                }
-            }
-        }
+        apply_semantic_scores(conn, query_vector, &mut candidates)?;
     }
     Ok(candidates)
+}
+
+/// Best-effort graph expansion: any index error already degraded to an empty
+/// expansion inside `graph_expand`, so lexical ranking survives.
+fn apply_graph_expansion(
+    index: &rusqlite::Connection,
+    conn: &rusqlite::Connection,
+    ctx: &RankCtx<'_>,
+    candidates: &mut Vec<crate::memory::Candidate>,
+) {
+    let known_ids: std::collections::HashSet<i64> = candidates.iter().map(|c| c.row.id).collect();
+    let expansion = crate::memory::graph_expand(
+        index,
+        conn,
+        ctx.query_tokens,
+        ctx.filter,
+        &known_ids,
+        crate::memory::CANDIDATE_CAP,
+    );
+    for candidate in candidates.iter_mut() {
+        candidate.graph_raw = expansion
+            .scores
+            .get(&candidate.row.id)
+            .copied()
+            .unwrap_or(0.0);
+    }
+    for (row, decay) in expansion.extra {
+        let Some(mut candidate) = mem_candidate(&row, None, ctx, false) else {
+            continue;
+        };
+        candidate.graph_raw = decay;
+        candidates.push(candidate);
+    }
+}
+
+/// Semantic feature (best-effort): populates `sem_raw` for every embedded
+/// candidate; `fuse()` assigns neutral 0.5 to unembedded ones.
+fn apply_semantic_scores(
+    conn: &rusqlite::Connection,
+    query_vector: &[f32],
+    candidates: &mut [crate::memory::Candidate],
+) -> Result<()> {
+    let ids: Vec<i64> = candidates.iter().map(|c| c.row.id).collect();
+    let embeddings = crate::db::memory_embeddings(conn, &ids)?;
+    for candidate in candidates {
+        if let Some(vector) = embeddings.get(&candidate.row.id) {
+            candidate.sem_raw = Some(f64::from(crate::memory::embed::cosine(
+                query_vector,
+                vector,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// One ranked candidate: the current-row filter (same rules as the `--all`
@@ -282,20 +298,17 @@ pub(super) fn mem_ranked(
 /// outlived the row.
 fn mem_candidate(
     row: &crate::db::MemRow,
-    lex_raw: f64,
-    query_tokens: &std::collections::BTreeSet<String>,
-    filter: &crate::db::MemFilter,
-    is_global: bool,
-    legacy: bool,
+    lex_raw: Option<f64>,
+    ctx: &RankCtx<'_>,
     from_fts: bool,
 ) -> Option<crate::memory::Candidate> {
     // Defense in depth: `memory_write` removes the FTS row on supersession,
     // so a superseded row here only comes from a store written by an older
     // build.
-    if !crate::db::memory_row_is_current(row, filter) {
+    if !crate::db::memory_row_is_current(row, ctx.filter) {
         return None;
     }
-    let set = if legacy {
+    let set = if ctx.legacy {
         crate::memory::mem_ref_tag_tokens_legacy(&row.refs, &row.tags)
     } else {
         crate::memory::mem_ref_tag_tokens(&row.refs, &row.tags)
@@ -303,11 +316,11 @@ fn mem_candidate(
     let ref_raw = if set.is_empty() {
         0.0
     } else {
-        set.intersection(query_tokens).count() as f64 / set.len() as f64
+        set.intersection(ctx.query_tokens).count() as f64 / set.len() as f64
     };
     // Recency anchors on the verify clock: `mem touch` moves anchored_at
     // forward, and a touched note must actually rise in the ranking.
-    let age_days = (filter.now - row.anchor()).max(0) as f64 / 86400.0;
+    let age_days = (ctx.filter.now - row.anchor()).max(0) as f64 / 86400.0;
     Some(crate::memory::Candidate {
         row: row.clone(),
         lex_raw,
@@ -316,47 +329,94 @@ fn mem_candidate(
         sem_raw: None,
         age_days,
         score: 0.0,
-        is_global,
+        is_global: ctx.is_global,
         from_fts,
     })
 }
 
+/// Read-only index connection wrapper so CLI (`Connection`) and MCP
+/// (`CachedConnection`) share a single dispatch path.
+pub(super) enum QueryConn {
+    Owned(rusqlite::Connection),
+    Cached(crate::db::CachedConnection),
+}
+
+impl std::ops::Deref for QueryConn {
+    type Target = rusqlite::Connection;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(c) => c,
+            Self::Cached(c) => c,
+        }
+    }
+}
+
 /// Resolve the repo root and open the index read-only (the shared query gate:
 /// missing -> 1, corrupt -> 3, skew -> 5).
-pub(super) fn open_query(
+pub(super) fn open_query_for_surface(
     root_arg: Option<&Path>,
-) -> Result<(std::path::PathBuf, rusqlite::Connection)> {
+    surface: Surface,
+) -> Result<(std::path::PathBuf, QueryConn)> {
     let root = crate::walk::discover_root(root_arg)?;
-    let conn = crate::db::open_for_query(&root)?;
+    let conn = match surface {
+        Surface::Mcp => QueryConn::Cached(crate::db::open_cached_for_mcp(&root)?),
+        Surface::Cli => QueryConn::Owned(crate::db::open_for_query(&root)?),
+    };
     Ok((root, conn))
 }
 
-/// The three memory-store open gates, in the shared `open_query` shape.
-pub(super) enum MemoryMode {
-    /// Read-only (missing -> 1, corrupt -> 3, skew -> 5).
-    Query,
-    /// Read-write mutation without creating a store (missing -> 1).
-    Mutation,
-    /// Read-write with first-use creation.
-    Store,
+/// Read-only memory connection wrapper so CLI and MCP share a single query path.
+pub(super) enum MemConn {
+    Owned(rusqlite::Connection),
+    Cached(crate::db::CachedMemoryConnection),
 }
 
+impl std::ops::Deref for MemConn {
+    type Target = rusqlite::Connection;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(c) => c,
+            Self::Cached(c) => c,
+        }
+    }
+}
+
+/// Open a read-only memory store (`Query` gate), using the MCP connection cache
+/// when invoked from `Surface::Mcp`.
+pub(super) fn open_mem_query_conn(
+    root_arg: Option<&Path>,
+    global: bool,
+    surface: Surface,
+) -> Result<MemConn> {
+    if global {
+        return Ok(match surface {
+            Surface::Mcp => MemConn::Cached(crate::db::open_cached_memory_for_mcp(None)?),
+            Surface::Cli => MemConn::Owned(crate::db::open_global_memory_query()?),
+        });
+    }
+    let root = crate::walk::discover_root(root_arg)?;
+    Ok(match surface {
+        Surface::Mcp => MemConn::Cached(crate::db::open_cached_memory_for_mcp(Some(&root))?),
+        Surface::Cli => MemConn::Owned(crate::db::open_memory_query(&root)?),
+    })
+}
+
+pub(super) use crate::db::StoreMode as MemoryMode;
+
 /// The single mem-command connection gate: `global` routes to the home-dir
-/// store, otherwise the project store under `root_arg`, both in `mode`.
+/// store, otherwise the project store under `root_arg`, both in `store_mode`.
+/// Evicts the MCP memory cache before mutating.
 pub(super) fn open_mem_conn(
     root_arg: Option<&Path>,
     global: bool,
-    mode: MemoryMode,
+    store_mode: crate::db::StoreMode,
 ) -> Result<rusqlite::Connection> {
-    let store_mode = match mode {
-        MemoryMode::Query => crate::db::StoreMode::Query,
-        MemoryMode::Mutation => crate::db::StoreMode::Mutation,
-        MemoryMode::Store => crate::db::StoreMode::Store,
-    };
     if global {
+        crate::db::evict_memory_mcp_cache(None);
         crate::db::open_memory(crate::db::StoreLocation::Global, store_mode)
     } else {
         let root = crate::walk::discover_root(root_arg)?;
+        crate::db::evict_memory_mcp_cache(Some(&root));
         crate::db::open_memory(crate::db::StoreLocation::Local(&root), store_mode)
     }
 }

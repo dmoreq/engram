@@ -7,19 +7,11 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
-/// Discover candidate repo roots for a dashboard panel into `repos`. The map
-/// key is the repository path (journal `repo` values are canonical), so two
-/// checkouts sharing a directory name are two entries instead of the second
-/// silently displacing the first. An explicit root short-circuits the scan
-/// (its entry replaces any same-path one); otherwise every journaled repo
-/// with `.engram/<db_rel>` present is added in entry order without
-/// displacing existing entries, and the current directory joins last.
-/// Display labels come from `display_name_for`, assigned over the sorted key
-/// set. Shared by the reuse and memories panels so their store discovery
-/// cannot drift.
+/// Discover candidate repo roots into `repos` keyed by canonical path.
 pub(super) fn discover_repos(
     root: Option<&Path>,
     entries: &[Value],
@@ -34,14 +26,16 @@ pub(super) fn discover_repos(
     } else {
         for e in entries {
             if let Some(r) = e.get("repo").and_then(Value::as_str) {
+                let worktree = e.get("worktree").and_then(Value::as_bool).unwrap_or(false);
+                let (bucket, _) = crate::repo::canonical_repo_bucket(r, worktree);
                 // Dedupe before the stat: a long journal re-probing one root
                 // pays one stat per distinct repository, not per line.
-                if repos.contains_key(r) {
+                if repos.contains_key(&bucket) {
                     continue;
                 }
-                let p = PathBuf::from(r);
+                let p = PathBuf::from(&bucket);
                 if p.join(".engram").join(db_rel).is_file() {
-                    repos.entry(r.to_string()).or_insert(p);
+                    repos.entry(bucket).or_insert(p);
                 }
             }
         }
@@ -105,20 +99,10 @@ pub(super) fn retain_untracked(
     (errors, blocked)
 }
 
-/// One journal line is capped before parsing: a corrupted or hostile writer
-/// must not force a multi-megabyte parse on every panel request. The capped
-/// reader enforces the same bound at read time; a line over the cap is
-/// dropped before parse and is not surfaced in any counter — a documented
-/// silent-skip limitation, not an error (observability is a follow-up
-/// candidate).
+/// Capped line-byte limit before parse.
 pub(super) const MAX_LINE_BYTES: usize = 256 * 1024;
 
-/// The single choke point every journal reader goes through: `None` when the
-/// line is not valid JSON or does not name a live repository — dead roots,
-/// identityless legacy lines, and relative test artifacts all fail the same
-/// one predicate. `read_usage_entries`, the SSE stream, and the monitor all
-/// call it, so nothing without a live repository can reach any panel or feed.
-/// The length check stays after the capped reader as defense in depth.
+/// Single live-event gate for all journal readers and tailers.
 pub fn live_event(trimmed: &str) -> Option<Value> {
     if trimmed.len() > MAX_LINE_BYTES {
         return None;
@@ -127,21 +111,11 @@ pub fn live_event(trimmed: &str) -> Option<Value> {
     crate::journal::liveness::repo_is_live(val.get("repo").and_then(Value::as_str)).then_some(val)
 }
 
-/// One capped read from a journal reader. Lines over `MAX_LINE_BYTES` are
-/// discarded before parse; a torn tail stays unread exactly as `Tail`
-/// documents.
+/// One capped read from a journal reader.
 pub(super) enum CappedLine {
-    /// A newline-terminated line of at most `MAX_LINE_BYTES` content bytes:
-    /// the content without its terminator, and the byte count consumed
-    /// (newline included).
     Line(String, u64),
-    /// A line over the cap, skipped through its terminating newline: the
-    /// byte count consumed.
     Skipped(u64),
-    /// The stream ended inside a line that still fits: a torn tail, left
-    /// unread so the next read sees the whole line once it is complete.
     Torn,
-    /// End of stream.
     Eof,
 }
 
@@ -163,8 +137,11 @@ pub(super) fn read_line_capped(mut reader: &mut impl BufRead) -> std::io::Result
         if len > 0 && raw[len - 1] == b'\r' {
             len -= 1;
         }
-        let line = String::from_utf8(raw[..len].to_vec())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        raw.truncate(len);
+        let line = match String::from_utf8(raw) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
         return Ok(CappedLine::Line(line, n as u64));
     }
     if n <= MAX_LINE_BYTES {
@@ -201,8 +178,8 @@ fn skip_through_newline(reader: &mut impl BufRead) -> std::io::Result<u64> {
 }
 
 fn generation_stamp(path: &Path) -> (u64, u64) {
-    match std::fs::metadata(path) {
-        Ok(meta) => {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
             let mtime = meta
                 .modified()
                 .ok()
@@ -211,50 +188,152 @@ fn generation_stamp(path: &Path) -> (u64, u64) {
                 .unwrap_or(0);
             (mtime, meta.len())
         }
-        Err(_) => (0, 0),
+        _ => (0, 0),
     }
 }
 
-/// Cached parse keyed by the log path plus both generations' (mtime, length)
-/// stamps; the path disambiguates stores with identical stamps.
-fn read_entries_cached(path: &Path) -> Vec<Value> {
+fn read_generation_from(
+    path: &Path,
+    start_pos: u64,
+    out: &mut Vec<Value>,
+) -> (Option<(u64, u64)>, u64) {
+    let Some(parent) = path.parent() else {
+        return (None, start_pos);
+    };
+    if !std::fs::symlink_metadata(parent).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
+        return (None, start_pos);
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return (None, 0);
+    };
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return (None, 0);
+    }
+    let id = file_identity(&meta);
+    let Ok(file) = File::open(path) else {
+        return (Some(id), start_pos);
+    };
+    let mut reader = BufReader::new(file);
+    if start_pos > 0 && reader.seek(SeekFrom::Start(start_pos)).is_err() {
+        return (Some(id), start_pos);
+    }
+    let mut pos = start_pos;
+    loop {
+        match read_line_capped(&mut reader) {
+            Ok(CappedLine::Line(line, consumed)) => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    if let Some(val) = live_event(trimmed) {
+                        out.push(val);
+                    }
+                }
+                pos += consumed;
+            }
+            Ok(CappedLine::Skipped(consumed)) => {
+                pos += consumed;
+            }
+            Ok(_) | Err(_) => break,
+        }
+    }
+    (Some(id), pos)
+}
+
+/// Cached parse keyed by the log path plus separate `usage.log.1` and
+/// `usage.log` caches; `usage.log` tails incrementally on `(dev, ino)` growth.
+fn read_entries_cached(path: &Path) -> Arc<Vec<Value>> {
     use std::sync::{Mutex, OnceLock};
+    type Stamp = (u64, u64);
+    type RotatedCache = (PathBuf, Stamp, Arc<Vec<Value>>);
+    type CurrentCache = (PathBuf, Stamp, Option<(u64, u64)>, u64, Vec<Value>);
     struct EntryCache {
-        log_path: PathBuf,
-        generations: ((u64, u64), (u64, u64)),
-        entries: Vec<Value>,
+        rotated: Option<RotatedCache>,
+        current: Option<CurrentCache>,
+        combined_path: PathBuf,
+        combined_stamps: (Stamp, Stamp),
+        combined: Arc<Vec<Value>>,
     }
     static CACHE: OnceLock<Mutex<Option<EntryCache>>> = OnceLock::new();
     let cell = CACHE.get_or_init(|| Mutex::new(None));
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let rotated = parent.join("usage.log.1");
-    let generations = (generation_stamp(&rotated), generation_stamp(path));
-    let fresh = |c: &EntryCache| c.log_path == path && c.generations == generations;
+    let rotated_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("usage.log.1");
+    let stamps = (generation_stamp(&rotated_path), generation_stamp(path));
     if let Ok(guard) = cell.lock() {
-        if let Some(cached) = guard.as_ref().filter(|c| fresh(c)) {
-            return cached.entries.clone();
+        if let Some(c) = guard
+            .as_ref()
+            .filter(|c| c.combined_path == path && c.combined_stamps == stamps)
+        {
+            return Arc::clone(&c.combined);
         }
     }
-    let entries = read_usage_entries_uncached(path);
-    // Re-check: a write during the parse would pin a stale-but-matching stamp.
-    let after = (generation_stamp(&rotated), generation_stamp(path));
-    if after == generations {
+    let prev_rot = cell.lock().ok().and_then(|mut g| {
+        g.as_mut()?
+            .rotated
+            .take()
+            .filter(|r| r.0 == rotated_path && r.1 == stamps.0)
+    });
+    let rotated = prev_rot.unwrap_or_else(|| {
+        let mut entries = Vec::new();
+        if stamps.0 .1 > 0 {
+            read_generation_from(&rotated_path, 0, &mut entries);
+        }
+        (rotated_path.clone(), stamps.0, Arc::new(entries))
+    });
+    let cur_meta = std::fs::symlink_metadata(path).ok();
+    let cur_id = cur_meta
+        .as_ref()
+        .filter(|m| m.is_file() && !m.file_type().is_symlink())
+        .map(file_identity);
+    let cur_len = cur_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let prev_cur = cell
+        .lock()
+        .ok()
+        .and_then(|mut g| g.as_mut()?.current.take());
+    let current = match prev_cur {
+        Some((p, _, id, mut pos, mut entries))
+            if p == path && id.is_some() && id == cur_id && cur_len >= pos =>
+        {
+            let mut next_id = id;
+            if cur_len > pos {
+                (next_id, pos) = read_generation_from(path, pos, &mut entries);
+            }
+            (p, stamps.1, next_id, pos, entries)
+        }
+        _ => {
+            let mut entries = Vec::new();
+            let (id, pos) = if cur_id.is_some() {
+                read_generation_from(path, 0, &mut entries)
+            } else {
+                (None, 0)
+            };
+            (path.to_path_buf(), stamps.1, id, pos, entries)
+        }
+    };
+    let mut combined_vec = Vec::with_capacity(rotated.2.len() + current.4.len());
+    combined_vec.extend(rotated.2.iter().cloned());
+    combined_vec.extend(current.4.iter().cloned());
+    let combined = Arc::new(combined_vec);
+    if (generation_stamp(&rotated_path), generation_stamp(path)) == stamps {
         if let Ok(mut guard) = cell.lock() {
             *guard = Some(EntryCache {
-                log_path: path.to_path_buf(),
-                generations,
-                entries: entries.clone(),
+                rotated: Some(rotated),
+                current: Some(current),
+                combined_path: path.to_path_buf(),
+                combined_stamps: stamps,
+                combined: Arc::clone(&combined),
             });
         }
     }
-    entries
+    combined
 }
 
 pub fn read_usage_entries(log_path: &Path) -> Vec<Value> {
     if std::env::var("ENGRAM_DASHBOARD_NO_CACHE").as_deref() == Ok("1") {
         return read_usage_entries_uncached(log_path);
     }
-    read_entries_cached(log_path)
+    let arc = read_entries_cached(log_path);
+    Arc::try_unwrap(arc).unwrap_or_else(|shared| (*shared).clone())
 }
 
 pub(super) fn read_usage_entries_uncached(log_path: &Path) -> Vec<Value> {
@@ -263,25 +342,7 @@ pub(super) fn read_usage_entries_uncached(log_path: &Path) -> Vec<Value> {
 
     for filename in &["usage.log.1", "usage.log"] {
         let p = parent.join(filename);
-        if let Ok(file) = File::open(&p) {
-            let mut reader = BufReader::new(file);
-            loop {
-                match read_line_capped(&mut reader) {
-                    Ok(CappedLine::Line(line, _)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if let Some(val) = live_event(trimmed) {
-                            entries.push(val);
-                        }
-                    }
-                    Ok(CappedLine::Skipped(_)) => {}
-                    // A torn tail or the end of the file stops this generation.
-                    Ok(_) | Err(_) => break,
-                }
-            }
-        }
+        read_generation_from(&p, 0, &mut entries);
     }
     entries
 }
@@ -390,5 +451,45 @@ impl Tail {
                 Ok(_) | Err(_) => break,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream5_tests {
+    use super::*;
+    use crate::db::test_support as ts;
+
+    #[test]
+    fn arc_incremental_tail_cache_appends_on_growth_and_resets_on_truncate() {
+        let dir = crate::db::temp_root("ingest-arc-cache");
+        ts::make_dir_all(&dir).unwrap();
+        let repo = env!("CARGO_MANIFEST_DIR");
+        let log = dir.join("usage.log");
+        let rot = dir.join("usage.log.1");
+        let rot_line = format!(r#"{{"tool":"callers","repo":"{repo}","exit_code":0}}"#) + "\n";
+        let line1 = format!(r#"{{"tool":"search","repo":"{repo}","exit_code":0}}"#) + "\n";
+        let line2 = format!(r#"{{"tool":"reuse","repo":"{repo}","exit_code":0}}"#) + "\n";
+        ts::write_file(&rot, rot_line.as_bytes()).unwrap();
+        ts::write_file(&log, line1.as_bytes()).unwrap();
+
+        let first = read_entries_cached(&log);
+        assert_eq!(first.len(), 2);
+        let second = read_entries_cached(&log);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        // Grow on the same inode: incremental tail picks up the new line.
+        ts::write_file(&log, format!("{line1}{line2}").as_bytes()).unwrap();
+        let third = read_entries_cached(&log);
+        assert_eq!(third.len(), 3);
+        assert_eq!(third[2]["tool"], "reuse");
+
+        // Shrink/replace resets current cache cleanly.
+        let short = format!(r#"{{"tool":"build","repo":"{repo}","exit_code":0}}"#) + "\n";
+        ts::write_file(&log, short.as_bytes()).unwrap();
+        let fourth = read_entries_cached(&log);
+        assert_eq!(fourth.len(), 2);
+        assert_eq!(fourth[1]["tool"], "build");
+
+        ts::remove_tree(&dir);
     }
 }

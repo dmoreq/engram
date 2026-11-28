@@ -76,9 +76,8 @@ pub fn execute(
     // One resolution for both the arm and the journal line. `RepoRef` also
     // walks a subdirectory up to its git root, so a `--root src` cannot invent
     // a repository named after the directory.
-    let resolved_root = crate::repo::RepoRef::resolve(root_arg)
-        .ok()
-        .map(|r| r.root().to_path_buf());
+    let resolved_repo = crate::repo::RepoRef::resolve(root_arg).ok();
+    let resolved_root = resolved_repo.as_ref().map(|r| r.root().to_path_buf());
     let outcome = run(req, resolved_root.as_deref().or(root_arg), surface);
     let latency_us = started.elapsed().as_micros() as u64;
     let (stdout, stderr, exit_code, shown) = match outcome {
@@ -86,7 +85,7 @@ pub fn execute(
             let code = arm.exit_code.unwrap_or(0);
             if journal {
                 // record_result for the query shapes ran inside the arm.
-                crate::journal::finalize(resolved_root.as_deref(), code, latency_us);
+                crate::journal::finalize_repo(resolved_repo.as_ref(), code, latency_us);
             }
             (arm.stdout, arm.stderr, code, arm.shown)
         }
@@ -107,7 +106,7 @@ pub fn execute(
             }
             let stderr = format!("{e}\n");
             if journal {
-                crate::journal::finalize(resolved_root.as_deref(), e.exit_code(), latency_us);
+                crate::journal::finalize_repo(resolved_repo.as_ref(), e.exit_code(), latency_us);
             }
             (stdout, stderr, e.exit_code(), None)
         }
@@ -162,9 +161,11 @@ mod explain;
 mod from_cli;
 mod mem_export;
 mod mem_import;
+mod mem_mut;
 mod mem_ops;
 mod mem_query;
 mod mem_reindex;
+mod mem_triage;
 mod mem_write;
 mod request;
 mod run;
@@ -173,9 +174,11 @@ mod tools;
 
 use mem_export::*;
 use mem_import::*;
+use mem_mut::*;
 use mem_ops::*;
 use mem_query::*;
 use mem_reindex::*;
+use mem_triage::*;
 use mem_write::*;
 use run::*;
 
@@ -275,6 +278,7 @@ mod tests {
                 global: false,
                 touch: false,
                 confirm: false,
+                expected_rev: None,
             },
             CommandRequest::MemQuery {
                 terms: vec!["x".into()],
@@ -294,14 +298,34 @@ mod tests {
             CommandRequest::MemTouch {
                 key: "k".into(),
                 global: false,
+                expected_rev: None,
             },
             CommandRequest::MemGet {
                 key: "k".into(),
                 global: false,
+                include_superseded: false,
             },
             CommandRequest::MemDelete {
                 key: "k".into(),
                 global: false,
+                expected_rev: None,
+            },
+            CommandRequest::MemRetire {
+                key: "k".into(),
+                global: false,
+                expected_rev: None,
+            },
+            CommandRequest::MemRestore {
+                key: "k".into(),
+                global: false,
+            },
+            CommandRequest::MemTriage {
+                key: None,
+                after_key: None,
+                limit: 10,
+                no_git: false,
+                global: false,
+                json: false,
             },
             CommandRequest::MemGc { global: false },
             CommandRequest::MemExport {
@@ -329,14 +353,7 @@ mod tests {
     fn tool_specs_cover_every_request_shape() {
         let dispatchable: Vec<&str> = all_requests()
             .iter()
-            .filter(|r| {
-                !matches!(
-                    r,
-                    CommandRequest::Unresolved { .. }
-                        | CommandRequest::Stats { .. }
-                        | CommandRequest::Audit { .. }
-                )
-            })
+            .filter(|r| !matches!(r, CommandRequest::Audit { .. }))
             .map(CommandRequest::tool_name)
             .collect();
         for name in dispatchable {

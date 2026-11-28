@@ -84,6 +84,7 @@ pub(super) fn run_mem_import(
             embedding: None,
             supersedes: None,
             touch: false,
+            expected_rev: None,
         })
         .collect();
     let mut stats = crate::db::memory_write_batch(&mut conn, &inputs, now, *force)?;

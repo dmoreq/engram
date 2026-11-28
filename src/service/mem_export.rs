@@ -2,7 +2,7 @@
 //! suspected-secret scan. Split from `mem_ops.rs` to keep both files under
 //! the 500-line hygiene cap.
 
-use super::mem_ops::{open_mem_conn, MemoryMode};
+use super::mem_ops::open_mem_query_conn;
 use super::*;
 
 /// Export wire format selected by `--format`.
@@ -27,7 +27,11 @@ fn parse_export_format(raw: Option<&str>) -> Result<ExportFormat> {
 /// Current notes as JSONL or fenced Markdown on stdout; the caveat goes to
 /// stderr. Both formats read the same expiry-filtered current-row query, so
 /// an expired session note is never exported by either.
-pub(super) fn run_mem_export(req: &CommandRequest, root_arg: Option<&Path>) -> Result<ArmOut> {
+pub(super) fn run_mem_export(
+    req: &CommandRequest,
+    root_arg: Option<&Path>,
+    surface: Surface,
+) -> Result<ArmOut> {
     let CommandRequest::MemExport {
         format,
         limit,
@@ -50,7 +54,7 @@ pub(super) fn run_mem_export(req: &CommandRequest, root_arg: Option<&Path>) -> R
             "mem export: --limit must be at least 1".to_string(),
         ));
     }
-    let conn = open_mem_conn(root_arg, *global, MemoryMode::Query)?;
+    let conn = open_mem_query_conn(root_arg, *global, surface)?;
     let rows = crate::db::memory_current_rows(
         &conn,
         &crate::db::MemFilter {
@@ -153,6 +157,7 @@ fn render_markdown_document(row: &crate::db::MemRow) -> String {
         "scope": row.scope,
         "tags": tags,
         "refs": refs,
+        "created_at": row.created_at,
         "expires_at": row.expires_at,
     });
     format!(
@@ -176,4 +181,33 @@ fn note_slug(key: &str) -> String {
     let prefix = if prefix.is_empty() { "note" } else { prefix };
     let hash = crate::hash::fnv1a64(key.as_bytes());
     format!("{prefix}-{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_front_matter_preserves_created_at() {
+        let row = crate::db::MemRow {
+            id: 1,
+            key: "k1".into(),
+            rev: 1,
+            kind: "fact".into(),
+            scope: "durable".into(),
+            session: String::new(),
+            body: "hello".into(),
+            tags: "a b".into(),
+            refs: "src/main.rs".into(),
+            source: "cli".into(),
+            created_at: 1_700_000_123,
+            anchored_at: 0,
+            expires_at: 0,
+            superseded_by: None,
+        };
+        let doc = render_markdown_document(&row);
+        let front_line = doc.lines().nth(1).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(front_line).unwrap();
+        assert_eq!(parsed["created_at"], 1_700_000_123);
+    }
 }

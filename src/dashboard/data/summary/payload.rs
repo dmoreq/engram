@@ -56,12 +56,8 @@ impl<'a> EntryView<'a> {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty());
         let is_worktree = e.get("worktree").and_then(Value::as_bool).unwrap_or(false);
-        let repo_main = if is_worktree {
-            crate::repo::cached_worktree_main_root(Path::new(repo_key))
-                .map(|p| p.to_string_lossy().into_owned())
-        } else {
-            None
-        };
+        let (bucket, folded) = crate::repo::canonical_repo_bucket(repo_key, is_worktree);
+        let repo_main = folded.then_some(bucket);
         let repo_display = match &repo_main {
             Some(main) => main_display(main),
             None => repo_name.unwrap_or(UNATTRIBUTED).to_string(),
@@ -71,8 +67,8 @@ impl<'a> EntryView<'a> {
             exit_code: e.get("exit_code").and_then(Value::as_i64).unwrap_or(0),
             shown: e
                 .get("shown")
-                .or_else(|| e.get("result_count"))
                 .and_then(Value::as_u64)
+                .or_else(|| e.get("result_count").and_then(Value::as_u64))
                 .unwrap_or(0) as usize,
             result_count: e.get("result_count").and_then(Value::as_u64).unwrap_or(0) as usize,
             lat_us: e.get("latency_us").and_then(Value::as_f64),
@@ -123,12 +119,8 @@ pub(super) fn summary_json(mut state: SummaryState, entries: &[Value]) -> Value 
     let tool_aggs_json = format_tool_aggs(state.tool_aggs);
     let repo_aggs_json = format_aggs(state.repo_aggs, true);
     let agent_aggs_json = format_aggs(state.agent_aggs, false);
-    let reliability = 100.0 * (total_calls - state.errors) as f64 / total_calls as f64;
-    let graph_reliability = if state.graph_calls > 0 {
-        100.0 * (state.graph_calls - state.graph_errors) as f64 / state.graph_calls as f64
-    } else {
-        100.0
-    };
+    let reliability = rel_pct(state.errors, total_calls);
+    let graph_reliability = rel_pct(state.graph_errors, state.graph_calls);
     let saved_dollars = state.saved_tokens as f64 * crate::journal::PRICE_PER_TOKEN;
     let graph_saved_dollars = state.graph_saved_tokens as f64 * crate::journal::PRICE_PER_TOKEN;
     let total_sessions = state.sessions.len();
@@ -164,15 +156,9 @@ pub(super) fn summary_json(mut state: SummaryState, entries: &[Value]) -> Value 
 fn format_tool_aggs(tool_aggs: HashMap<String, ToolAgg>) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
     for (k, mut v) in tool_aggs {
-        v.latencies
-            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         // No samples serialize as null: an unmeasured percentile is not an
         // instant tool.
         let (p50_t, p95_t, _) = compute_percentiles(&mut v.latencies);
-        // Success-only inputs: the fold prices a call exactly as the global
-        // KPI does, so `sum(tool saved_tokens) == saved_tokens` always holds.
-        let saved_tokens =
-            crate::journal::estimated_tokens_saved(&k, v.ok_shown, v.ok_results, v.ok_calls);
         out.insert(
             k,
             json!({
@@ -181,7 +167,7 @@ fn format_tool_aggs(tool_aggs: HashMap<String, ToolAgg>) -> BTreeMap<String, Val
                 "shown": v.shown,
                 "p50": p50_t,
                 "p95": p95_t,
-                "saved_tokens": saved_tokens,
+                "saved_tokens": v.saved_tokens,
             }),
         );
     }

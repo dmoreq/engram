@@ -1,10 +1,10 @@
 //! Audit collection: journal generations, strict line validation, window and
 //! baseline split, one-pass metrics, and source discovery. No writes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::error::{EgError, Result};
+use crate::error::{EgError, ExitClass, Result};
 
 use super::index::{self, RepoFacts};
 use super::memory::{self, MemoryFacts};
@@ -91,6 +91,8 @@ pub struct Metrics {
     pub successes: usize,
     pub ops_critical: usize,
     pub lock_errors: usize,
+    pub mut_attempts: usize,
+    pub mut_rejections: usize,
     pub nav_successes: usize,
     pub prewrite_successes: usize,
     pub mem_reads: usize,
@@ -109,6 +111,16 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    fn record_empty(&mut self, tool: &str) {
+        if is_navigation(tool) {
+            self.nav_empty += 1;
+        } else if tool == "search" {
+            self.search_empty += 1;
+        } else if tool == "mem_query" {
+            self.mem_query_empty += 1;
+        }
+    }
+
     fn add(&mut self, e: &Entry) {
         self.entries += 1;
         self.active_days.insert(e.ts.div_euclid(86400));
@@ -116,34 +128,59 @@ impl Metrics {
         self.repos.insert(e.repo.clone());
         let tool = self.tools.entry(e.tool.clone()).or_default();
         tool.calls += 1;
+        if matches!(
+            e.tool.as_str(),
+            "mem_write" | "mem_touch" | "mem_delete" | "mem_retire" | "mem_restore" | "mem_import"
+        ) {
+            self.mut_attempts += 1;
+        }
+        match ExitClass::of(e.exit_code) {
+            ExitClass::Error => {
+                match e.exit_code {
+                    4 => self.lock_errors += 1,
+                    3 | 5 | 6 | 7 => self.ops_critical += 1,
+                    _ => {}
+                }
+                return;
+            }
+            ExitClass::Ambiguous => {
+                if matches!(
+                    e.tool.as_str(),
+                    "mem_write"
+                        | "mem_touch"
+                        | "mem_delete"
+                        | "mem_retire"
+                        | "mem_restore"
+                        | "mem_import"
+                ) {
+                    self.mut_rejections += 1;
+                }
+                return;
+            }
+            ExitClass::Empty => {
+                tool.empty += 1;
+                self.record_empty(&e.tool);
+                if matches!(
+                    e.tool.as_str(),
+                    "mem_query" | "mem_get" | "mem_export" | "mem_triage"
+                ) {
+                    self.mem_reads += 1;
+                }
+                return;
+            }
+            ExitClass::Ok => {}
+        }
         if let Some(us) = e.latency_us {
             tool.latencies_ms.push(us as f64 / 1000.0);
-        }
-        if e.exit_code != 0 {
-            match e.exit_code {
-                3 | 5 | 6 | 7 => self.ops_critical += 1,
-                4 => self.lock_errors += 1,
-                _ => {}
-            }
-            return;
         }
         self.successes += 1;
         tool.successes += 1;
         if e.result_count == 0 {
             tool.empty += 1;
-            match e.tool.as_str() {
-                "callers" | "callees" | "context" | "path" | "impact" | "imports" => {
-                    self.nav_empty += 1
-                }
-                "search" => self.search_empty += 1,
-                "mem_query" => self.mem_query_empty += 1,
-                _ => {}
-            }
+            self.record_empty(&e.tool);
         }
         match e.tool.as_str() {
-            "callers" | "callees" | "context" | "path" | "impact" | "imports" => {
-                self.nav_successes += 1
-            }
+            t if is_navigation(t) => self.nav_successes += 1,
             "search" => {
                 self.search_successes += 1;
                 self.prewrite_successes += 1;
@@ -153,11 +190,10 @@ impl Metrics {
                 self.mem_query_successes += 1;
                 self.mem_reads += 1;
             }
-            // Parity with the dashboard's classification: an export reads the
-            // store, a reindex mutates its derived state.
-            "mem_get" | "mem_export" => self.mem_reads += 1,
-            "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" | "mem_reindex" => {
-                self.mem_writes += 1
+            "mem_get" | "mem_export" | "mem_triage" => self.mem_reads += 1,
+            "mem_write" | "mem_touch" | "mem_delete" | "mem_retire" | "mem_restore" | "mem_gc"
+            | "mem_import" | "mem_reindex" => {
+                self.mem_writes += 1;
             }
             _ => {}
         }
@@ -206,91 +242,129 @@ enum LineOutcome {
     OutsideScope,
 }
 
+#[derive(Default)]
+struct CollectAcc {
+    coverage: Coverage,
+    window: Metrics,
+    baseline: Metrics,
+    recent7: Metrics,
+}
+
+struct ScopeFilter<'a> {
+    now: i64,
+    w_start: i64,
+    b_start: i64,
+    recent_start: i64,
+    local_root: Option<&'a Path>,
+    local_root_canon: Option<&'a Path>,
+    same_root_cache: HashMap<String, bool>,
+}
+
+fn ingest_generation(
+    gen: &crate::journal::GenerationRead,
+    acc: &mut CollectAcc,
+    scope: &mut ScopeFilter<'_>,
+) -> Result<()> {
+    if gen.status == crate::journal::GenerationStatus::Error {
+        return Err(EgError::Internal("audit: io-error".into()));
+    }
+    acc.coverage.truncated |= gen.truncated;
+    let status = match gen.status {
+        crate::journal::GenerationStatus::Absent => "absent",
+        crate::journal::GenerationStatus::Read => "read",
+        crate::journal::GenerationStatus::Error => "error",
+    };
+    acc.coverage.generations.push(GenInfo {
+        name: gen.name,
+        status,
+        bytes: gen.bytes,
+        truncated: gen.truncated,
+    });
+    if gen.status != crate::journal::GenerationStatus::Read {
+        return Ok(());
+    }
+    let mut segments: Vec<&str> = gen.text.split('\n').collect();
+    if gen.name == "usage.log" && !gen.text.ends_with('\n') {
+        segments.pop();
+    }
+    for raw in segments {
+        let line = raw.trim_end_matches('\r').trim();
+        if line.is_empty() {
+            continue;
+        }
+        acc.coverage.lines += 1;
+        match parse_line(
+            line,
+            scope.now,
+            scope.local_root,
+            scope.local_root_canon,
+            &mut scope.same_root_cache,
+        ) {
+            LineOutcome::Valid(e) => {
+                acc.coverage.oldest_ts = Some(acc.coverage.oldest_ts.map_or(e.ts, |v| v.min(e.ts)));
+                acc.coverage.newest_ts = Some(acc.coverage.newest_ts.map_or(e.ts, |v| v.max(e.ts)));
+                if e.ts >= scope.recent_start {
+                    acc.recent7.add(&e);
+                }
+                if e.ts >= scope.w_start {
+                    acc.coverage.window_entries += 1;
+                    acc.window.add(&e);
+                } else if e.ts >= scope.b_start {
+                    acc.coverage.baseline_entries += 1;
+                    acc.baseline.add(&e);
+                } else {
+                    acc.coverage.outside_scope_lines += 1;
+                }
+            }
+            LineOutcome::Malformed => acc.coverage.malformed_lines += 1,
+            LineOutcome::Invalid => acc.coverage.invalid_lines += 1,
+            LineOutcome::Legacy => acc.coverage.legacy_lines += 1,
+            LineOutcome::DeadRepo => acc.coverage.dropped_dead_repos += 1,
+            LineOutcome::Future => acc.coverage.future_ts_lines += 1,
+            LineOutcome::OutsideScope => acc.coverage.outside_scope_lines += 1,
+        }
+    }
+    Ok(())
+}
+
 pub fn collect(mode: &Mode, now: i64, days: u32, baseline_days: u32) -> Result<AuditData> {
     let log_path = match mode {
         Mode::Local(root) => {
-            crate::db::reject_symlink(&crate::db::eg_dir(root), ".engram directory")?;
             crate::db::reject_unsafe_journal(root)?;
-            crate::db::reject_tracked_eg_dir(root)?;
             crate::journal::usage_log_path(root)
         }
         Mode::Global => crate::db::global_usage_log_path()?,
     };
     let local_root = match mode {
-        Mode::Local(root) => Some(root.as_path()),
+        Mode::Local(r) => Some(r.as_path()),
         Mode::Global => None,
     };
-    let w_start = now.saturating_sub(days as i64 * 86_400);
-    let b_start = now.saturating_sub((days + baseline_days) as i64 * 86_400);
-    let recent_start = now.saturating_sub(7 * 86_400);
-
-    let mut coverage = Coverage::default();
-    let mut window_metrics = Metrics::default();
-    let mut baseline_metrics = Metrics::default();
-    let mut recent7 = Metrics::default();
+    let local_root_canon =
+        local_root.map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf()));
+    let (w_start, b_start, recent_start) = (
+        now.saturating_sub(days as i64 * 86_400),
+        now.saturating_sub((days + baseline_days) as i64 * 86_400),
+        now.saturating_sub(7 * 86_400),
+    );
+    let mut acc = CollectAcc::default();
+    let mut scope = ScopeFilter {
+        now,
+        w_start,
+        b_start,
+        recent_start,
+        local_root,
+        local_root_canon: local_root_canon.as_deref(),
+        same_root_cache: HashMap::new(),
+    };
     let log = crate::journal::read_usage_log(&log_path);
     for gen in &log.generations {
-        if gen.status == crate::journal::GenerationStatus::Error {
-            return Err(EgError::Internal("audit: io-error".into()));
-        }
-        coverage.truncated |= gen.truncated;
-        coverage.generations.push(GenInfo {
-            name: gen.name,
-            status: match gen.status {
-                crate::journal::GenerationStatus::Absent => "absent",
-                crate::journal::GenerationStatus::Read => "read",
-                crate::journal::GenerationStatus::Error => "error",
-            },
-            bytes: gen.bytes,
-            truncated: gen.truncated,
-        });
-        if gen.status != crate::journal::GenerationStatus::Read {
-            continue;
-        }
-        let current = gen.name == "usage.log";
-        let mut segments: Vec<&str> = gen.text.split('\n').collect();
-        if current && !gen.text.ends_with('\n') {
-            // A concurrent append can leave one torn tail; it is not data loss.
-            segments.pop();
-        }
-        for raw in segments {
-            let line = raw.trim_end_matches('\r').trim();
-            if line.is_empty() {
-                continue;
-            }
-            coverage.lines += 1;
-            match parse_line(line, now, local_root) {
-                LineOutcome::Valid(e) => {
-                    coverage.oldest_ts = Some(coverage.oldest_ts.map_or(e.ts, |v| v.min(e.ts)));
-                    coverage.newest_ts = Some(coverage.newest_ts.map_or(e.ts, |v| v.max(e.ts)));
-                    if e.ts >= recent_start {
-                        recent7.add(&e);
-                    }
-                    if e.ts >= w_start {
-                        coverage.window_entries += 1;
-                        window_metrics.add(&e);
-                    } else if e.ts >= b_start {
-                        coverage.baseline_entries += 1;
-                        baseline_metrics.add(&e);
-                    } else {
-                        coverage.outside_scope_lines += 1;
-                    }
-                }
-                LineOutcome::Malformed => coverage.malformed_lines += 1,
-                LineOutcome::Invalid => coverage.invalid_lines += 1,
-                LineOutcome::Legacy => coverage.legacy_lines += 1,
-                LineOutcome::DeadRepo => coverage.dropped_dead_repos += 1,
-                LineOutcome::Future => coverage.future_ts_lines += 1,
-                LineOutcome::OutsideScope => coverage.outside_scope_lines += 1,
-            }
-        }
+        ingest_generation(gen, &mut acc, &mut scope)?;
     }
 
-    // Clipping means the journal cannot prove coverage of the baseline
-    // window's start: only the coverage-wide oldest valid entry can show
-    // that pre-`b_start` history survived rotation. The baseline bucket
-    // itself only admits entries at or after `b_start`, so its own oldest
-    // can never prove window coverage.
+    let (mut coverage, window_metrics, baseline_metrics, recent7) =
+        (acc.coverage, acc.window, acc.baseline, acc.recent7);
+
+    // Clipped when oldest valid entry is newer than baseline start.
     let clipped = coverage.oldest_ts.map(|t| t > b_start).unwrap_or(false);
     let sufficient = baseline_metrics.successes >= 20
         && baseline_metrics.active_days.len() >= 3
@@ -343,156 +417,11 @@ pub fn collect(mode: &Mode, now: i64, days: u32, baseline_days: u32) -> Result<A
     })
 }
 
-fn parse_line(line: &str, now: i64, local_root: Option<&Path>) -> LineOutcome {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-        return LineOutcome::Malformed;
-    };
-    let Some(tool_raw) = v.get("tool").and_then(|x| x.as_str()) else {
-        return LineOutcome::Malformed;
-    };
-    if tool_raw.is_empty() || tool_raw.len() > 64 || tool_raw.chars().any(char::is_control) {
-        return LineOutcome::Malformed;
-    }
-    let Some(ts) = v.get("ts").and_then(|x| x.as_i64()) else {
-        return LineOutcome::Legacy;
-    };
-    if ts < 0 {
-        return LineOutcome::Invalid;
-    }
-    if ts > now.saturating_add(300) {
-        return LineOutcome::Future;
-    }
-    let Some(exit_code) = v.get("exit_code").and_then(|x| x.as_i64()) else {
-        return LineOutcome::Invalid;
-    };
-    if !(0..=7).contains(&exit_code) {
-        return LineOutcome::Invalid;
-    }
-    // Outer None = present but invalid (negative / non-integer) -> Invalid.
-    // Inner None = key absent -> legacy lines fall back instead of a 0 that
-    // distorts ratios: missing `shown` falls back to `result_count`.
-    let count = |key: &str| -> Option<Option<i64>> {
-        match v.get(key) {
-            None => Some(None),
-            Some(x) => match x.as_i64() {
-                None => None,
-                Some(n) if n < 0 => None,
-                Some(n) => Some(Some(n)),
-            },
-        }
-    };
-    let (Some(result_count_opt), Some(shown_opt)) = (count("result_count"), count("shown")) else {
-        return LineOutcome::Invalid;
-    };
-    let result_count = result_count_opt.unwrap_or(0);
-    let shown = shown_opt.unwrap_or(result_count);
-    let latency_us = match v.get("latency_us") {
-        None => None,
-        Some(x) => match x.as_i64() {
-            Some(n) if n >= 0 => Some(n),
-            _ => return LineOutcome::Invalid,
-        },
-    };
-    let Some(repo_raw) = v.get("repo").and_then(|x| x.as_str()) else {
-        return LineOutcome::DeadRepo;
-    };
-    if repo_raw.is_empty() || !crate::journal::liveness::repo_is_live(Some(repo_raw)) {
-        return LineOutcome::DeadRepo;
-    }
-    if local_root.is_none() && crate::journal::liveness::repo_is_ephemeral(repo_raw) {
-        return LineOutcome::DeadRepo;
-    }
-    let worktree = v.get("worktree").and_then(|x| x.as_bool()).unwrap_or(false);
-    let mut repo = PathBuf::from(repo_raw);
-    if local_root.is_none() && worktree {
-        if let Some(main) = crate::repo::cached_worktree_main_root(&repo) {
-            repo = main;
-        }
-    }
-    if let Some(root) = local_root {
-        if !same_root(&repo, root) {
-            return LineOutcome::OutsideScope;
-        }
-    }
-    LineOutcome::Valid(Entry {
-        tool: canonical_tool(tool_raw),
-        exit_code,
-        result_count,
-        shown,
-        latency_us,
-        ts,
-        repo,
-    })
-}
-
-fn same_root(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
-}
-
-fn canonical_tool(tool: &str) -> String {
-    // One taxonomy: every priced tool plus every deliberately unpriced one.
-    // A newly journaled tool lands here automatically once it gains a pricing
-    // arm or joins `UNPRICED_TOOLS`, so `audit` and `mem_reindex` cannot fall
-    // back to "other" again.
-    if is_priced(tool) || crate::journal::UNPRICED_TOOLS.contains(&tool) {
-        tool.to_string()
-    } else {
-        "other".to_string()
-    }
-}
-
-pub fn is_priced(tool: &str) -> bool {
-    matches!(
-        tool,
-        "callers"
-            | "callees"
-            | "context"
-            | "path"
-            | "impact"
-            | "imports"
-            | "search"
-            | "reuse"
-            | "symbols"
-            | "build"
-    )
-}
-
-pub fn is_navigation(tool: &str) -> bool {
-    matches!(
-        tool,
-        "callers" | "callees" | "context" | "path" | "impact" | "imports"
-    )
-}
+mod parse;
+#[cfg(test)]
+use parse::canonical_tool;
+use parse::parse_line;
+pub use parse::{is_navigation, is_priced};
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod stream3_tests {
-    use super::*;
-    use crate::db::test_support as ts;
-    #[test]
-    fn global_folds_worktree_and_drops_ephemeral() {
-        let m = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/eg-wt-test");
-        ts::remove_tree(&m);
-        ts::make_dir_all(m.join(".git/worktrees/w")).unwrap();
-        let (wt, s) = (ts::temp_root("awt"), ts::temp_root("asc"));
-        let gd = format!("gitdir: {}/.git/worktrees/w\n", m.display());
-        ts::write_file(wt.join(".git"), gd.as_bytes()).unwrap();
-        let l = |p: &Path, w| {
-            format!(
-                r#"{{"ts":10,"tool":"callers","exit_code":0,"repo":"{}","worktree":{w}}}"#,
-                p.display()
-            )
-        };
-        let p = |d: &Path, w, r| parse_line(&l(d, w), 20, r);
-        let e = std::fs::canonicalize(&m).unwrap();
-        assert!(matches!(p(&wt, true, None), LineOutcome::Valid(x) if x.repo == e));
-        assert!(matches!(p(&s, false, None), LineOutcome::DeadRepo));
-        assert!(matches!(p(&s, false, Some(&s)), LineOutcome::Valid(_)));
-        [&m, &wt, &s].into_iter().for_each(ts::remove_tree);
-    }
-}

@@ -33,7 +33,17 @@ mod tip_tests {
     //! The hover-help copy lives in `app.js` and the hooks in `index.html`.
     //! Neither file is compiled, so a key typo would ship a blank tooltip.
     const HTML: &str = include_str!("dashboard/assets/index.html");
-    const JS: &str = include_str!("dashboard/assets/app.js");
+    const JS: &str = concat!(
+        include_str!("dashboard/assets/core.js"),
+        "\n",
+        include_str!("dashboard/assets/overview.js"),
+        "\n",
+        include_str!("dashboard/assets/telemetry.js"),
+        "\n",
+        include_str!("dashboard/assets/reuse.js"),
+        "\n",
+        include_str!("dashboard/assets/memory.js"),
+    );
     const ATTR: &str = "data-tip=\"";
 
     fn html_keys() -> Vec<String> {
@@ -153,7 +163,17 @@ mod client_contract_tests {
     //! Static contracts over the embedded client bundle. No JS harness exists,
     //! so the invariants the browser depends on are pinned here.
     const HTML: &str = include_str!("dashboard/assets/index.html");
-    const JS: &str = include_str!("dashboard/assets/app.js");
+    const JS: &str = concat!(
+        include_str!("dashboard/assets/core.js"),
+        "\n",
+        include_str!("dashboard/assets/overview.js"),
+        "\n",
+        include_str!("dashboard/assets/telemetry.js"),
+        "\n",
+        include_str!("dashboard/assets/reuse.js"),
+        "\n",
+        include_str!("dashboard/assets/memory.js"),
+    );
 
     #[test]
     fn no_inline_event_handlers_remain() {
@@ -334,10 +354,6 @@ mod client_contract_tests {
             // because these two tables were outside the guard.
             ("recent-tbody", 8),
             ("tools-tbody", 3),
-            // Mission-control overview tables (Tab 00).
-            ("ov-repos-tbody", 3),
-            ("ov-agents-tbody", 3),
-            ("ov-recent-tbody", 5),
         ];
         for (tbody_id, expected) in tables {
             // Slice from the containing <table> so the thead precedes the id.

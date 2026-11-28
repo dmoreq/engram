@@ -64,6 +64,12 @@ fn tool_schema(spec: &ToolSpec) -> Value {
             required.push(json!(param.name));
         }
     }
+    props.entry("root").or_insert_with(|| {
+        json!({
+            "type": "string",
+            "description": "Optional repository root path override for this call",
+        })
+    });
     json!({
         "name": spec.name,
         "description": spec.description,
@@ -297,16 +303,34 @@ fn handle_tools_call(
     if let Some(reason) = missing_required_arg(&tool_name, &arguments) {
         return write_error(out, id, -32602, &reason);
     }
-    infer_active_root(root, &arguments);
-    let Some(active_root) = root.as_deref() else {
-        return write_result(
-            out,
-            id,
-            json!({
-                "content": [{"type": "text", "text": "eg: usage: no git root ancestor found — initialize MCP with rootUri or run inside a git repository\n"}],
-                "isError": true
-            }),
-        );
+    let override_root = match arguments.get("root") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.trim().is_empty() => {
+            let p = Path::new(s);
+            Some(root_from_path(p).unwrap_or_else(|| p.to_path_buf()))
+        }
+        Some(Value::String(_)) => {
+            return write_error(out, id, -32602, "root must be a non-empty string");
+        }
+        Some(_) => {
+            return write_error(out, id, -32602, "root must be a string");
+        }
+    };
+    let active_root = if let Some(ref r) = override_root {
+        r.as_path()
+    } else {
+        infer_active_root(root, &arguments);
+        let Some(active_root) = root.as_deref() else {
+            return write_result(
+                out,
+                id,
+                json!({
+                    "content": [{"type": "text", "text": "eg: usage: no git root ancestor found — initialize MCP with rootUri or run inside a git repository\n"}],
+                    "isError": true
+                }),
+            );
+        };
+        active_root
     };
     let (text, is_error, latency_ms, shown) =
         run_tool_journaled(active_root, &tool_name, &arguments);
@@ -366,7 +390,7 @@ fn run_tool_journaled(
     // Panic isolation (R6d A7): one tool must not kill the server.
     let (text, is_error, exit_code, shown) =
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            call_tool(root, tool_name, arguments)
+            call_tool(root, tool_name, arguments, false)
         })) {
             Ok(v) => v,
             Err(_) => (
@@ -418,12 +442,14 @@ fn missing_required_arg(tool: &str, args: &Value) -> Option<String> {
 /// Render one tool result: (text, is_error, exit_code, shown items). Success
 /// text is the CLI's stdout; error text is the CLI's stdout (caveat/candidates)
 /// followed by its stderr diagnostic — Amendment 8's error contract.
-fn call_tool(root: &Path, tool: &str, args: &Value) -> (String, bool, i32, Option<usize>) {
+fn call_tool(
+    root: &Path,
+    tool: &str,
+    args: &Value,
+    no_journal: bool,
+) -> (String, bool, i32, Option<usize>) {
     let outcome = from_tool_args(tool, args).map(|req: CommandRequest| {
-        let journal = !matches!(
-            req,
-            CommandRequest::Usage { .. } | CommandRequest::Doctor { .. }
-        );
+        let journal = !no_journal && !matches!(req, CommandRequest::Usage { .. });
         let exec = crate::service::execute(&req, Some(root), Surface::Mcp, journal);
         (exec.stdout, exec.stderr, exec.exit_code, exec.shown)
     });
@@ -455,46 +481,4 @@ fn call_tool(root: &Path, tool: &str, args: &Value) -> (String, bool, i32, Optio
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mem_export_scan_param_and_schema_are_wired() {
-        let spec = TOOL_SPECS.iter().find(|t| t.name == "mem_export").unwrap();
-        assert!(spec.params.iter().any(|p| p.name == "scan"));
-        let req = from_tool_args("mem_export", &json!({"scan": true})).unwrap();
-        assert!(matches!(req, CommandRequest::MemExport { scan: true, .. }));
-        let reuse = TOOL_SPECS.iter().find(|t| t.name == "reuse").unwrap();
-        let limit = reuse.params.iter().find(|p| p.name == "limit").unwrap();
-        assert!(matches!(limit.kind, ParamKind::Int { min: 0, .. }));
-    }
-
-    #[test]
-    fn call_tool_forwards_stderr_for_non_export_and_strips_export_caveat() {
-        let dir = crate::db::test_support::temp_root("mcp-stderr-fwd");
-        crate::db::test_support::make_dir_all(dir.join(".engram")).unwrap();
-        for (key, body) in [("note-a", "alpha note"), ("note-b", "beta note")] {
-            let (t, err, code, _) = call_tool(
-                &dir,
-                "mem_write",
-                &json!({"key": key, "body": body, "kind": "fact"}),
-            );
-            assert!(!err && code == 0, "{t}");
-        }
-        let (queried, err, code, _) = call_tool(
-            &dir,
-            "mem_query",
-            &json!({"all": true, "limit": 1, "local": true}),
-        );
-        assert!(
-            !err && code == 0 && queried.contains("[eg] capped at 1 results"),
-            "{queried}"
-        );
-        let (plain, err, code, _) = call_tool(&dir, "mem_export", &json!({}));
-        assert!(
-            !err && code == 0 && !plain.contains("eg: memory"),
-            "{plain}"
-        );
-        crate::db::test_support::remove_tree(&dir);
-    }
-}
+mod tests;

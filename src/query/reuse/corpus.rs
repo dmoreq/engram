@@ -1,6 +1,7 @@
 //! Corpus loading and target selection: symbol rows, callee folding (resolved
 //! and unresolved), and the deterministic target filter.
 
+use super::guards::{cross_language, language_family, LangFamily};
 use super::tokens::tokenize_name_sig;
 use super::*;
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ pub(super) struct SymbolData {
     pub(super) qualname: String,
     pub(super) file_id: i64,
     pub(super) file_path: String,
+    pub(super) lang_family: LangFamily,
     pub(super) line_start: i64,
     pub(super) line_end: i64,
     pub(super) resolved_callees: HashSet<String>,
@@ -22,9 +24,13 @@ pub(super) struct SymbolData {
     /// same-named function as its canonical.
     pub(super) unresolved_callees: HashSet<String>,
     pub(super) callee_ids: HashSet<i64>,
+    /// Precomputed `C_in(s)`: resolved project callees in the same language
+    /// family whose names survived the stoplist.
+    pub(super) d1_callee_ids: HashSet<i64>,
     /// Weighted 1-hop (1.0) and 2-hop (0.5) project callee IDs, populated only
     /// when `reuse --deep-callee` asks for the transitive signal.
     pub(super) deep_weights: HashMap<i64, f64>,
+    pub(super) deep_total: f64,
     pub(super) inbound_callers: i64,
     pub(super) tokens: HashSet<String>,
     pub(super) type_tokens: HashSet<String>,
@@ -33,7 +39,10 @@ pub(super) struct SymbolData {
     pub(super) name_tokens: HashSet<String>,
 }
 
-pub(super) fn load_symbols(conn: &Connection) -> Result<HashMap<i64, SymbolData>> {
+pub(super) fn load_symbols(
+    conn: &Connection,
+    include_all_tokens: bool,
+) -> Result<HashMap<i64, SymbolData>> {
     // Caller counts are folded from the call edges `load_resolved_callees`
     // already reads: the previous per-row `CALLER_COUNT_SQL` subquery repeated
     // 5,000 correlated counts on large corpora.
@@ -47,21 +56,27 @@ pub(super) fn load_symbols(conn: &Connection) -> Result<HashMap<i64, SymbolData>
     let mut map = HashMap::new();
     let rows = stmt.query_map([], |r| {
         let name: String = r.get(1)?;
+        let file_path: String = r.get(4)?;
+        let lang_family = language_family(&file_path);
         let signature: String = r.get(7)?;
-        let (tokens, type_tokens, name_tokens) = tokenize_name_sig(&name, &signature);
+        let (tokens, type_tokens, name_tokens) =
+            tokenize_name_sig(&name, &signature, include_all_tokens);
         Ok(SymbolData {
             id: r.get(0)?,
             name,
             qualname: r.get(2)?,
             file_id: r.get(3)?,
-            file_path: r.get(4)?,
+            file_path,
+            lang_family,
             line_start: r.get(5)?,
             line_end: r.get(6)?,
             resolved_callees: HashSet::new(),
             all_callees: HashSet::new(),
             unresolved_callees: HashSet::new(),
             callee_ids: HashSet::new(),
+            d1_callee_ids: HashSet::new(),
             deep_weights: HashMap::new(),
+            deep_total: 0.0,
             inbound_callers: 0,
             tokens,
             type_tokens,
@@ -79,25 +94,35 @@ pub(super) fn load_symbols(conn: &Connection) -> Result<HashMap<i64, SymbolData>
 pub(super) fn load_callees(
     conn: &Connection,
     symbols: &mut HashMap<i64, SymbolData>,
-) -> Result<()> {
-    load_resolved_callees(conn, symbols)?;
-    map_unresolved_callees(conn, symbols)
+) -> Result<HashMap<i64, i64>> {
+    let df_all = load_resolved_callees(conn, symbols)?;
+    map_unresolved_callees(conn, symbols)?;
+    Ok(df_all)
 }
 
-/// `df_all_excl(c)`: distinct callers per resolved destination, including test
-/// callers. One prefetch feeds the D1 distinctive-callee guard.
-pub(super) fn load_df_all(conn: &Connection) -> Result<HashMap<i64, i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT dst_id, COUNT(DISTINCT src_id) FROM edges
-         WHERE kind = 'calls' AND dst_id IS NOT NULL GROUP BY dst_id",
-    )?;
-    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let (id, count) = row?;
-        out.insert(id, count);
+/// Precompute `d1_callee_ids` once per symbol after stoplist filtering.
+pub(super) fn precompute_d1_callee_ids(symbols: &mut HashMap<i64, SymbolData>) {
+    let computed: Vec<(i64, HashSet<i64>)> = symbols
+        .values()
+        .map(|sym| {
+            let ids = sym
+                .callee_ids
+                .iter()
+                .copied()
+                .filter(|id| {
+                    symbols.get(id).is_some_and(|callee| {
+                        !cross_language(sym, callee) && sym.resolved_callees.contains(&callee.name)
+                    })
+                })
+                .collect();
+            (sym.id, ids)
+        })
+        .collect();
+    for (id, ids) in computed {
+        if let Some(sym) = symbols.get_mut(&id) {
+            sym.d1_callee_ids = ids;
+        }
     }
-    Ok(out)
 }
 
 /// Build the weighted two-hop footprint after the stoplist filter: direct
@@ -144,6 +169,7 @@ pub(super) fn load_deep_weights(symbols: &mut HashMap<i64, SymbolData>) {
         .collect();
     for (id, weights) in computed {
         if let Some(sym) = symbols.get_mut(&id) {
+            sym.deep_total = weights.values().sum();
             sym.deep_weights = weights;
         }
     }
@@ -157,8 +183,12 @@ fn callee_name(dst_name: &str) -> String {
     }
 }
 
-/// Fold the resolved `calls` edges into each source symbol's callee sets.
-fn load_resolved_callees(conn: &Connection, symbols: &mut HashMap<i64, SymbolData>) -> Result<()> {
+/// Fold the resolved `calls` edges into each source symbol's callee sets and
+/// return `df_all_excl(c)` (distinct callers per resolved destination).
+fn load_resolved_callees(
+    conn: &Connection,
+    symbols: &mut HashMap<i64, SymbolData>,
+) -> Result<HashMap<i64, i64>> {
     let mut edge_stmt =
         conn.prepare("SELECT e.src_id, e.dst_id, e.dst_name FROM edges e WHERE e.kind = 'calls'")?;
     let rows = edge_stmt.query_map([], |r| {
@@ -170,9 +200,11 @@ fn load_resolved_callees(conn: &Connection, symbols: &mut HashMap<i64, SymbolDat
     })?;
 
     let mut caller_sets: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut all_caller_sets: HashMap<i64, HashSet<i64>> = HashMap::new();
     for row in rows {
         let (src_id, dst_id, dst_name) = row?;
         if let Some(did) = dst_id {
+            all_caller_sets.entry(did).or_default().insert(src_id);
             // Distinct production callers only: exclude self-edges and any
             // source outside the corpus (tests). The final count is set after
             // the edge scan so duplicate call sites cannot inflate it.
@@ -203,7 +235,10 @@ fn load_resolved_callees(conn: &Connection, symbols: &mut HashMap<i64, SymbolDat
             dst.inbound_callers = callers.len() as i64;
         }
     }
-    Ok(())
+    Ok(all_caller_sets
+        .into_iter()
+        .map(|(k, v)| (k, v.len() as i64))
+        .collect())
 }
 
 /// Attribute each unresolved call row to the innermost callable enclosing its

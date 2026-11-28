@@ -178,7 +178,7 @@ Real-time anti-reinvention engine. Detects cross-file and intra-file duplicate f
 ```bash
 eg reuse [PATHS]... [--limit <N>] [--deep-callee] [--min-confidence <low|provisional|medium|high>] [--explain]
 eg reuse --propose "<signature>" [--callees <a,b>] [--explain]
-eg reuse --coverage <class|unresolved|tests> [--explain]
+eg reuse [PATHS]... --coverage <class|unresolved|tests> [--explain]
 ```
 
 | Option / Argument | Default | Description |
@@ -198,7 +198,7 @@ Path targets are validated before the scan: absolute paths, `..`, backslashes, a
 
 Proposal mode never creates a file. It matches the proposed name tokens and callees against resolved index data and returns only existing canonical symbols.
 
-Allowlist notes use the key `reuse-allow/<target>-><canonical>` in the local memory store; `--global` is rejected and imported notes cannot create allowlist keys. High-confidence pairs are never suppressed. A note with `--refs` is ignored after any referenced file changes or disappears from the index. `--show-suppressed` keeps the candidate visible and adds `N suppressed` to the summary. `--coverage` scans the whole repository and rejects paths.
+Allowlist notes use the key `reuse-allow/<target>-><canonical>` in the local memory store; `--global` is rejected and imported notes cannot create allowlist keys. High-confidence pairs are never suppressed. A note with `--refs` is ignored after any referenced file changes or disappears from the index. `--show-suppressed` keeps the candidate visible and adds `N suppressed` to the summary. `--coverage` can be combined with `PATHS` to scope coverage checks.
 
 Judge mode is best-effort. It arbitrates gray-band candidates AFTER judging but BEFORE the display filter: a `distinct` verdict removes the candidate, a `duplicate` verdict promotes it to medium confidence, so `--min-confidence medium` no longer starves the judge. The CLI runs one `eg-judge` subprocess per call (one checkpoint load, up to 40 pairs, 256 KiB stdin/stdout cap, 20 s deadline); `eg mcp` holds one persistent `eg-judge serve` child for the session (per-verdict line protocol, ~60 ms warm) and falls back to the one-shot batch when the child cannot serve. A missing binary, model, timeout, malformed output, or unknown verdict leaves the static result unchanged and prints one `eg: judge unavailable:` stderr note; a batch with no judgeable candidates prints `eg: judge: 0 judgeable candidates`. Set `EG_JUDGE_BIN` and `EG_JUDGE_MODEL` to pin the executable and checkpoint directory; the child runs with a cleared environment and passes source through stdin as `{"code_a","code_b"}` (or `{"text_a","text_b"}` for the similarity subcommand), never through argv. A `recipe.json` next to the checkpoint is passed through as `--recipe` automatically. Successful runs add a `judge` object (`reviewed`/`rejected`/`failed`/`rejected_loc`) to the reuse journal line, which `eg usage --quality` aggregates and `/api/reuse` exposes as `summary.judge`.
 
@@ -279,9 +279,11 @@ Time bounds accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SSZ`, or `@<unix-seconds>`. B
 
 | Subcommand | Syntax | Description |
 |---|---|---|
-| `touch` | `eg mem touch <KEY> [--global]` | Refresh `anchored_at` (last verified) on the active revision without creating a new revision. |
-| `get` | `eg mem get <KEY> [--global]` | Fetch current revision and total revision count for an exact key. |
-| `delete` | `eg mem delete <KEY> [--global]` | Hard-delete all revisions and FTS rows for a key. |
+| `touch` | `eg mem touch <KEY> [--global] [--expected-rev <N>]` | Refresh `anchored_at` (last verified) on the active revision without creating a new revision. |
+| `get` | `eg mem get <KEY> [--global] [--include-superseded]` | Fetch current revision (or latest superseded/retired revision with `--include-superseded`) and total revision count for an exact key. |
+| `delete` | `eg mem delete <KEY> [--global] [--retire] [--expected-rev <N>]` | Hard-delete all revisions and FTS rows for a key, or soft-retire the active revision with `--retire`. |
+| `restore` | `eg mem restore <KEY> [--global]` | Restore a soft-retired note back into the active search index. |
+| `triage` | `eg mem triage [--key <KEY>] [--after-key <KEY>] [--limit <N>] [--no-git] [--global] [--json]` | Classify broken and modified memory anchors with bounded git and code-index evidence. |
 | `export` | `eg mem export [--format jsonl\|markdown] [--limit <N>] [--global] [--since <TIME>] [--until <TIME>] [--scan]` | Export active notes as JSONL (default) or fenced Markdown to stdout. `--scan` reports suspected secrets on stderr without changing stdout or the exit code. |
 | `import` | `eg mem import <PATH> [--format jsonl\|markdown] [--force] [--global]` | Restore a JSONL/Markdown export (use `-` for stdin). Conflicting keys are skipped unless `--force` overwrites; imported rows carry `[imported]`. MCP import targets the project store unless `global: true`. |
 | `gc` | `eg mem gc [--global]` | Purge expired session notes and superseded revisions older than 30 days. |
@@ -392,8 +394,8 @@ Serve `eg` as an MCP stdio server over newline-delimited JSON-RPC 2.0.
 eg mcp [--all-tools]
 ```
 
-- **Default (Core Surface)**: Exposes 13 high-ROI tools: `build`, `callers`, `callees`, `path`, `context`, `imports`, `impact`, `symbols`, `reuse`, `search`, `usage`, `mem_write`, and `mem_query`.
-- `--all-tools`: Exposes all 20 tools, adding the 7 extended memory management tools: `mem_touch`, `mem_get`, `mem_delete`, `mem_gc`, `mem_export`, `mem_import`, and `mem_reindex`.
+- **Default (Core Surface)**: Exposes 15 core tools (`build`, `callers`, `callees`, `path`, `context`, `imports`, `impact`, `symbols`, `reuse`, `search`, `usage`, `mem_write`, `mem_query`, `mem_touch`, and `mem_get`).
+- `--all-tools`: Exposes all 25 tools, adding the 10 extended tools (`mem_delete`, `mem_retire`, `mem_restore`, `mem_triage`, `mem_gc`, `mem_export`, `mem_import`, `mem_reindex`, `unresolved`, `stats`) alongside the 15 core tools.
 
 ---
 

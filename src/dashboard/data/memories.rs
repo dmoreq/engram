@@ -33,7 +33,7 @@ pub fn collect_memories(root: Option<&Path>, entries: &[Value]) -> Result<Value>
     let mut errors = Vec::new();
 
     for store in &stores {
-        if let Err(err) = collect_store_notes(store, &recalls_map, &mut notes_json) {
+        if let Err(err) = collect_store_notes(store, &recalls_map, &mut notes_json, &mut errors) {
             errors.push(err);
         }
     }
@@ -161,105 +161,45 @@ fn aggregate_recalls(entries: &[Value]) -> HashMap<String, (usize, f64)> {
     recalls_map
 }
 
+fn resolved_ref_to_json(r: &str, res: &crate::db::ResolvedRef) -> Value {
+    json!({
+        "ref": r,
+        "verified": res.status.is_verified(),
+        "status": res.status.as_str(),
+        "type": res.kind,
+        "location": res.detail,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn resolve_single_ref(
     r: &str,
     index_conn: Option<&Connection>,
     root: Option<&Path>,
     anchor: i64,
 ) -> Value {
-    let Some(iconn) = index_conn else {
-        if let Some(repo_root) = root {
-            if let Some((size, mtime_secs)) = crate::db::check_disk_ref(repo_root, r) {
-                let is_modified = mtime_secs > anchor;
-                return json!({
-                    "ref": r,
-                    "verified": true,
-                    "status": if is_modified { "modified" } else { "valid" },
-                    "type": "file",
-                    "location": format!("{r} ({size} bytes)")
-                });
-            }
-        }
-        // No index for this store (global, or a repo that was never built):
-        // verification is impossible, not failed.
-        return json!({
-            "ref": r, "verified": false, "status": "unverified",
-            "type": "path", "location": ""
-        });
-    };
-
-    if let Ok(mut f_stmt) = iconn.prepare(
-        "SELECT path, size, mtime FROM files
-         WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'
-         ORDER BY (path = ?1) DESC, mtime DESC, path ASC LIMIT 1",
-    ) {
-        if let Ok((path, size, mtime_nanos)) = f_stmt.query_row(
-            rusqlite::params![r, format!("%/{}", crate::db::like_escape(r))],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        ) {
-            let is_modified = (mtime_nanos / 1_000_000_000) > anchor;
-            return json!({
-                "ref": r,
-                "verified": true,
-                "status": if is_modified { "modified" } else { "valid" },
-                "type": "file",
-                "location": format!("{path} ({size} bytes)")
-            });
-        }
-    }
-
-    if let Ok(mut s_stmt) = iconn.prepare(
-        "SELECT f.path, s.line_start, s.line_end, f.mtime FROM symbols s JOIN files f ON s.file_id = f.id
-         WHERE s.name = ?1 OR s.qualname = ?1
-         ORDER BY s.line_start ASC, f.path ASC, s.qualname ASC LIMIT 1",
-    ) {
-        if let Ok((fp, ls, le, mtime_nanos)) = s_stmt.query_row(rusqlite::params![r], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
-        }) {
-            let is_modified = (mtime_nanos / 1_000_000_000) > anchor;
-            return json!({
-                "ref": r,
-                "verified": true,
-                "status": if is_modified { "modified" } else { "valid" },
-                "type": "symbol",
-                "location": format!("{fp}:{ls}-{le}")
-            });
-        }
-    }
-
-    if let Some(repo_root) = root {
-        if let Some((size, mtime_secs)) = crate::db::check_disk_ref(repo_root, r) {
-            let is_modified = mtime_secs > anchor;
-            return json!({
-                "ref": r,
-                "verified": true,
-                "status": if is_modified { "modified" } else { "valid" },
-                "type": "file",
-                "location": format!("{r} ({size} bytes)")
-            });
-        }
-    }
-
-    json!({
-        "ref": r, "verified": false, "status": "broken", "type": "path", "location": ""
-    })
+    resolved_ref_to_json(
+        r,
+        &crate::db::resolve_ref_detail(index_conn, root, r, anchor),
+    )
 }
 
-fn resolve_note_refs(
+fn resolve_note_refs_pairs(
     refs_list: &[String],
     index_conn: Option<&Connection>,
     root: Option<&Path>,
     anchor: i64,
-) -> Vec<Value> {
+    cache: &mut HashMap<String, crate::db::ResolvedRef>,
+) -> Vec<(String, crate::db::ResolvedRef)> {
     refs_list
         .iter()
-        .map(|r| resolve_single_ref(r, index_conn, root, anchor))
+        .map(|r| {
+            let resolved = cache
+                .entry(r.clone())
+                .or_insert_with(|| crate::db::resolve_ref_detail(index_conn, root, r, anchor))
+                .with_anchor(anchor);
+            (r.clone(), resolved)
+        })
         .collect()
 }
 
@@ -278,11 +218,23 @@ struct MemoryRow {
     is_current: bool,
 }
 
+#[cfg(test)]
 fn format_note_json(
     store: &Store,
     row: MemoryRow,
     index_conn: Option<&Connection>,
     recalls_map: &HashMap<String, (usize, f64)>,
+) -> Value {
+    let mut ref_cache = HashMap::new();
+    format_note_json_cached(store, row, index_conn, recalls_map, &mut ref_cache)
+}
+
+fn format_note_json_cached(
+    store: &Store,
+    row: MemoryRow,
+    index_conn: Option<&Connection>,
+    recalls_map: &HashMap<String, (usize, f64)>,
+    ref_cache: &mut HashMap<String, crate::db::ResolvedRef>,
 ) -> Value {
     let tags: Vec<String> = row
         .tags_raw
@@ -299,13 +251,18 @@ fn format_note_json(
 
     // Staleness is measured against the last verify, falling back to the
     // creation date for notes that were never anchored.
-    let anchor = if row.anchored_at > 0 {
-        row.anchored_at
-    } else {
-        row.created_at
-    };
-    let resolved_refs =
-        resolve_note_refs(&refs_list, index_conn, store.guard_root.as_deref(), anchor);
+    let anchor = row.anchored_at.max(row.created_at);
+    let pairs = resolve_note_refs_pairs(
+        &refs_list,
+        index_conn,
+        store.guard_root.as_deref(),
+        anchor,
+        ref_cache,
+    );
+    let resolved_refs: Vec<Value> = pairs
+        .iter()
+        .map(|(r, res)| resolved_ref_to_json(r, res))
+        .collect();
     let ref_status = if resolved_refs
         .iter()
         .any(|r| r.get("status").and_then(Value::as_str) == Some("broken"))
@@ -327,6 +284,42 @@ fn format_note_json(
         "none"
     };
 
+    let triage = if row.is_current {
+        crate::memory::triage::classify_note_pure(&row.kind, &row.scope, ref_status, &pairs)
+    } else {
+        None
+    };
+    let (triage_reason, triage_label, suggested_cli) = match triage {
+        Some(reason) => {
+            let valid_refs: Vec<String> = pairs
+                .iter()
+                .filter(|(_, res)| res.status != crate::db::RefStatus::Broken)
+                .map(|(r, _)| r.clone())
+                .collect();
+            let scope_flag = if store.guard_root.is_none() {
+                " --global".to_string()
+            } else {
+                format!(
+                    " --root {}",
+                    crate::memory::triage::posix_single_quote(&store.repo_root.to_string_lossy())
+                )
+            };
+            let cli = crate::memory::triage::suggested_cli_command(
+                reason,
+                &row.key,
+                row.rev,
+                &valid_refs,
+                &scope_flag,
+            );
+            (
+                Value::String(reason.as_str().to_string()),
+                Value::String(reason.label().to_string()),
+                Value::String(cli),
+            )
+        }
+        None => (Value::Null, Value::Null, Value::Null),
+    };
+
     json!({
         "id": row.id,
         "store": store.name,
@@ -340,6 +333,9 @@ fn format_note_json(
         "refs": refs_list,
         "resolved_refs": resolved_refs,
         "ref_status": ref_status,
+        "triage_reason": triage_reason,
+        "triage_label": triage_label,
+        "suggested_cli": suggested_cli,
         "source": row.source,
         "created_at": row.created_at,
         "anchored_at": row.anchored_at,
@@ -353,6 +349,7 @@ fn collect_store_notes(
     store: &Store,
     recalls_map: &HashMap<String, (usize, f64)>,
     out: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
 ) -> std::result::Result<(), Value> {
     let err = |stage: &str, message: String| json!({ "store": store.name, "store_id": store.store_id, "stage": stage, "message": message });
     if let Some(root) = &store.guard_root {
@@ -365,11 +362,16 @@ fn collect_store_notes(
     let conn =
         Connection::open_with_flags(&store.db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| err("open", e.to_string()))?;
-    let index_path = store.repo_root.join(".engram").join("index.db");
-    let index_conn = if crate::db::reject_symlink(&index_path, "index.db").is_ok() {
-        Connection::open_with_flags(&index_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
-    } else {
-        None
+    let index_conn = match store.guard_root.as_deref() {
+        Some(root) => match crate::db::try_open_index(root) {
+            Ok(c) => Some(c),
+            Err(crate::db::IndexOpenError::Missing) => None,
+            Err(e) => {
+                errors.push(err("index", format!("{e:?}")));
+                None
+            }
+        },
+        None => None,
     };
 
     // v1 stores predate anchored_at; fall back to created_at at read time
@@ -422,13 +424,15 @@ fn collect_store_notes(
     };
 
     let mapped = rows.map_err(|e| err("query", e.to_string()))?;
+    let mut ref_cache: HashMap<String, crate::db::ResolvedRef> = HashMap::new();
     for row in mapped {
         match row {
-            Ok(row) => out.push(format_note_json(
+            Ok(row) => out.push(format_note_json_cached(
                 store,
                 row,
                 index_conn.as_ref(),
                 recalls_map,
+                &mut ref_cache,
             )),
             Err(e) => return Err(err("decode", e.to_string())),
         }

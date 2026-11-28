@@ -8,26 +8,52 @@ pub(super) struct UseTreeCtx<'a> {
     src: &'a [u8],
     prefix: &'a [String],
     scope: &'a str,
+    alias_scope: &'a str,
     crate_root: Option<&'a str>,
+    lib_root: Option<&'a str>,
+    crate_name: Option<&'a str>,
     line: usize,
+    maybe_external: bool,
 }
 
 /// Rust use declarations: resolve the structural use tree (`use_list`,
 /// `scoped_use_list`, `use_as_clause`, `use_wildcard`) to module/symbol
 /// candidates. `crate::` maps to the file's top-level directory, `self::` to
 /// the current module scope, and `super::` to its parent. Plain paths are
-/// external crates in the 2018 edition and emit no edge.
-pub(super) fn record_use_decl(node: Node<'_>, src: &[u8], fx: &mut FileExtraction, scope: &str) {
+/// qualified against `scope` and validated against `module_paths` in Phase B.
+pub(super) fn record_use_decl(
+    node: Node<'_>,
+    src: &[u8],
+    fx: &mut FileExtraction,
+    scope: &str,
+    alias_scope: &str,
+) {
     let Some(arg) = node.child_by_field_name("argument") else {
         return;
     };
     let crate_root = fx.crate_root.clone();
+    let lib_root = fx.lib_root.clone();
+    let crate_name = fx.crate_name.clone();
+    // In a binary crate root (`src/main.rs` -> `fx.module == "src.main"`),
+    // top-level relative `use sub::item;` resolves from `crate_root` (`"src"`).
+    let effective_scope = if scope == fx.module
+        && (fx.module == "main" || fx.module.ends_with(".main"))
+        && crate_root.is_some()
+    {
+        crate_root.as_deref().unwrap_or(scope)
+    } else {
+        scope
+    };
     let ctx = UseTreeCtx {
         src,
         prefix: &[],
-        scope,
+        scope: effective_scope,
+        alias_scope,
         crate_root: crate_root.as_deref(),
+        lib_root: lib_root.as_deref(),
+        crate_name: crate_name.as_deref(),
         line: node.start_position().row + 1,
+        maybe_external: false,
     };
     walk_use_tree(arg, ctx, fx);
 }
@@ -60,41 +86,20 @@ fn emit_scoped_use_list(node: Node<'_>, ctx: UseTreeCtx<'_>, fx: &mut FileExtrac
     let Some(list) = node.child_by_field_name("list") else {
         return;
     };
-    let base = resolve_use_path(path, ctx).or_else(|| {
-        // A relative first segment with no enclosing prefix (`use
-        // inner::{self}`) resolves to None above, but it still anchors the
-        // brace group. Absolute paths and the crate/self/super keywords
-        // keep their existing semantics; the anchor is qualified against
-        // the file module because resolution tables hold absolute paths.
-        let raw = text(path, ctx.src);
-        if raw.starts_with("::") {
-            return None;
-        }
-        let segs: Vec<String> = raw
-            .split("::")
-            .filter(|p| !p.is_empty())
-            .map(str::to_string)
-            .collect();
-        match segs.first().map(String::as_str) {
-            Some(first) if !matches!(first, "crate" | "self" | "super") => {
-                let mut out = vec![fx.module.clone()];
-                out.extend(segs);
-                Some(out)
-            }
-            _ => None,
-        }
-    });
-    let Some(base) = base else {
+    let Some((base, maybe_external)) = resolve_use_path(path, ctx) else {
         return;
     };
     if !base.is_empty() {
-        fx.import_edges
-            .push(ImportEdgeCandidate::module(ctx.line, base.join(".")));
+        fx.import_edges.push(
+            ImportEdgeCandidate::module(ctx.line, base.join("."))
+                .with_maybe_external(maybe_external),
+        );
     }
     walk_use_tree(
         list,
         UseTreeCtx {
             prefix: &base,
+            maybe_external,
             ..ctx
         },
         fx,
@@ -108,17 +113,30 @@ fn emit_use_wildcard(node: Node<'_>, ctx: UseTreeCtx<'_>, fx: &mut FileExtractio
     let path = node
         .child_by_field_name("path")
         .or_else(|| node.named_children(&mut c).next());
-    let full = match path {
-        Some(path) => resolve_use_path(path, ctx),
-        None => Some(ctx.prefix.to_vec()),
+    let (full, maybe_external) = match path {
+        Some(path) => match resolve_use_path(path, ctx) {
+            Some(res) => res,
+            None => return,
+        },
+        None => (ctx.prefix.to_vec(), ctx.maybe_external),
     };
-    let Some(full) = full.filter(|p| !p.is_empty()) else {
+    if full.is_empty() {
         return;
-    };
+    }
     let qn = full.join(".");
     fx.bindings.stars.push((qn.clone(), ctx.line));
+    if !ctx.alias_scope.is_empty() {
+        fx.bindings
+            .star_scopes
+            .insert((qn.clone(), ctx.line), ctx.alias_scope.to_string());
+    }
+    if maybe_external {
+        fx.bindings
+            .maybe_external_stars
+            .insert((qn.clone(), ctx.line));
+    }
     fx.import_edges
-        .push(ImportEdgeCandidate::module_root(ctx.line, qn));
+        .push(ImportEdgeCandidate::module_root(ctx.line, qn).with_maybe_external(maybe_external));
 }
 
 pub(super) fn emit_use_leaf(
@@ -127,29 +145,35 @@ pub(super) fn emit_use_leaf(
     alias: Option<String>,
     fx: &mut FileExtraction,
 ) {
-    let Some(full) = resolve_use_path(node, ctx) else {
+    let Some((full, maybe_external)) = resolve_use_path(node, ctx) else {
         return;
     };
     if full.is_empty() {
         return;
     }
-    if emit_module_leaf(node, ctx, &full, &alias, fx) {
+    if emit_module_leaf(node, ctx, &full, &alias, maybe_external, fx) {
         return;
     }
     let Some((name, parent)) = full.split_last() else {
         return;
     };
     let module = parent.join(".");
-    fx.import_edges
-        .push(ImportEdgeCandidate::module(ctx.line, module.clone()));
-    fx.import_edges.push(ImportEdgeCandidate::symbol(
-        ctx.line,
-        module.clone(),
-        name.clone(),
-    ));
+    let bound = alias.unwrap_or_else(|| name.clone());
+    if maybe_external {
+        fx.bindings
+            .maybe_external_aliases
+            .insert((ctx.alias_scope.to_string(), bound.clone()));
+    }
+    fx.import_edges.push(
+        ImportEdgeCandidate::module(ctx.line, module.clone()).with_maybe_external(maybe_external),
+    );
+    fx.import_edges.push(
+        ImportEdgeCandidate::symbol(ctx.line, module.clone(), name.clone())
+            .with_maybe_external(maybe_external),
+    );
     fx.bindings.aliases.push((
-        ctx.scope.to_string(),
-        alias.unwrap_or_else(|| name.clone()),
+        ctx.alias_scope.to_string(),
+        bound,
         ImportTarget::Symbol {
             module,
             name: name.clone(),
@@ -164,6 +188,7 @@ fn emit_module_leaf(
     ctx: UseTreeCtx<'_>,
     full: &[String],
     alias: &Option<String>,
+    maybe_external: bool,
     fx: &mut FileExtraction,
 ) -> bool {
     let qn = full.join(".");
@@ -174,8 +199,19 @@ fn emit_module_leaf(
     if !module_leaf {
         return false;
     }
-    fx.import_edges
-        .push(ImportEdgeCandidate::module(ctx.line, qn.clone()));
+    if let Some((name, parent)) = full.split_last() {
+        if !marker_only && !parent.is_empty() && (!maybe_external || raw.contains("::")) {
+            fx.import_edges.push(
+                ImportEdgeCandidate::symbol(ctx.line, parent.join("."), name.clone())
+                    .with_maybe_external(maybe_external),
+            );
+        } else {
+            fx.import_edges.push(
+                ImportEdgeCandidate::module(ctx.line, qn.clone())
+                    .with_maybe_external(maybe_external),
+            );
+        }
+    }
     let binding = alias.clone().or_else(|| {
         // Bare `use self;` binds nothing; `use a::b::{self}` binds `b` so
         // scoped self imports keep their module alias.
@@ -186,16 +222,21 @@ fn emit_module_leaf(
         }
     });
     if let Some(binding) = binding {
+        if maybe_external {
+            fx.bindings
+                .maybe_external_aliases
+                .insert((ctx.alias_scope.to_string(), binding.clone()));
+        }
         if let Some((name, parent)) = full.split_last() {
-            if parent.is_empty() {
+            if parent.is_empty() || (maybe_external && !raw.contains("::")) {
                 fx.bindings.aliases.push((
-                    ctx.scope.to_string(),
+                    ctx.alias_scope.to_string(),
                     binding,
                     ImportTarget::ModuleRoot { path: qn },
                 ));
             } else {
                 fx.bindings.aliases.push((
-                    ctx.scope.to_string(),
+                    ctx.alias_scope.to_string(),
                     binding,
                     ImportTarget::Symbol {
                         module: parent.join("."),
@@ -210,7 +251,7 @@ fn emit_module_leaf(
 
 /// Resolve one use-tree path node against the enclosing module scope.
 /// `None` means the path is external/absolute and must not produce an edge.
-pub(super) fn resolve_use_path(node: Node<'_>, ctx: UseTreeCtx<'_>) -> Option<Vec<String>> {
+pub(super) fn resolve_use_path(node: Node<'_>, ctx: UseTreeCtx<'_>) -> Option<(Vec<String>, bool)> {
     let raw = text(node, ctx.src);
     if raw.starts_with("::") {
         return None;
@@ -222,46 +263,46 @@ pub(super) fn resolve_use_path(node: Node<'_>, ctx: UseTreeCtx<'_>) -> Option<Ve
     let first = parts.next()?;
     let rest: Vec<String> = parts.collect();
     let extra_supers = rest.iter().take_while(|p| p.as_str() == "super").count();
-    let (mut out, plain) = first_segment_prefix(&first, extra_supers, ctx)?;
+    let (mut out, plain, maybe_ext) = first_segment_prefix(&first, extra_supers, ctx)?;
     if plain {
         out.push(first);
     }
     out.extend(rest.into_iter().skip(extra_supers));
-    Some(out)
+    Some((out, maybe_ext))
 }
 
 /// Resolve the first `::` segment against the crate root, scope, or prefix.
-/// The flag is true when the segment is a plain name to append after it.
+/// Returns `(prefix_segments, append_first_as_plain, maybe_external)`.
 fn first_segment_prefix(
     first: &str,
     extra_supers: usize,
     ctx: UseTreeCtx<'_>,
-) -> Option<(Vec<String>, bool)> {
-    let (out, plain) = match first {
-        "crate" => (
-            ctx.crate_root?
-                .split('.')
-                .filter(|p| !p.is_empty())
-                .map(str::to_string)
-                .collect(),
-            false,
-        ),
-        "self" if !ctx.prefix.is_empty() => (ctx.prefix.to_vec(), false),
-        "self" => (ctx.scope.split('.').map(str::to_string).collect(), false),
-        "super" if !ctx.prefix.is_empty() => {
-            (pop_segments(ctx.prefix.to_vec(), extra_supers), false)
-        }
-        "super" => (
-            pop_segments(
-                ctx.scope.split('.').map(str::to_string).collect(),
-                extra_supers,
-            ),
-            false,
-        ),
-        _ if ctx.prefix.is_empty() => return None,
-        _ => (ctx.prefix.to_vec(), true),
+) -> Option<(Vec<String>, bool, bool)> {
+    let split_root = |r: &str| -> Vec<String> {
+        r.split('.')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect()
     };
-    Some((out, plain))
+    let (out, plain, maybe_ext) = match first {
+        "crate" => (split_root(ctx.crate_root?), false, false),
+        _ if ctx.crate_name == Some(first) => (split_root(ctx.lib_root?), false, false),
+        "self" if !ctx.prefix.is_empty() => (ctx.prefix.to_vec(), false, ctx.maybe_external),
+        "self" => (split_root(ctx.scope), false, false),
+        "super" if !ctx.prefix.is_empty() => (
+            pop_segments(ctx.prefix.to_vec(), extra_supers),
+            false,
+            ctx.maybe_external,
+        ),
+        "super" => (
+            pop_segments(split_root(ctx.scope), extra_supers),
+            false,
+            false,
+        ),
+        _ if ctx.prefix.is_empty() => (split_root(ctx.scope), true, true),
+        _ => (ctx.prefix.to_vec(), true, ctx.maybe_external),
+    };
+    Some((out, plain, maybe_ext))
 }
 
 fn pop_segments(mut segments: Vec<String>, extra_supers: usize) -> Vec<String> {

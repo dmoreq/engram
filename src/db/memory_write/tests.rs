@@ -24,6 +24,7 @@ fn note<'a>(key: &'a str, body: &'a str, expires_at: i64) -> MemNoteInput<'a> {
         embedding: None,
         supersedes: None,
         touch: false,
+        expected_rev: None,
     }
 }
 
@@ -168,10 +169,22 @@ fn touch_if_rev_refuses_expired_revision() {
     memory_write(&mut conn, &note("k", "session body", 500), 100).unwrap();
     assert_eq!(
         memory_touch_if_rev(&mut conn, "k", 1, 499).unwrap(),
-        Some(1)
+        CasOutcome::Ok(1)
     );
-    assert_eq!(memory_touch_if_rev(&mut conn, "k", 1, 500).unwrap(), None);
-    assert_eq!(memory_touch_if_rev(&mut conn, "k", 1, 600).unwrap(), None);
+    assert_eq!(
+        memory_touch_if_rev(&mut conn, "k", 1, 500).unwrap(),
+        CasOutcome::Conflict {
+            expected_rev: 1,
+            current_rev: None,
+        }
+    );
+    assert_eq!(
+        memory_touch_if_rev(&mut conn, "k", 1, 600).unwrap(),
+        CasOutcome::Conflict {
+            expected_rev: 1,
+            current_rev: None,
+        }
+    );
     drop(conn);
     remove_tree(&root);
 }

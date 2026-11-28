@@ -78,7 +78,7 @@ fn coverage_class_requires_shared_method() {
 }
 
 #[test]
-fn coverage_rejects_paths_instead_of_ignoring_scope() {
+fn coverage_accepts_paths_and_scopes_results() {
     let repo = temp_repo("reuse-coverage-path");
     write(&repo, "a.py", "def one():\n    return 1\n");
     build(&repo);
@@ -86,11 +86,11 @@ fn coverage_rejects_paths_instead_of_ignoring_scope() {
         .args(["reuse", "a.py", "--coverage", "class"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("coverage cannot be combined with paths"),
-        "{stderr}"
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

@@ -22,11 +22,18 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 
-def recall(binary: str, root: str, query: str, expect: list[str], limit: int) -> float:
+class SearchTarget(NamedTuple):
+    binary: str
+    root: str
+    limit: int
+
+
+def recall(target: SearchTarget, query: str, expect: list[str]) -> float:
     out = subprocess.run(
-        [binary, "search", query, "--root", root, "--limit", str(limit)],
+        [target.binary, "search", query, "--root", target.root, "--limit", str(target.limit)],
         capture_output=True, text=True,
     )
     lines = out.stdout.splitlines()
@@ -54,8 +61,8 @@ def main() -> int:
     print("|-------|------|-----------|-----------|----------|")
     improved = 0
     for row in rows:
-        o = recall(args.old_binary, old_roots[row["repo"]], row["query"], row["expect"], args.limit)
-        n = recall(args.new_binary, new_roots[row["repo"]], row["query"], row["expect"], args.limit)
+        o = recall(SearchTarget(args.old_binary, old_roots[row["repo"]], args.limit), row["query"], row["expect"])
+        n = recall(SearchTarget(args.new_binary, new_roots[row["repo"]], args.limit), row["query"], row["expect"])
         better = n > o
         improved += better
         print(f"| {row['query']} | {row['repo']} | {o:.2f} | {n:.2f} | {'YES' if better else 'NO'} |")

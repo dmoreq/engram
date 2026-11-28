@@ -13,9 +13,11 @@ pub(super) fn aggregate_candidate_usage(entries: &[Value]) -> HashMap<String, (u
         if e.get("tool").and_then(Value::as_str) != Some("reuse") {
             continue;
         }
-        let Some(repo) = e.get("repo").and_then(Value::as_str) else {
+        let Some(repo_raw) = e.get("repo").and_then(Value::as_str) else {
             continue;
         };
+        let worktree = e.get("worktree").and_then(Value::as_bool).unwrap_or(false);
+        let (repo, _) = crate::repo::canonical_repo_bucket(repo_raw, worktree);
         let Some(list) = e
             .get("args")
             .and_then(|a| a.get("candidates"))

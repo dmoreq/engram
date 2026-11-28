@@ -53,7 +53,7 @@ fn push_param_local(
     if (var == "self" || var == "cls" || var == "this") && is_method_receiver {
         return;
     }
-    w.fx.bindings.locals.push((scope.to_string(), var));
+    w.push_local(scope, var);
 }
 
 /// Rust: `x: Foo`, `x: &Foo`, `x: &mut Foo`. `self`/`&self` parameters
@@ -141,6 +141,9 @@ pub(super) fn collect_arrow_params(
             for p in params.children(&mut cursor) {
                 if let Some(var) = param_binding(p, w.src) {
                     push_arrow_binding(w.fx, scope, var, range);
+                }
+                if w.fx.lang.is_ts_js() {
+                    push_ts_param(w, p, scope);
                 }
             }
         } else {
@@ -384,9 +387,6 @@ pub(super) fn record_reassignment(
     let Some(left) = node.child_by_field_name("left") else {
         return;
     };
-    if left.kind() != "identifier" {
-        return;
-    }
     let Some(right) = node.child_by_field_name("right") else {
         return;
     };
@@ -395,6 +395,27 @@ pub(super) fn record_reassignment(
         Lang::Rust => rust::rust_constructor_target(right, src, ctx),
         _ => None,
     };
+    if left.kind() == "member_expression" {
+        if let (Some(obj), Some(prop), Some(class_qn), Some(target_dotted)) = (
+            left.child_by_field_name("object"),
+            left.child_by_field_name("property"),
+            ctx.class_stack.last().cloned(),
+            target,
+        ) {
+            if obj.kind() == "this" {
+                fx.bindings.self_fields.push(SelfField {
+                    class_qn,
+                    field: text(prop, src),
+                    target_dotted,
+                    site_line: left.start_position().row + 1,
+                });
+            }
+        }
+        return;
+    }
+    if left.kind() != "identifier" {
+        return;
+    }
     push_assignment(
         fx,
         text(left, src),

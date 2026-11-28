@@ -12,11 +12,6 @@ use rusqlite::Connection;
 
 use crate::db::{MemFilter, MemRow};
 
-/// Pseudo bm25 rank for a row surfaced only by graph expansion. FTS5 bm25
-/// values are small (typically negative); a large sentinel loses the lexical
-/// feature and lets the graph decay drive the rank.
-pub(crate) const GRAPH_LEX_RAW: f64 = 10.0;
-
 /// Bound the seed, traversal, and ref-name work so a busy query stays inside
 /// the latency gate even on a large index.
 const MAX_SEEDS: usize = 32;
@@ -119,17 +114,33 @@ fn seed_symbols(index: &Connection, query_tokens: &BTreeSet<String>) -> rusqlite
     if query_tokens.is_empty() {
         return Ok(Vec::new());
     }
-    let expr = query_tokens
+    let mut expanded = BTreeSet::new();
+    for token in query_tokens {
+        let clean = token.replace('"', "");
+        if !clean.is_empty() {
+            expanded.insert(clean.clone());
+        }
+        for sub in crate::extract::split_ident(token).split_whitespace() {
+            let clean_sub = sub.replace('"', "");
+            if !clean_sub.is_empty() {
+                expanded.insert(clean_sub);
+            }
+        }
+    }
+    if expanded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let expr = expanded
         .iter()
         .take(MAX_SEEDS)
-        .map(|token| format!("\"{}\"", token.replace('"', "")))
+        .map(|token| format!("\"{token}\""))
         .collect::<Vec<_>>()
         .join(" OR ");
     let mut stmt = index.prepare(
         "SELECT s.id FROM symbols_fts ft
          JOIN symbols s ON s.id = ft.rowid
          WHERE symbols_fts MATCH ?1
-         ORDER BY s.id LIMIT ?2",
+         ORDER BY rank, s.id LIMIT ?2",
     )?;
     let rows = stmt.query_map(rusqlite::params![expr, MAX_SEEDS as i64], |r| {
         r.get::<_, i64>(0)
@@ -137,29 +148,43 @@ fn seed_symbols(index: &Connection, query_tokens: &BTreeSet<String>) -> rusqlite
     rows.collect()
 }
 
-/// Breadth-first distance (capped) from the seed symbols over resolved calls.
+/// Breadth-first distance (capped) from the seed symbols over resolved calls,
+/// batched per BFS level (`WHERE src_id IN (...)`).
 fn bfs_depth(index: &Connection, seeds: &[i64]) -> rusqlite::Result<HashMap<i64, usize>> {
     let mut depth: HashMap<i64, usize> = seeds.iter().map(|id| (*id, 0)).collect();
     let mut frontier: Vec<i64> = seeds.to_vec();
     for level in 1..=MAX_DEPTH {
+        frontier.sort_unstable();
+        frontier.dedup();
         let mut next: Vec<i64> = Vec::new();
-        for src in frontier {
-            let mut stmt = index.prepare(
-                "SELECT DISTINCT dst_id FROM edges
-                 WHERE src_id = ?1 AND kind = 'calls' AND dst_id IS NOT NULL
-                 ORDER BY dst_id LIMIT ?2",
-            )?;
-            let neighbors = stmt
-                .query_map(rusqlite::params![src, NEIGHBOR_FANOUT as i64], |r| {
-                    r.get::<_, i64>(0)
-                })?;
+        for chunk in frontier.chunks(MAX_VISITED) {
+            let placeholders = crate::db::sql_placeholders(chunk.len());
+            let sql = format!(
+                "SELECT DISTINCT src_id, dst_id FROM edges
+                 WHERE src_id IN ({placeholders}) AND kind = 'calls' AND dst_id IS NOT NULL
+                 ORDER BY src_id, dst_id"
+            );
+            let mut stmt = index.prepare(&sql)?;
+            let neighbors = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let mut cur_src: Option<i64> = None;
+            let mut per_src = 0usize;
             for neighbor in neighbors {
-                let id = neighbor?;
-                if depth.contains_key(&id) {
+                let (src_id, dst_id) = neighbor?;
+                if cur_src != Some(src_id) {
+                    cur_src = Some(src_id);
+                    per_src = 0;
+                }
+                if per_src >= NEIGHBOR_FANOUT {
                     continue;
                 }
-                depth.insert(id, level);
-                next.push(id);
+                per_src += 1;
+                if depth.contains_key(&dst_id) {
+                    continue;
+                }
+                depth.insert(dst_id, level);
+                next.push(dst_id);
                 if depth.len() >= MAX_VISITED {
                     return Ok(depth);
                 }
@@ -175,18 +200,19 @@ fn bfs_depth(index: &Connection, seeds: &[i64]) -> rusqlite::Result<HashMap<i64,
 
 /// Map each reachable symbol name/qualname to its decay `0.5^depth`, keeping
 /// the strongest (smallest) depth when two symbols share a short name.
+/// Iterates `(depth, id)` in deterministic order before capping at `MAX_NAMES`.
 fn related_names(
     index: &Connection,
     depth_by_id: &HashMap<i64, usize>,
 ) -> rusqlite::Result<HashMap<String, f64>> {
-    let ids: Vec<i64> = depth_by_id.keys().copied().take(MAX_VISITED).collect();
-    if ids.is_empty() {
+    let mut pairs: Vec<(usize, i64)> = depth_by_id.iter().map(|(&id, &d)| (d, id)).collect();
+    pairs.sort_unstable();
+    pairs.truncate(MAX_VISITED);
+    if pairs.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = (1..=ids.len())
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let ids: Vec<i64> = pairs.iter().map(|&(_, id)| id).collect();
+    let placeholders = crate::db::sql_placeholders(ids.len());
     let sql = format!("SELECT id, name, qualname FROM symbols WHERE id IN ({placeholders})");
     let mut stmt = index.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |r| {
@@ -196,14 +222,22 @@ fn related_names(
             r.get::<_, String>(2)?,
         ))
     })?;
-    let mut names: HashMap<String, f64> = HashMap::new();
+    let mut by_id: HashMap<i64, (String, String)> = HashMap::new();
     for row in rows {
         let (id, name, qualname) = row?;
-        let Some(depth) = depth_by_id.get(&id) else {
+        by_id.insert(id, (name, qualname));
+    }
+    let mut names: HashMap<String, f64> = HashMap::new();
+    for (depth, id) in pairs {
+        let Some((name, qualname)) = by_id.remove(&id) else {
             continue;
         };
-        let decay = 0.5_f64.powi(*depth as i32);
-        for label in [name, qualname] {
+        let decay = 0.5_f64.powi(depth as i32);
+        let candidates = (name.len() >= 4)
+            .then_some(name)
+            .into_iter()
+            .chain(std::iter::once(qualname));
+        for label in candidates {
             if names.len() >= MAX_NAMES && !names.contains_key(&label) {
                 continue;
             }
@@ -251,19 +285,19 @@ mod tests {
                 "INSERT INTO symbols
                  (id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test)
                  VALUES (?1, 'function', ?2, ?3, 1, 'f.py', 1, 2, '', 0)",
-                rusqlite::params![i, format!("s{i}"), format!("m.s{i}")],
+                rusqlite::params![i, format!("sym{i}"), format!("m.sym{i}")],
             )
             .unwrap();
             tx.execute(
                 "INSERT INTO symbols_fts(rowid, text) VALUES (?1, ?2)",
-                rusqlite::params![i, format!("s{i}")],
+                rusqlite::params![i, format!("sym{i}")],
             )
             .unwrap();
             if i > 0 {
                 tx.execute(
                     "INSERT INTO edges (src_id, dst_id, dst_name, kind, confidence, site_line)
                      VALUES (?1, ?2, ?3, 'calls', 'resolved', 0)",
-                    rusqlite::params![i - 1, i, format!("s{i}")],
+                    rusqlite::params![i - 1, i, format!("sym{i}")],
                 )
                 .unwrap();
             }
@@ -278,7 +312,7 @@ mod tests {
             .execute(
                 "INSERT INTO memories
                  (key, rev, kind, scope, session, body, tags, refs, content_hash, source, created_at, expires_at)
-                 VALUES ('downstream', 1, 'fact', 'durable', '', 'downstream effect', '', 's3', 0, 'cli', 1, 0)",
+                 VALUES ('downstream', 1, 'fact', 'durable', '', 'downstream effect', '', 'sym3', 0, 'cli', 1, 0)",
                 [],
             )
             .unwrap();
@@ -290,7 +324,7 @@ mod tests {
             include_superseded: false,
             window: crate::memory::TimeWindow::default(),
         };
-        let tokens: BTreeSet<String> = ["s0".to_string()].into_iter().collect();
+        let tokens: BTreeSet<String> = ["sym0".to_string()].into_iter().collect();
         let start = Instant::now();
         let expansion = graph_expand(&index, &memory, &tokens, &filter, &HashSet::new(), 32);
         let elapsed = start.elapsed();
@@ -306,5 +340,42 @@ mod tests {
             elapsed < Duration::from_millis(10),
             "C4 latency gate: {elapsed:?} >= 10ms"
         );
+    }
+
+    #[test]
+    fn related_names_is_deterministic_and_skips_short_bare_names() {
+        let index = Connection::open_in_memory().unwrap();
+        index
+            .execute_batch(include_str!("../../schema/index.sql"))
+            .unwrap();
+        index
+            .execute(
+                "INSERT INTO files (id, path, size, mtime, content_hash, parse_status, error_nodes, unresolved)
+                 VALUES (1, 'f.py', 0, 0, 0, 'ok', 0, 0)",
+                [],
+            )
+            .unwrap();
+        for (id, name, qual) in [
+            (1_i64, "fn1", "mod.fn1"),
+            (2_i64, "long_name", "mod.long_name"),
+        ] {
+            index
+                .execute(
+                    "INSERT INTO symbols (id, kind, name, qualname, file_id, file_path, line_start, line_end, signature, is_test)
+                     VALUES (?1, 'function', ?2, ?3, 1, 'f.py', 1, 2, '', 0)",
+                    rusqlite::params![id, name, qual],
+                )
+                .unwrap();
+        }
+        let mut depth_by_id = HashMap::new();
+        depth_by_id.insert(1, 1);
+        depth_by_id.insert(2, 2);
+        let first = related_names(&index, &depth_by_id).unwrap();
+        let second = related_names(&index, &depth_by_id).unwrap();
+        assert_eq!(first, second);
+        // Bare name < 4 chars ("fn1") is excluded while qualname ("mod.fn1") is kept.
+        assert!(!first.contains_key("fn1"));
+        assert!(first.contains_key("mod.fn1"));
+        assert!(first.contains_key("long_name"));
     }
 }

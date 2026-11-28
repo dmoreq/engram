@@ -30,10 +30,6 @@ impl ArgReader<'_> {
         self.0.get(key).and_then(|v| v.as_str()).map(str::to_string)
     }
 
-    fn b(&self, key: &str) -> bool {
-        self.0.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
-    }
-
     /// Strict String reader for new params: absent/null is `None`, a string is
     /// accepted, and any other JSON type is a usage error instead of a silent
     /// filter drop.
@@ -165,9 +161,17 @@ fn unknown_tool(tool: &str) -> EgError {
 
 pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandRequest> {
     let a = ArgReader(args);
+    if tool.starts_with("mem_") {
+        from_mem_tool(tool, &a)
+    } else {
+        from_graph_tool(tool, &a)
+    }
+}
+
+fn from_graph_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
     match tool {
         "build" => Ok(CommandRequest::Build {
-            force: a.b("force"),
+            force: a.b_spec(tool, "force")?,
             max_parse_error_rate: a.f_spec(
                 tool,
                 "max_parse_error_rate",
@@ -175,12 +179,8 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             )?,
         }),
         "usage" => Ok(CommandRequest::Usage {
-            quality: a
-                .0
-                .get("quality")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            global: a.0.get("global").and_then(|v| v.as_bool()).unwrap_or(false),
+            quality: a.b_spec(tool, "quality")?,
+            global: a.b_spec(tool, "global")?,
         }),
         "callers" | "callees" => {
             let name = a.req("name")?;
@@ -207,97 +207,157 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }),
         "impact" => Ok(CommandRequest::Impact {
             file: a.req("file")?,
-            sites: a.b("sites"),
+            sites: a.b_spec(tool, "sites")?,
             depth: a.n_spec(tool, "depth", crate::query::DEFAULT_DEPTH)?,
             edges: crate::query::parse_edge_kinds(
-                &a.s("edges")
+                &a.s_opt_spec(tool, "edges")?
                     .unwrap_or_else(|| crate::query::DEFAULT_IMPACT_EDGES.to_string()),
             )?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
         "symbols" => Ok(CommandRequest::Symbols {
             file: a.req("file")?,
-            outline: a.b("outline"),
+            outline: a.b_spec(tool, "outline")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
-        "reuse" => {
-            if let Some(limit) = a.0.get("limit").and_then(serde_json::Value::as_i64) {
-                // 0 is the count-only convention (summary totals, no rows).
-                if !(0..=100).contains(&limit) {
-                    return Err(EgError::Usage("limit must be 0..=100".to_string()));
-                }
-            }
-            Ok(CommandRequest::Reuse {
-                paths: a.str_array("paths")?,
-                limit: a.n_spec(tool, "limit", crate::query::DEFAULT_REUSE_LIMIT)?,
-                deep_callee: a.b_spec(tool, "deep_callee")?,
-                min_confidence: a
-                    .s_opt_spec(tool, "min_confidence")?
-                    .unwrap_or_else(|| "low".to_string()),
-                propose: a.s_opt_spec(tool, "propose")?,
-                callees: a.str_array("callees")?,
-                explain: a.b_spec(tool, "explain")?,
-                show_suppressed: a.b_spec(tool, "show_suppressed")?,
-                coverage: a.str_array("coverage")?,
-                judge: a.b_spec(tool, "judge")?,
-            })
-        }
+        "reuse" => parse_reuse_tool(tool, a),
         "search" => Ok(CommandRequest::Search {
             terms: a.req("terms")?,
             limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
         }),
+        "unresolved" => Ok(CommandRequest::Unresolved {
+            names: a.b_spec(tool, "names")?,
+            path: a.s_opt_spec(tool, "path")?,
+            limit: a.n_spec(tool, "limit", crate::query::DEFAULT_LIMIT)?,
+        }),
+        "stats" => Ok(CommandRequest::Stats {
+            path: a.s_opt_spec(tool, "path")?,
+        }),
+        _ => Err(unknown_tool(tool)),
+    }
+}
+
+fn parse_reuse_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
+    if let Some(v) = a.0.get("limit").filter(|v| !v.is_null()) {
+        let limit = v.as_u64().ok_or_else(|| {
+            EgError::Usage(format!(
+                "argument 'limit' must be a non-negative integer, got {v}"
+            ))
+        })?;
+        // 0 is the count-only convention (summary totals, no rows).
+        if limit > 100 {
+            return Err(EgError::Usage("limit must be 0..=100".to_string()));
+        }
+    }
+    Ok(CommandRequest::Reuse {
+        paths: a.str_array("paths")?,
+        limit: a.n_spec(tool, "limit", crate::query::DEFAULT_REUSE_LIMIT)?,
+        deep_callee: a.b_spec(tool, "deep_callee")?,
+        min_confidence: a
+            .s_opt_spec(tool, "min_confidence")?
+            .unwrap_or_else(|| "low".to_string()),
+        propose: a.s_opt_spec(tool, "propose")?,
+        callees: a.str_array("callees")?,
+        explain: a.b_spec(tool, "explain")?,
+        show_suppressed: a.b_spec(tool, "show_suppressed")?,
+        coverage: a.str_array("coverage")?,
+        judge: a.b_spec(tool, "judge")?,
+    })
+}
+
+fn reject_unknown_mem_keys(tool: &str, args: &serde_json::Value) -> Result<()> {
+    let Some(obj) = args.as_object() else {
+        return Ok(());
+    };
+    let Some(spec) = TOOL_SPECS.iter().find(|t| t.name == tool) else {
+        return Ok(());
+    };
+    for key in obj.keys() {
+        if key == "root" || (tool == "mem_query" && key == "reference") {
+            continue;
+        }
+        if !spec.params.iter().any(|p| p.name == key) {
+            return Err(EgError::Usage(format!("{tool}: unknown argument '{key}'")));
+        }
+    }
+    Ok(())
+}
+
+fn read_expected_rev(a: &ArgReader<'_>, tool: &str) -> Result<Option<i64>> {
+    match a.n_opt_spec(tool, "expected_rev")? {
+        None => Ok(None),
+        Some(0) => Err(EgError::Usage(format!(
+            "{tool}: 'expected_rev' must be >= 1"
+        ))),
+        Some(v) => i64::try_from(v)
+            .map(Some)
+            .map_err(|_| EgError::Usage(format!("{tool}: 'expected_rev' out of range"))),
+    }
+}
+
+fn from_mem_tool(tool: &str, a: &ArgReader<'_>) -> Result<CommandRequest> {
+    reject_unknown_mem_keys(tool, a.0)?;
+    match tool {
         "mem_write" => Ok(CommandRequest::MemWrite {
             key: a.req("key")?,
             body: a.req("body")?,
             kind: a.req("kind")?,
-            tags: a.s("tags"),
-            refs: a.s("refs"),
-            scope: a.s("scope").unwrap_or_else(|| "durable".to_string()),
+            tags: a.s_opt_spec(tool, "tags")?,
+            refs: a.s_opt_spec(tool, "refs")?,
+            scope: a
+                .s_opt_spec(tool, "scope")?
+                .unwrap_or_else(|| "durable".to_string()),
             ttl: a.n_opt_spec(tool, "ttl")?.map(|v| v as u64),
-            supersedes: a.s("supersedes"),
+            supersedes: a.s_opt_spec(tool, "supersedes")?,
             global: a.b_spec(tool, "global")?,
-            touch: a.b("touch"),
-            confirm: a.b("confirm"),
+            touch: a.b_spec(tool, "touch")?,
+            confirm: a.b_spec(tool, "confirm")?,
+            expected_rev: read_expected_rev(a, tool)?,
         }),
         "mem_touch" => Ok(CommandRequest::MemTouch {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
+            expected_rev: read_expected_rev(a, tool)?,
         }),
         "mem_query" => {
             let local = a.b_spec(tool, "local")?;
             let global = a.b_spec(tool, "global")?;
             super::scope::StoreScope::from_flags(local, global)?;
-            let window = crate::memory::TimeWindow {
-                since: a
-                    .s_opt_spec(tool, "since")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem query", "--since"))
-                    .transpose()?,
-                until: a
-                    .s_opt_spec(tool, "until")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem query", "--until"))
-                    .transpose()?,
-            };
-            crate::memory::validate_window(&window, "mem query")?;
+            let since = a.s_opt_spec(tool, "since")?;
+            let until = a.s_opt_spec(tool, "until")?;
+            let window = crate::memory::time::parse_time_window(
+                since.as_deref(),
+                until.as_deref(),
+                "mem query",
+            )?;
+            let terms = a
+                .s_opt_spec(tool, "terms")?
+                .map(|t| {
+                    if t.trim().is_empty() {
+                        vec![t]
+                    } else {
+                        t.split_whitespace().map(str::to_string).collect()
+                    }
+                })
+                .unwrap_or_default();
             Ok(CommandRequest::MemQuery {
-                terms: a
-                    .s_opt_spec(tool, "terms")?
-                    .map(|t| {
-                        if t.trim().is_empty() {
-                            vec![t]
-                        } else {
-                            t.split_whitespace().map(str::to_string).collect()
-                        }
-                    })
-                    .unwrap_or_default(),
+                terms,
                 all: a.b_spec(tool, "all")?,
-                kind: crate::memory::parse_kind_filter("mem query", a.s("kind").as_deref())?,
-                scope: crate::memory::parse_scope_filter("mem query", a.s("scope").as_deref())?,
+                kind: crate::memory::parse_kind_filter(
+                    "mem query",
+                    a.s_opt_spec(tool, "kind")?.as_deref(),
+                )?,
+                scope: crate::memory::parse_scope_filter(
+                    "mem query",
+                    a.s_opt_spec(tool, "scope")?.as_deref(),
+                )?,
                 limit: a.n_spec(tool, "limit", crate::memory::DEFAULT_MEM_LIMIT)?,
                 include_superseded: a.b_spec(tool, "include_superseded")?,
                 global,
-                reference: a.s("ref").or_else(|| a.s("reference")),
+                reference: match a.s_opt_spec(tool, "ref")? {
+                    Some(v) => Some(v),
+                    None => a.s("reference"),
+                },
                 since: window.since,
                 until: window.until,
                 local,
@@ -308,8 +368,33 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         "mem_get" => Ok(CommandRequest::MemGet {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
+            include_superseded: a.b_spec(tool, "include_superseded")?,
         }),
-        "mem_delete" => Ok(CommandRequest::MemDelete {
+        "mem_delete" => {
+            if !a.b_spec(tool, "confirm")? {
+                return Err(EgError::Usage(
+                    "mem_delete: hard-delete requires confirm=true (use mem_retire for reversible retirement)".to_string(),
+                ));
+            }
+            Ok(CommandRequest::MemDelete {
+                key: a.req("key")?,
+                global: a.b_spec(tool, "global")?,
+                expected_rev: read_expected_rev(a, tool)?,
+            })
+        }
+        "mem_retire" => {
+            if !a.b_spec(tool, "confirm")? {
+                return Err(EgError::Usage(
+                    "mem_retire: requires confirm=true".to_string(),
+                ));
+            }
+            Ok(CommandRequest::MemRetire {
+                key: a.req("key")?,
+                global: a.b_spec(tool, "global")?,
+                expected_rev: read_expected_rev(a, tool)?,
+            })
+        }
+        "mem_restore" => Ok(CommandRequest::MemRestore {
             key: a.req("key")?,
             global: a.b_spec(tool, "global")?,
         }),
@@ -317,21 +402,15 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
             global: a.b_spec(tool, "global")?,
         }),
         "mem_export" => {
-            let window = crate::memory::TimeWindow {
-                since: a
-                    .s_opt_spec(tool, "since")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem export", "--since"))
-                    .transpose()?,
-                until: a
-                    .s_opt_spec(tool, "until")?
-                    .as_deref()
-                    .map(|r| crate::memory::parse_time_bound(r, "mem export", "--until"))
-                    .transpose()?,
-            };
-            crate::memory::validate_window(&window, "mem export")?;
+            let since = a.s_opt_spec(tool, "since")?;
+            let until = a.s_opt_spec(tool, "until")?;
+            let window = crate::memory::time::parse_time_window(
+                since.as_deref(),
+                until.as_deref(),
+                "mem export",
+            )?;
             Ok(CommandRequest::MemExport {
-                format: a.s("format"),
+                format: a.s_opt_spec(tool, "format")?,
                 limit: a.n_opt_spec(tool, "limit")?,
                 global: a.b_spec(tool, "global")?,
                 since: window.since,
@@ -341,13 +420,21 @@ pub fn from_tool_args(tool: &str, args: &serde_json::Value) -> Result<CommandReq
         }
         "mem_import" => Ok(CommandRequest::MemImport {
             path: a.req("path")?,
-            format: a.s("format"),
-            force: a.b("force"),
+            format: a.s_opt_spec(tool, "format")?,
+            force: a.b_spec(tool, "force")?,
             global: a.b_spec(tool, "global")?,
         }),
         "mem_reindex" => Ok(CommandRequest::MemReindex {
             global: a.b_spec(tool, "global")?,
             embed: a.b_spec(tool, "embed")?,
+        }),
+        "mem_triage" => Ok(CommandRequest::MemTriage {
+            key: a.s_opt_spec(tool, "key")?,
+            after_key: a.s_opt_spec(tool, "after_key")?,
+            limit: a.n_spec(tool, "limit", crate::memory::triage::TRIAGE_DEFAULT_LIMIT)?,
+            no_git: a.b_spec(tool, "no_git")?,
+            global: a.b_spec(tool, "global")?,
+            json: true,
         }),
         _ => Err(unknown_tool(tool)),
     }

@@ -6,80 +6,58 @@
 //! network, no Python runtime, child lifetime bound to one call.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
+use super::judge_proc;
+
 /// One cold Metal start plus one warm embed, matching the judge deadline.
 const EMBED_TIMEOUT: Duration = Duration::from_millis(20_000);
+const BATCH_MAX_INPUT: usize = 256 * 1024;
+const BATCH_MAX_OUTPUT: usize = 4 * 1024 * 1024;
 
-/// The configured text checkpoint, when the env var points at a directory
-/// that carries a checkpoint manifest. Unset/invalid -> None (embeddings off).
-pub fn text_model_dir() -> Option<PathBuf> {
-    let value = std::env::var("EG_JUDGE_TEXT_MODEL").ok()?;
-    if value.is_empty() {
-        return None;
-    }
-    let dir = PathBuf::from(value);
-    dir.join("lazy.json").is_file().then_some(dir)
+fn is_encoder_only_manifest(dir: &std::path::Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(dir.join("lazy.json")) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("head_layers").and_then(Value::as_u64))
+        == Some(0)
 }
 
-/// Embed one text through `eg-judge embed`. `None` on any failure: a missing
-/// binary, a timeout, or a malformed payload must never fail the note write.
-pub fn embed_text(text: &str) -> Option<Vec<f32>> {
-    let model = text_model_dir()?;
-    let binary = match std::env::var("EG_JUDGE_BIN") {
-        Ok(value) if !value.is_empty() => PathBuf::from(value),
-        _ => which_eg_judge()?,
-    };
-    let mut command = Command::new(binary);
-    command
-        .arg("embed")
-        .arg("--text")
-        .arg(text)
-        .arg("--model")
-        .arg(&model)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env_clear();
-    if let Ok(home) = std::env::var("HOME") {
-        command.env("HOME", home);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().ok()?;
-    let deadline = Instant::now() + EMBED_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+/// The configured text checkpoint: `EG_JUDGE_TEXT_MODEL`, else
+/// `~/.engram/judge/text-model`, else `~/.engram/judge/model` when its
+/// `lazy.json` declares `head_layers == 0`. Unset/invalid -> None.
+pub fn text_model_dir() -> Option<PathBuf> {
+    text_model_dir_with(
+        std::env::var("EG_JUDGE_TEXT_MODEL").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+fn text_model_dir_with(env_val: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    if let Some(value) = env_val {
+        if !value.is_empty() {
+            let dir = PathBuf::from(value);
+            return dir.join("lazy.json").is_file().then_some(dir);
         }
     }
-    // The child exited (or forked a helper that inherited stdout): tear the
-    // process group down so the drain below is bounded, then read.
-    kill_group(&child);
-    let stdout = child.stdout.take()?;
-    let mut raw = String::new();
-    use std::io::Read;
-    stdout.take(256 * 1024 + 1).read_to_string(&mut raw).ok()?;
-    if raw.len() > 256 * 1024 {
-        return None;
+    let home = home?;
+    let judge_dir = PathBuf::from(home).join(".engram").join("judge");
+    let text_model = judge_dir.join("text-model");
+    if text_model.join("lazy.json").is_file() {
+        return Some(text_model);
     }
+    let model = judge_dir.join("model");
+    if model.join("lazy.json").is_file() && is_encoder_only_manifest(&model) {
+        return Some(model);
+    }
+    None
+}
+
+fn parse_embedding_line(raw: &str) -> Option<Vec<f32>> {
     let value: Value = serde_json::from_str(raw.trim()).ok()?;
     let dim = value.get("dim")?.as_u64()? as usize;
     let vector: Vec<f32> = value
@@ -91,31 +69,82 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
     (vector.len() == dim && dim > 0).then_some(vector)
 }
 
-/// Tear the child's process group down so a forked stdout holder cannot keep
-/// the drain alive past the deadline.
-#[cfg(unix)]
-fn kill_group(child: &std::process::Child) {
-    let group = format!("-{}", child.id());
-    for signal in ["-TERM", "-KILL"] {
-        let _ = Command::new("kill")
-            .arg(signal)
-            .arg(&group)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+/// Embed one text through `eg-judge embed` (or the persistent coprocess when
+/// enabled). `None` on any failure: a missing binary, a timeout, or a
+/// malformed payload must never fail the note write.
+pub fn embed_text(text: &str) -> Option<Vec<f32>> {
+    let model = text_model_dir()?;
+    let binary = judge_proc::find_bin()?;
+    let home = std::env::var("HOME").ok();
+    if judge_proc::is_coprocess_enabled() {
+        if let Ok(req) = serde_json::to_string(&serde_json::json!({"text": text})) {
+            if let Some(raw) =
+                judge_proc::serve_request(&binary, &model, home.as_deref(), &req, EMBED_TIMEOUT)
+            {
+                if let Some(vec) = parse_embedding_line(&raw) {
+                    return Some(vec);
+                }
+            }
+        }
     }
+    let mut command = judge_proc::base_command(&binary, home.as_deref());
+    command
+        .arg("embed")
+        .arg("--text")
+        .arg(text)
+        .arg("--model")
+        .arg(&model);
+    let raw = judge_proc::run_bounded(command, None, EMBED_TIMEOUT, 256 * 1024)?;
+    parse_embedding_line(&raw)
 }
 
-#[cfg(not(unix))]
-fn kill_group(_child: &std::process::Child) {}
-
-/// Resolve the `eg-judge` binary from PATH (same discovery contract as the
-/// reuse judge; `EG_JUDGE_BIN` wins).
-fn which_eg_judge() -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join("eg-judge"))
-        .find(|candidate| candidate.is_file())
+/// Embed a slice of texts in batched NDJSON `eg-judge embed --stdin` calls,
+/// avoiding `O(N)` cold Metal reloads during `mem_reindex --embed`.
+pub fn embed_batch(texts: &[&str]) -> crate::error::Result<Vec<Option<Vec<f32>>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(model) = text_model_dir() else {
+        return Ok(vec![None; texts.len()]);
+    };
+    let Some(binary) = judge_proc::find_bin() else {
+        return Ok(vec![None; texts.len()]);
+    };
+    let home = std::env::var("HOME").ok();
+    let mut out = Vec::with_capacity(texts.len());
+    let mut idx = 0;
+    while idx < texts.len() {
+        let mut payload = Vec::new();
+        let chunk_start = idx;
+        while idx < texts.len() {
+            let line =
+                serde_json::to_vec(&serde_json::json!({"text": texts[idx]})).unwrap_or_default();
+            if idx > chunk_start && payload.len() + line.len() + 1 > BATCH_MAX_INPUT {
+                break;
+            }
+            payload.extend_from_slice(&line);
+            payload.push(b'\n');
+            idx += 1;
+        }
+        let chunk_len = idx - chunk_start;
+        let mut command = judge_proc::base_command(&binary, home.as_deref());
+        command
+            .arg("embed")
+            .arg("--stdin")
+            .arg("--model")
+            .arg(&model);
+        let Some(raw) =
+            judge_proc::run_bounded(command, Some(&payload), EMBED_TIMEOUT, BATCH_MAX_OUTPUT)
+        else {
+            out.extend(std::iter::repeat_n(None, chunk_len));
+            continue;
+        };
+        let mut lines = raw.lines().map(str::trim).filter(|l| !l.is_empty());
+        for _ in 0..chunk_len {
+            out.push(lines.next().and_then(parse_embedding_line));
+        }
+    }
+    Ok(out)
 }
 
 /// L2-normalised f32 vector -> little-endian BLOB bytes.
@@ -148,11 +177,44 @@ mod tests {
 
     #[test]
     fn text_model_dir_requires_a_manifest() {
-        // No env var -> None regardless of the environment.
-        if std::env::var("EG_JUDGE_TEXT_MODEL").is_ok_and(|v| !v.is_empty()) {
-            return; // a real model is configured on this host; skip the absence case
-        }
-        assert!(text_model_dir().is_none());
+        let root = crate::db::test_support::temp_root("embed-model-missing");
+        assert!(text_model_dir_with(None, root.to_str()).is_none());
+        crate::db::test_support::remove_tree(&root);
+    }
+
+    #[test]
+    fn text_model_dir_falls_back_to_text_model_and_zero_head_model() {
+        let root = crate::db::test_support::temp_root("embed-model-fallback");
+        let model_dir = root.join(".engram/judge/model");
+        crate::db::test_support::make_dir_all(&model_dir).unwrap();
+        crate::db::test_support::write_file(model_dir.join("lazy.json"), b"{\"head_layers\":1}")
+            .unwrap();
+        // head_layers != 0 is rejected as a text model fallback.
+        assert!(text_model_dir_with(None, root.to_str()).is_none());
+
+        // head_layers == 0 is accepted as fallback.
+        crate::db::test_support::write_file(model_dir.join("lazy.json"), b"{\"head_layers\":0}")
+            .unwrap();
+        assert_eq!(
+            text_model_dir_with(None, root.to_str()).as_deref(),
+            Some(model_dir.as_path())
+        );
+
+        // text-model takes precedence over model.
+        let text_dir = root.join(".engram/judge/text-model");
+        crate::db::test_support::make_dir_all(&text_dir).unwrap();
+        crate::db::test_support::write_file(text_dir.join("lazy.json"), b"{}").unwrap();
+        assert_eq!(
+            text_model_dir_with(None, root.to_str()).as_deref(),
+            Some(text_dir.as_path())
+        );
+
+        crate::db::test_support::remove_tree(&root);
+    }
+
+    #[test]
+    fn embed_batch_empty_returns_empty() {
+        assert!(embed_batch(&[]).unwrap().is_empty());
     }
 
     #[test]

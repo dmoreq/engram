@@ -21,7 +21,15 @@ pub fn validate_path_scope(path: &str, allow_root: bool) -> Result<()> {
 
 /// The repo-relative scope spelling used by every query surface.
 pub(crate) fn normalize_scope(path: &str) -> &str {
-    path.trim_start_matches("./").trim_end_matches('/')
+    path.trim().trim_start_matches("./").trim_end_matches('/')
+}
+
+/// Normalize a user-supplied path (possibly absolute within `root`, or with
+/// leading `./` / trailing `/` / surrounding whitespace) into a repo-relative
+/// forward-slash path.
+pub(crate) fn normalize_repo_path(root: &Path, input: &str) -> String {
+    let rel = crate::query::relativize_path(root, input.trim());
+    normalize_scope(&rel).to_string()
 }
 
 /// Scope clause over `alias.<column>`, plus its one bound value, ready for

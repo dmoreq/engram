@@ -8,6 +8,12 @@ use serde_json::Value;
 use super::state::{classify_usp_pillar, format_timestamp, truncate_chars, MonitorTab, TuiState};
 use crate::error::ExitClass;
 
+struct TabFrame<'a> {
+    state: &'a TuiState,
+    safe_cols: usize,
+    avail_lines: usize,
+}
+
 pub fn render_screen<W: Write>(
     w: &mut W,
     state: &TuiState,
@@ -16,16 +22,21 @@ pub fn render_screen<W: Write>(
 ) -> io::Result<()> {
     let safe_cols = cols.clamp(40, 78);
     let avail_lines = rows.saturating_sub(5).max(4);
+    let frame = TabFrame {
+        state,
+        safe_cols,
+        avail_lines,
+    };
 
     write!(w, "\x1b[H")?;
 
     render_header(w, state, safe_cols)?;
 
     match state.active_tab {
-        MonitorTab::Graph => render_tab_graph(w, state, safe_cols, avail_lines)?,
-        MonitorTab::Reuse => render_tab_reuse(w, state, safe_cols, avail_lines)?,
-        MonitorTab::Memory => render_tab_memory(w, state, safe_cols, avail_lines)?,
-        MonitorTab::Stream => render_tab_stream(w, state, safe_cols, avail_lines)?,
+        MonitorTab::Graph => render_tab_graph(w, &frame)?,
+        MonitorTab::Reuse => render_tab_reuse(w, &frame)?,
+        MonitorTab::Memory => render_tab_memory(w, &frame)?,
+        MonitorTab::Stream => render_tab_stream(w, &frame)?,
     };
 
     write!(w, "\x1b[J")?;
@@ -87,17 +98,12 @@ fn render_header<W: Write>(w: &mut W, state: &TuiState, safe_cols: usize) -> io:
 fn render_footer<W: Write>(w: &mut W, rows: usize) -> io::Result<()> {
     write!(
         w,
-        "\x1b[{rows};1H\r\x1b[2K\x1b[90mKeys: \x1b[37m1-4/Arrows/Tab\x1b[90m Tabs | \x1b[37mr\x1b[90m Refresh | \x1b[37mq\x1b[90m Exit\x1b[0m"
+        "\x1b[{rows};1H\r\x1b[2K\x1b[90mKeys: \x1b[37m1-4/Tab\x1b[90m Tabs | \x1b[37mr\x1b[90m Refresh | \x1b[37mq\x1b[90m Exit\x1b[0m"
     )
 }
 
-fn render_tab_graph<W: Write>(
-    w: &mut W,
-    state: &TuiState,
-    safe_cols: usize,
-    avail_lines: usize,
-) -> io::Result<()> {
-    let s = &state.summary;
+fn render_tab_graph<W: Write>(w: &mut W, frame: &TabFrame<'_>) -> io::Result<()> {
+    let s = &frame.state.summary;
     let total_calls = s.get("total_calls").and_then(Value::as_u64).unwrap_or(0);
     let graph_calls = s.get("graph_calls").and_then(Value::as_u64).unwrap_or(0);
     let graph_pct = if total_calls > 0 {
@@ -149,7 +155,11 @@ fn render_tab_graph<W: Write>(
         "\r\x1b[2K\x1b[1m{:<9} {:>6} {:>7} {:>7} {:>10}  {:<24}\x1b[0m\r\n",
         "TOOL", "CALLS", "OK %", "p50", "SAVED", "PURPOSE"
     )?;
-    write!(w, "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n", "─".repeat(safe_cols))?;
+    write!(
+        w,
+        "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n",
+        "─".repeat(frame.safe_cols)
+    )?;
 
     let graph_tools = [
         ("callers", "Upstream caller tree"),
@@ -163,7 +173,7 @@ fn render_tab_graph<W: Write>(
     ];
 
     let tool_aggs = s.get("tool_aggs").and_then(Value::as_object);
-    let max_rows = avail_lines.saturating_sub(5);
+    let max_rows = frame.avail_lines.saturating_sub(5);
     for (idx, (tool, desc)) in graph_tools.iter().enumerate() {
         if idx >= max_rows {
             break;
@@ -199,13 +209,8 @@ fn render_tab_graph<W: Write>(
     Ok(())
 }
 
-fn render_tab_reuse<W: Write>(
-    w: &mut W,
-    state: &TuiState,
-    safe_cols: usize,
-    avail_lines: usize,
-) -> io::Result<()> {
-    let s = &state.reuse_summary;
+fn render_tab_reuse<W: Write>(w: &mut W, frame: &TabFrame<'_>) -> io::Result<()> {
+    let s = &frame.state.reuse_summary;
     let total_cands = s
         .get("total_candidates")
         .and_then(Value::as_u64)
@@ -263,10 +268,14 @@ fn render_tab_reuse<W: Write>(
         "\r\x1b[2K\x1b[1m{:<7} {:<4} {:<25} {:<25} {:>7}\x1b[0m\r\n",
         "REPO", "DET", "DUPLICATE SYMBOL", "CANONICAL TARGET", "SAVING"
     )?;
-    write!(w, "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n", "─".repeat(safe_cols))?;
+    write!(
+        w,
+        "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n",
+        "─".repeat(frame.safe_cols)
+    )?;
 
-    let max_rows = avail_lines.saturating_sub(5);
-    for (idx, cand) in state.reuse_candidates.iter().enumerate() {
+    let max_rows = frame.avail_lines.saturating_sub(5);
+    for (idx, cand) in frame.state.reuse_candidates.iter().enumerate() {
         if idx >= max_rows {
             break;
         }
@@ -290,14 +299,10 @@ fn render_tab_reuse<W: Write>(
     Ok(())
 }
 
-fn render_tab_memory<W: Write>(
-    w: &mut W,
-    state: &TuiState,
-    safe_cols: usize,
-    avail_lines: usize,
-) -> io::Result<()> {
-    let s = &state.summary;
-    let current_notes: Vec<&Value> = state
+fn render_tab_memory<W: Write>(w: &mut W, frame: &TabFrame<'_>) -> io::Result<()> {
+    let s = &frame.state.summary;
+    let current_notes: Vec<&Value> = frame
+        .state
         .memories
         .iter()
         .filter(|m| m.get("is_current").and_then(Value::as_bool).unwrap_or(true))
@@ -352,9 +357,13 @@ fn render_tab_memory<W: Write>(
         "\r\x1b[2K\x1b[1m{:<7} {:<28} {:<9} {:>4} {:>7}  {:<8}\x1b[0m\r\n",
         "STORE", "KEY", "KIND", "REV", "RECALLS", "STATUS"
     )?;
-    write!(w, "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n", "─".repeat(safe_cols))?;
+    write!(
+        w,
+        "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n",
+        "─".repeat(frame.safe_cols)
+    )?;
 
-    let max_rows = avail_lines.saturating_sub(5);
+    let max_rows = frame.avail_lines.saturating_sub(5);
     for (idx, note) in current_notes.iter().enumerate() {
         if idx >= max_rows {
             break;
@@ -392,25 +401,24 @@ fn render_tab_memory<W: Write>(
     Ok(())
 }
 
-fn render_tab_stream<W: Write>(
-    w: &mut W,
-    state: &TuiState,
-    safe_cols: usize,
-    avail_lines: usize,
-) -> io::Result<()> {
+fn render_tab_stream<W: Write>(w: &mut W, frame: &TabFrame<'_>) -> io::Result<()> {
     write!(
         w,
         "\r\x1b[2K\x1b[1m{:<8} {:<8} {:<10} {:<10} {:<10} {:<7} {:<6} ARGS\x1b[0m\r\n",
         "UTC", "PILLAR", "TOOL", "REPO", "AGENT", "LAT", "STATUS"
     )?;
-    write!(w, "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n", "─".repeat(safe_cols))?;
+    write!(
+        w,
+        "\r\x1b[2K\x1b[90m{}\x1b[0m\r\n",
+        "─".repeat(frame.safe_cols)
+    )?;
 
-    let max_rows = avail_lines.saturating_sub(2);
-    for (idx, val) in state.recent_events.iter().enumerate() {
+    let max_rows = frame.avail_lines.saturating_sub(2);
+    for (idx, val) in frame.state.recent_events.iter().enumerate() {
         if idx >= max_rows {
             break;
         }
-        render_event_row(w, val, safe_cols)?;
+        render_event_row(w, val, frame.safe_cols)?;
     }
 
     Ok(())

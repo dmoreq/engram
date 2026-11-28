@@ -1,8 +1,10 @@
 //! Regression tests for the audit baseline sufficiency gate (C-1) and the
 //! audit tool taxonomy (I-8).
 
-use super::{collect, Metrics, Mode};
+use super::*;
 use crate::db::test_support::{make_dir_all, remove_tree, temp_root, write_file};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Seeds `.engram/usage.log` with JSONL lines, mirroring the live journal
 /// writer's output. All fs writes go through `db::test_support`.
@@ -185,4 +187,65 @@ fn metrics_routes_mem_export_and_mem_reindex() {
     metrics.add(&entry("mem_reindex"));
     assert_eq!(metrics.mem_writes, 1, "a reindex mutates derived state");
     assert_eq!(metrics.mem_reads, 0);
+}
+
+#[test]
+fn global_folds_worktree_and_drops_ephemeral() {
+    use crate::db::test_support as ts;
+    let m = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/eg-wt-test");
+    ts::remove_tree(&m);
+    ts::make_dir_all(m.join(".git/worktrees/w")).unwrap();
+    let (wt, s) = (ts::temp_root("awt"), ts::temp_root("asc"));
+    ts::write_file(
+        wt.join(".git"),
+        format!("gitdir: {}/.git/worktrees/w\n", m.display()).as_bytes(),
+    )
+    .unwrap();
+    let p = |d: &Path, w, r: Option<&Path>| {
+        let mut cache = HashMap::new();
+        let canon = r.map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
+        let line = format!(
+            r#"{{"ts":10,"tool":"callers","exit_code":0,"repo":"{}","worktree":{w}}}"#,
+            d.display()
+        );
+        parse_line(&line, 20, r, canon.as_deref(), &mut cache)
+    };
+    let e = std::fs::canonicalize(&m).unwrap();
+    assert!(matches!(p(&wt, true, None), LineOutcome::Valid(x) if x.repo == e));
+    assert!(matches!(p(&s, false, None), LineOutcome::DeadRepo));
+    assert!(matches!(p(&s, false, Some(&s)), LineOutcome::Valid(_)));
+    [&m, &wt, &s].into_iter().for_each(ts::remove_tree);
+}
+
+#[test]
+fn exit_1_empty_tracks_counters_without_success_or_latency() {
+    let mut m = Metrics::default();
+    for (tool, latency) in [
+        ("callers", Some(5000)),
+        ("search", Some(4000)),
+        ("mem_query", Some(3000)),
+    ] {
+        m.add(&Entry {
+            tool: tool.into(),
+            exit_code: 1,
+            result_count: 0,
+            shown: 0,
+            latency_us: latency,
+            ts: 100,
+            repo: PathBuf::from("/tmp/r"),
+        });
+    }
+    assert_eq!(
+        (
+            m.entries,
+            m.successes,
+            m.savings,
+            m.nav_empty,
+            m.search_empty,
+            m.mem_query_empty,
+            m.mem_reads
+        ),
+        (3, 0, 0, 1, 1, 1, 1)
+    );
+    assert!(m.tools["callers"].latencies_ms.is_empty() && m.tools["callers"].empty == 1);
 }

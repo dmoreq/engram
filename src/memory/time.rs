@@ -45,6 +45,24 @@ pub fn validate_window(window: &TimeWindow, command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse and validate `--since` / `--until` bounds for `command`.
+pub fn parse_time_window(
+    since: Option<&str>,
+    until: Option<&str>,
+    command: &str,
+) -> Result<TimeWindow> {
+    let window = TimeWindow {
+        since: since
+            .map(|r| parse_time_bound(r, command, "--since"))
+            .transpose()?,
+        until: until
+            .map(|r| parse_time_bound(r, command, "--until"))
+            .transpose()?,
+    };
+    validate_window(&window, command)?;
+    Ok(window)
+}
+
 fn usage(command: &str, flag: &str, raw: &str) -> EgError {
     EgError::Usage(format!(
         "{command}: {flag} expects YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, or @<unix-seconds> (got '{raw}')"

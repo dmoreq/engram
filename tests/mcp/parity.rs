@@ -53,10 +53,15 @@ fn g10_initialize_tools_list_and_parity() {
             "mem_touch",
             "mem_get",
             "mem_delete",
+            "mem_retire",
+            "mem_restore",
             "mem_gc",
             "mem_export",
             "mem_import",
-            "mem_reindex"
+            "mem_reindex",
+            "mem_triage",
+            "unresolved",
+            "stats"
         ]
         .map(str::to_string)
     );
@@ -360,9 +365,8 @@ fn usage_default_matches_cli() {
     let _ = fs::remove_dir_all(&repo);
 }
 
-/// Default MCP profile: the 13 core navigation tools plus the memory
-/// write/query loop (OQ1). The full inventory/analysis surface stays
-/// available behind `--all-tools`.
+/// Default MCP profile: the 15 core navigation and memory tools.
+/// The full inventory/analysis surface stays available behind `--all-tools`.
 #[test]
 fn default_mcp_exposes_core_navigation_tools() {
     let repo = fixture("core");
@@ -384,6 +388,8 @@ fn default_mcp_exposes_core_navigation_tools() {
             "usage",
             "mem_write",
             "mem_query",
+            "mem_touch",
+            "mem_get",
         ]
         .map(str::to_string)
     );
@@ -392,13 +398,13 @@ fn default_mcp_exposes_core_navigation_tools() {
         &mut srv,
         3,
         "tools/call",
-        json!({"name": "mem_get", "arguments": {"key": "k"}}),
+        json!({"name": "mem_delete", "arguments": {"key": "k"}}),
     );
     assert_eq!(denied["error"]["code"], -32602);
     assert!(denied["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("unknown tool 'mem_get'"));
+        .contains("unknown tool 'mem_delete'"));
 }
 
 #[test]

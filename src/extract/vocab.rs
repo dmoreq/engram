@@ -1,13 +1,68 @@
 //! Shared vocabularies for extraction and resolution: the schema-kind enums
 //! and the builtin/stdlib name tables that gate the dropped-callee counters.
 
-/// Python builtins: calls drop with the builtin counter (spec step 4).
-pub(super) const BUILTINS: &[&str] = &[
+use crate::parse::Lang;
+
+/// Python builtins (sorted for `binary_search`).
+const PYTHON_BUILTINS: &[&str] = &[
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "BaseException",
+    "BlockingIOError",
+    "BrokenPipeError",
+    "BufferError",
+    "ChildProcessError",
+    "ConnectionError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "EOFError",
+    "Exception",
+    "FileExistsError",
+    "FileNotFoundError",
+    "FloatingPointError",
+    "GeneratorExit",
+    "ImportError",
+    "IndentationError",
+    "IndexError",
+    "InterruptedError",
+    "IsADirectoryError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "ModuleNotFoundError",
+    "NameError",
+    "NotADirectoryError",
+    "NotImplementedError",
+    "OSError",
+    "OverflowError",
+    "PermissionError",
+    "ProcessLookupError",
+    "RecursionError",
+    "ReferenceError",
+    "RuntimeError",
+    "StopAsyncIteration",
+    "StopIteration",
+    "SyntaxError",
+    "SystemError",
+    "SystemExit",
+    "TabError",
+    "TimeoutError",
+    "TypeError",
+    "UnboundLocalError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "UnicodeTranslateError",
+    "ValueError",
+    "ZeroDivisionError",
+    "__import__",
     "abs",
     "aiter",
     "all",
-    "any",
     "anext",
+    "any",
     "ascii",
     "bin",
     "bool",
@@ -71,133 +126,124 @@ pub(super) const BUILTINS: &[&str] = &[
     "type",
     "vars",
     "zip",
-    "__import__",
-    "Exception",
-    "BaseException",
-    "ArithmeticError",
-    "AssertionError",
-    "AttributeError",
-    "BlockingIOError",
-    "BrokenPipeError",
-    "BufferError",
-    "ChildProcessError",
-    "ConnectionError",
-    "ConnectionRefusedError",
-    "ConnectionResetError",
-    "EOFError",
-    "FileExistsError",
-    "FileNotFoundError",
-    "FloatingPointError",
-    "GeneratorExit",
-    "ImportError",
-    "IndentationError",
-    "IndexError",
-    "InterruptedError",
-    "IsADirectoryError",
-    "KeyError",
-    "KeyboardInterrupt",
-    "LookupError",
-    "MemoryError",
-    "ModuleNotFoundError",
-    "NameError",
-    "NotADirectoryError",
-    "NotImplementedError",
-    "OSError",
-    "OverflowError",
-    "PermissionError",
-    "ProcessLookupError",
-    "RecursionError",
-    "ReferenceError",
-    "RuntimeError",
-    "StopAsyncIteration",
-    "StopIteration",
-    "SyntaxError",
-    "SystemError",
-    "SystemExit",
-    "TabError",
-    "TimeoutError",
-    "TypeError",
-    "UnboundLocalError",
-    "UnicodeDecodeError",
-    "UnicodeEncodeError",
-    "UnicodeError",
-    "UnicodeTranslateError",
-    "ValueError",
-    "ZeroDivisionError",
 ];
 
-/// Well-known stdlib module roots: `os.path.join(...)` on unindexed externals
-/// drops with the builtin counter instead of flooding the unresolved count.
-pub(super) const STDLIB_MODULES: &[&str] = &[
-    "os",
-    "sys",
-    "re",
-    "json",
-    "math",
-    "time",
-    "datetime",
-    "logging",
-    "pathlib",
-    "collections",
-    "itertools",
-    "functools",
-    "typing",
-    "dataclasses",
-    "enum",
+/// Rust prelude items and stdlib crate roots (sorted for `binary_search`).
+const RUST_PRELUDE: &[&str] = &[
+    "Box", "Err", "Ok", "Option", "Result", "Some", "String", "Vec", "alloc", "core", "std",
+];
+
+/// TypeScript/JavaScript global builtins (sorted for `binary_search`).
+const TS_GLOBALS: &[&str] = &[
+    "Array",
+    "Error",
+    "JSON",
+    "Map",
+    "Math",
+    "Object",
+    "Promise",
+    "Set",
+    "console",
+    "document",
+    "fetch",
+    "setTimeout",
+    "window",
+];
+
+/// Python stdlib module roots (sorted for `binary_search`).
+const PYTHON_STDLIB: &[&str] = &[
     "abc",
-    "io",
-    "csv",
-    "sqlite3",
     "argparse",
-    "subprocess",
-    "shutil",
-    "tempfile",
-    "textwrap",
-    "unicodedata",
-    "uuid",
-    "random",
-    "statistics",
-    "copy",
-    "hashlib",
-    "base64",
-    "urllib",
-    "http",
-    "socket",
-    "threading",
-    "multiprocessing",
-    "concurrent",
+    "array",
     "asyncio",
+    "atexit",
+    "base64",
+    "bisect",
+    "collections",
+    "concurrent",
     "contextlib",
-    "warnings",
-    "unittest",
-    "pickle",
-    "glob",
+    "copy",
+    "csv",
+    "dataclasses",
+    "datetime",
+    "difflib",
+    "enum",
+    "errno",
     "fnmatch",
+    "functools",
+    "gc",
+    "getpass",
+    "glob",
+    "gzip",
+    "hashlib",
+    "heapq",
+    "http",
+    "inspect",
+    "io",
+    "itertools",
+    "json",
+    "logging",
+    "math",
+    "multiprocessing",
+    "operator",
+    "os",
+    "os.path",
+    "pathlib",
+    "pickle",
+    "platform",
+    "random",
+    "re",
+    "secrets",
+    "shutil",
+    "signal",
+    "socket",
+    "sqlite3",
+    "stat",
+    "statistics",
     "string",
     "struct",
-    "zlib",
-    "gzip",
+    "subprocess",
+    "sys",
     "tarfile",
-    "zipfile",
-    "heapq",
-    "bisect",
-    "array",
-    "weakref",
-    "types",
-    "operator",
-    "inspect",
+    "tempfile",
+    "textwrap",
+    "threading",
+    "time",
     "traceback",
-    "atexit",
-    "signal",
-    "stat",
-    "errno",
-    "platform",
-    "getpass",
-    "difflib",
-    "secrets",
-    "gc",
-    "os.path",
+    "types",
+    "typing",
+    "unicodedata",
+    "unittest",
+    "urllib",
+    "uuid",
+    "warnings",
+    "weakref",
+    "zipfile",
+    "zlib",
 ];
+
+const RUST_STDLIB: &[&str] = &["alloc", "core", "std"];
+
+pub(super) fn is_builtin(lang: Lang, name: &str) -> bool {
+    let table = match lang {
+        Lang::Python => PYTHON_BUILTINS,
+        Lang::Rust => RUST_PRELUDE,
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => TS_GLOBALS,
+    };
+    table.binary_search(&name).is_ok()
+}
+
+pub(super) fn is_stdlib_module(lang: Lang, module: &str) -> bool {
+    let root = module.split('.').next().unwrap_or(module);
+    match lang {
+        Lang::Python => {
+            PYTHON_STDLIB.binary_search(&module).is_ok()
+                || PYTHON_STDLIB.binary_search(&root).is_ok()
+        }
+        Lang::Rust => RUST_STDLIB.binary_search(&root).is_ok(),
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => module.starts_with("node:"),
+    }
+}
 
 /// Generate the shared lexical-vocabulary impl for one enum: the `VARIANTS`
 /// table plus a `parse` that derives accepted spellings from `as_str` (defined
@@ -333,4 +379,42 @@ impl EdgeSiteKind {
             Self::Inherit => "inherit",
         }
     }
+}
+
+/// Symbols loaded from the previous index's fast-path files.
+pub struct CarriedSymbol {
+    pub row_id: i64,
+    pub kind: SymbolKind,
+    pub name: String,
+    pub qualname: String,
+    pub module: String,
+    pub return_type: String,
+}
+
+/// Inheritance pairs read from the previous index (subclass qualname, base qualname).
+pub type CarriedInherits = Vec<(String, String)>;
+
+/// Previous-index state joined into resolution (fast path).
+#[derive(Default)]
+pub struct CarriedIndex {
+    pub symbols: Vec<CarriedSymbol>,
+    pub inherits: CarriedInherits,
+    pub class_fields: Vec<(String, String, String)>,
+    pub reexports: Vec<(String, String, i64)>,
+    pub module_stars: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedModuleExport {
+    pub file_idx: usize,
+    pub module_qualname: String,
+    pub exported_name: String,
+    pub target_sym_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedModuleStar {
+    pub file_idx: usize,
+    pub module_qualname: String,
+    pub star_module: String,
 }

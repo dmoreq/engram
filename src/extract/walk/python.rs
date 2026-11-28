@@ -210,14 +210,14 @@ pub(super) fn resolve_from_module(
 pub(super) fn visit_python_node<'a>(w: &mut Walker<'a, '_, '_>) -> bool {
     match w.node.kind() {
         "decorated_definition" => visit_decorated_definition(w),
-        "function_definition" => visit_python_function(w),
-        "class_definition" => visit_python_class(w),
+        "function_definition" => define_scoped_function(w),
+        "class_definition" => define_class_symbol(w, SymbolKind::Class),
         "import_statement" | "import_from_statement" => {
             record_import(w.node, w.src, w.fx, &w.ctx.scope_func());
         }
         "assignment" | "augmented_assignment" => {
             record_assignment(w);
-            push_children_rev(w.work, w.node);
+            push_children_rev(w.work, w.cursor, w.node);
         }
         _ => return false,
     }
@@ -233,58 +233,5 @@ fn visit_decorated_definition<'a>(w: &mut Walker<'a, '_, '_>) {
         if child.kind() == "decorator" {
             w.work.push(Step::Visit(child));
         }
-    }
-}
-
-fn visit_python_function<'a>(w: &mut Walker<'a, '_, '_>) {
-    let Some(name_node) = w.node.child_by_field_name("name") else {
-        return;
-    };
-    let name = text(name_node, w.src);
-    let parent_qn = innermost_scope(w.ctx, &w.fx.module);
-    let kind = if w.ctx.class_stack.last().map(|s| s.as_str()) == Some(parent_qn) {
-        SymbolKind::Method
-    } else {
-        SymbolKind::Function
-    };
-    let qualname = format!("{parent_qn}.{name}");
-    if let Some(rt) = w.node.child_by_field_name("return_type") {
-        if let Some(chain) = type_dotted_chain(rt, w.src) {
-            w.fx.bindings.return_types.push((qualname.clone(), chain));
-        }
-    }
-    let spec = w.callable_spec(kind, &name, &qualname);
-    define_callable(w, &spec);
-}
-
-fn visit_python_class<'a>(w: &mut Walker<'a, '_, '_>) {
-    let Some(name_node) = w.node.child_by_field_name("name") else {
-        return;
-    };
-    let name = text(name_node, w.src);
-    let parent_qn = innermost_scope(w.ctx, &w.fx.module);
-    let qualname = format!("{parent_qn}.{name}");
-    let sym_idx = w.fx.symbols.len();
-    w.fx.push_symbol(NewSymbol::from_node(
-        w,
-        SymbolKind::Class,
-        name.clone(),
-        qualname.clone(),
-        w.node,
-        w.node,
-        is_test_item(w.fx, w.ctx, &name),
-    ));
-    if let Some(bases) = w.node.child_by_field_name("superclasses") {
-        let mut cursor = bases.walk();
-        for b in bases.named_children(&mut cursor) {
-            if let Some(chain) = dotted_chain(b, w.src) {
-                w.fx.inherits.push((sym_idx, chain));
-            }
-        }
-    }
-    if let Some(body) = w.node.child_by_field_name("body") {
-        w.ctx.class_stack.push(qualname);
-        w.work.push(Step::PopClass);
-        push_children_rev(w.work, body);
     }
 }

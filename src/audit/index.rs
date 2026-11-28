@@ -33,14 +33,51 @@ pub struct IndexFacts {
 }
 
 pub fn collect(paths: &[PathBuf], _now: i64) -> Vec<RepoFacts> {
-    paths
-        .iter()
-        .map(|path| RepoFacts {
-            path: path.clone(),
-            alias: super::repo_alias(path),
-            state: snapshot(path),
-        })
-        .collect()
+    if paths.len() <= 1 {
+        return paths
+            .iter()
+            .map(|path| RepoFacts {
+                path: path.clone(),
+                alias: super::repo_alias(path),
+                state: snapshot(path),
+            })
+            .collect();
+    }
+    let workers = paths.len().min(4);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<(usize, RepoFacts)> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(scope.spawn(|| {
+                let mut local = Vec::new();
+                loop {
+                    let idx = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if idx >= paths.len() {
+                        break;
+                    }
+                    let path = &paths[idx];
+                    local.push((
+                        idx,
+                        RepoFacts {
+                            path: path.clone(),
+                            alias: super::repo_alias(path),
+                            state: snapshot(path),
+                        },
+                    ));
+                }
+                local
+            }));
+        }
+        let mut all = Vec::with_capacity(paths.len());
+        for h in handles {
+            if let Ok(part) = h.join() {
+                all.extend(part);
+            }
+        }
+        all
+    });
+    results.sort_by_key(|(idx, _)| *idx);
+    results.into_iter().map(|(_, facts)| facts).collect()
 }
 
 fn snapshot(root: &Path) -> IndexState {
@@ -54,7 +91,7 @@ fn snapshot(root: &Path) -> IndexState {
         Err(db::IndexOpenError::Schema { .. }) => return IndexState::Schema,
         Err(db::IndexOpenError::Corrupt) => return IndexState::Corrupt,
     };
-    if build_lock_held(root) {
+    if crate::doctor::build_lock_held(root) {
         return IndexState::BuildInProgress;
     }
     let db_bytes = db::file_size(&db::db_path(root));
@@ -87,42 +124,13 @@ fn snapshot(root: &Path) -> IndexState {
     if files == 0 {
         return IndexState::Empty(facts);
     }
-    let mut stmt = match conn.prepare("SELECT path FROM files") {
-        Ok(stmt) => stmt,
-        Err(_) => return IndexState::Corrupt,
-    };
-    let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
-        Ok(rows) => rows,
-        Err(_) => return IndexState::Corrupt,
-    };
-    let mut paths: Vec<String> = Vec::new();
-    for row in rows {
-        match row {
-            Ok(p) => paths.push(p),
-            Err(_) => return IndexState::Corrupt,
-        }
-    }
-    if paths.len() > 10_000 {
+    if files > 10_000 {
         return IndexState::TooLarge;
     }
-    let ctx = crate::query::QueryCtx { conn: &conn, root };
-    let changed = paths
-        .iter()
-        .filter(|p| crate::query::file_changed(&ctx, p))
-        .count();
-    facts.stale_ratio = changed as f64 / paths.len() as f64;
+    match crate::doctor::stale_ratio_bounded(&conn, root, Some(10_000)) {
+        Ok(Some(ratio)) => facts.stale_ratio = ratio,
+        Ok(None) => return IndexState::TooLarge,
+        Err(_) => return IndexState::Corrupt,
+    }
     IndexState::Ok(facts)
-}
-
-/// A build lock held by another process makes the index a moving target.
-/// Probe it instead of acquiring it: audit is read-only.
-fn build_lock_held(root: &Path) -> bool {
-    let lock = db::eg_dir(root).join("build.lock");
-    if !std::fs::symlink_metadata(&lock).is_ok_and(|m| m.is_file()) {
-        return false;
-    }
-    match std::fs::File::open(&lock) {
-        Ok(file) => matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
-        Err(_) => false,
-    }
 }

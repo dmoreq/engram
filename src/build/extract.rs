@@ -60,26 +60,35 @@ pub(super) fn extract_healed(
 }
 /// Parse + extract one batch of walked files on scoped workers (Amendment 11c
 /// parallel parse; R6d Blocker 1: 64 MB stacks). Trees never cross threads (not
-/// Send); only owned extraction rows do. Chunks are contiguous and joined in
-/// spawn order, so the merged order equals the serial loop's. `base_idx` keeps
-/// the extraction file index aligned with the accumulated `fresh` vector.
+/// Send); only owned extraction rows do. Files are dispatched via `AtomicUsize`
+/// in descending size order to avoid tail-latency stragglers, and outputs are
+/// placed back at their original `base_idx + orig_idx` positions.
 pub(super) fn extract_units(
     files: &[crate::walk::WalkedFile],
     base_idx: usize,
 ) -> Result<FreshExtract> {
-    let mut rows: Vec<crate::db::FilesRow> = Vec::with_capacity(files.len());
-    let mut extractions: Vec<crate::extract::FileExtraction> = Vec::with_capacity(files.len());
-    let mut error_files = 0usize;
+    if files.is_empty() {
+        return Ok(FreshExtract {
+            rows: Vec::new(),
+            extractions: Vec::new(),
+            error_files: 0,
+            secs: 0.0,
+        });
+    }
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by(|&a, &b| files[b].size.cmp(&files[a].size));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = worker_count().min(files.len());
+    let mut ordered: Vec<Option<(crate::db::FilesRow, crate::extract::FileExtraction)>> =
+        (0..files.len()).map(|_| None).collect();
     let mut extract_secs_sum = 0f64;
-    let workers = worker_count();
-    let chunk_len = (files.len().div_ceil(workers)).max(1);
     std::thread::scope(|scope| -> Result<()> {
-        let mut handles = Vec::new();
-        for (chunk_no, chunk) in files.chunks(chunk_len).enumerate() {
-            let chunk = chunk.to_vec();
-            let handle = std::thread::Builder::new().spawn_scoped(scope, move || {
-                extract_chunk(chunk, base_idx, chunk_no, chunk_len)
-            })?;
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let next = &next;
+            let order = &order;
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || extract_worker(files, base_idx, order, next))?;
             handles.push(handle);
         }
         for h in handles {
@@ -87,10 +96,23 @@ pub(super) fn extract_units(
                 .join()
                 .map_err(|_| EgError::Internal("parse worker panicked".to_string()))??;
             extract_secs_sum += secs;
-            merge_units(units, &mut rows, &mut extractions, &mut error_files);
+            for (orig_idx, row, fx) in units {
+                ordered[orig_idx] = Some((row, fx));
+            }
         }
         Ok(())
     })?;
+    let mut rows = Vec::with_capacity(files.len());
+    let mut extractions = Vec::with_capacity(files.len());
+    let mut error_files = 0usize;
+    for slot in ordered {
+        let (row, fx) = slot.ok_or_else(|| EgError::Internal("missing extracted slot".into()))?;
+        if row.error_nodes > 0 {
+            error_files += 1;
+        }
+        rows.push(row);
+        extractions.push(fx);
+    }
     Ok(FreshExtract {
         rows,
         extractions,
@@ -99,27 +121,26 @@ pub(super) fn extract_units(
     })
 }
 
-/// Parse + extract one contiguous chunk on a scoped worker. `chunk_no` and
-/// `chunk_len` place each file's extraction index at
-/// `base_idx + chunk_no * chunk_len + local`, keeping it aligned with the
-/// accumulated `fresh` vector (see `extract_units`).
-fn extract_chunk(
-    chunk: Vec<crate::walk::WalkedFile>,
+type WorkerUnit = (usize, crate::db::FilesRow, crate::extract::FileExtraction);
+
+fn extract_worker(
+    files: &[crate::walk::WalkedFile],
     base_idx: usize,
-    chunk_no: usize,
-    chunk_len: usize,
-) -> Result<(
-    Vec<(crate::db::FilesRow, crate::extract::FileExtraction)>,
-    f64,
-)> {
-    let mut units = Vec::with_capacity(chunk.len());
+    order: &[usize],
+    next: &std::sync::atomic::AtomicUsize,
+) -> Result<(Vec<WorkerUnit>, f64)> {
+    let mut units = Vec::new();
     let mut secs = 0f64;
     let mut parser = crate::parse::ParserSlot::new();
-    for (local, f) in chunk.into_iter().enumerate() {
-        let idx = base_idx + chunk_no * chunk_len + local;
-        let (row, fx, one_secs) = extract_one(idx, f, &mut parser)?;
+    loop {
+        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if k >= order.len() {
+            break;
+        }
+        let orig_idx = order[k];
+        let (row, fx, one_secs) = extract_one(base_idx + orig_idx, &files[orig_idx], &mut parser)?;
         secs += one_secs;
-        units.push((row, fx));
+        units.push((orig_idx, row, fx));
     }
     Ok((units, secs))
 }
@@ -136,26 +157,11 @@ fn worker_count() -> usize {
         .clamp(1, 8)
 }
 
-fn merge_units(
-    units: Vec<(crate::db::FilesRow, crate::extract::FileExtraction)>,
-    rows: &mut Vec<crate::db::FilesRow>,
-    extractions: &mut Vec<crate::extract::FileExtraction>,
-    error_files: &mut usize,
-) {
-    for (row, fx) in units {
-        if row.error_nodes > 0 {
-            *error_files += 1;
-        }
-        rows.push(row);
-        extractions.push(fx);
-    }
-}
-
 /// Parse and extract one walked file. Returns its row, extraction, and the
 /// extraction-only elapsed seconds (read and parse are excluded, as before).
 fn extract_one(
     idx: usize,
-    file: crate::walk::WalkedFile,
+    file: &crate::walk::WalkedFile,
     parser: &mut crate::parse::ParserSlot,
 ) -> Result<(crate::db::FilesRow, crate::extract::FileExtraction, f64)> {
     let bytes = crate::walk::read_bounded(&file.abs)?;
@@ -181,7 +187,7 @@ fn extract_one(
     let secs = e0.elapsed().as_secs_f64();
     Ok((
         crate::db::FilesRow {
-            rel: file.rel,
+            rel: file.rel.clone(),
             size: file.size as i64,
             mtime: file.mtime,
             content_hash: crate::hash::fnv1a64(&bytes) as i64,

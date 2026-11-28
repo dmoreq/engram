@@ -50,9 +50,13 @@ fn mem_core_tools_default_surface_and_byte_parity() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert!(names.contains(&"mem_write".to_string()), "{names:?}");
-    assert!(names.contains(&"mem_query".to_string()), "{names:?}");
-    for tool in ["mem_get", "mem_delete", "mem_gc", "mem_export"] {
+    for tool in ["mem_write", "mem_query", "mem_touch", "mem_get"] {
+        assert!(
+            names.contains(&tool.to_string()),
+            "{tool} should be core: {names:?}"
+        );
+    }
+    for tool in ["mem_delete", "mem_gc", "mem_export"] {
         assert!(
             !names.contains(&tool.to_string()),
             "{tool} stays behind --all-tools: {names:?}"
@@ -137,6 +141,9 @@ fn mem_all_tools_exposes_full_family_with_parity() {
         "mem_query",
         "mem_get",
         "mem_delete",
+        "mem_retire",
+        "mem_restore",
+        "mem_triage",
         "mem_gc",
         "mem_export",
     ] {
@@ -273,7 +280,7 @@ fn mem_all_tools_exposes_full_family_with_parity() {
         &mut srv,
         11,
         "tools/call",
-        json!({"name": "mem_delete", "arguments": {"key": "doomed"}}),
+        json!({"name": "mem_delete", "arguments": {"key": "doomed", "confirm": true}}),
     );
     assert_eq!(delete["result"]["isError"], false);
     // Recreate via CLI so the CLI delete sees the same input shape.
@@ -426,7 +433,8 @@ fn global_memory_mcp_protocol_parity() {
             "name": "mem_delete",
             "arguments": {
                 "key": "user_pref",
-                "global": true
+                "global": true,
+                "confirm": true
             }
         }),
     );

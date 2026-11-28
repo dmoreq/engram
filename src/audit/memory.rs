@@ -16,6 +16,7 @@ pub struct MemoryFacts {
     pub failure: Option<MemoryFailure>,
     pub stores_checked: usize,
     pub stores_truncated: bool,
+    pub notes_truncated: bool,
     pub broken: usize,
     pub modified: usize,
     pub valid: usize,
@@ -34,7 +35,6 @@ pub enum MemoryFailure {
 
 struct Store {
     repo: Option<PathBuf>,
-    global: bool,
     path: PathBuf,
 }
 
@@ -43,21 +43,18 @@ pub fn collect(mode: &Mode, repos: &[PathBuf], now: i64) -> MemoryFacts {
     match mode {
         Mode::Local(root) => stores.push(Store {
             repo: Some(root.clone()),
-            global: false,
             path: db::memory_db_path(root),
         }),
         Mode::Global => {
             if let Ok(g) = db::global_eg_dir() {
                 stores.push(Store {
                     repo: None,
-                    global: true,
                     path: g.join("memory.db"),
                 });
             }
             for repo in repos {
                 stores.push(Store {
                     repo: Some(repo.clone()),
-                    global: false,
                     path: db::memory_db_path(repo),
                 });
             }
@@ -103,25 +100,17 @@ pub fn collect(mode: &Mode, repos: &[PathBuf], now: i64) -> MemoryFacts {
             continue;
         }
         facts.stores_checked += 1;
-        if let Err(kind) = inspect_store(store, size, now, &mut facts) {
+        if let Err(kind) = inspect_store(store, now, &mut facts) {
             facts.failure = Some(kind);
         }
     }
     facts
 }
 
-fn inspect_store(
-    store: &Store,
-    size: u64,
-    now: i64,
-    facts: &mut MemoryFacts,
-) -> Result<(), MemoryFailure> {
+fn inspect_store(store: &Store, now: i64, facts: &mut MemoryFacts) -> Result<(), MemoryFailure> {
     let conn = open_store(store)?;
-    let integrity: std::result::Result<String, _> = if size > 50 * 1024 * 1024 {
-        conn.query_row("PRAGMA quick_check", [], |r| r.get(0))
-    } else {
-        conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))
-    };
+    let integrity: std::result::Result<String, _> =
+        conn.query_row("PRAGMA integrity_check", [], |r| r.get(0));
     if !matches!(integrity, Ok(ref v) if v == "ok") {
         return Err(MemoryFailure::Corrupt);
     }
@@ -137,7 +126,7 @@ fn inspect_store(
     let sql = format!(
         "SELECT refs, {anchor_expr}, created_at FROM memories \
          WHERE superseded_by IS NULL AND (expires_at = 0 OR expires_at > ?1) \
-         ORDER BY key ASC, id ASC LIMIT 500"
+         ORDER BY key ASC, id ASC LIMIT 501"
     );
     let mut stmt = conn.prepare(&sql).map_err(|_| MemoryFailure::Corrupt)?;
     let rows = stmt
@@ -149,26 +138,27 @@ fn inspect_store(
             ))
         })
         .map_err(|_| MemoryFailure::Corrupt)?;
-    for row in rows {
+    let mut ref_cache: std::collections::HashMap<String, db::ResolvedRef> =
+        std::collections::HashMap::new();
+    for (idx, row) in rows.enumerate() {
         let (refs, anchored_at, created_at) = row.map_err(|_| MemoryFailure::Corrupt)?;
-        let anchor = if anchored_at > 0 {
-            anchored_at
-        } else {
-            created_at
-        };
+        if idx >= 500 {
+            facts.notes_truncated = true;
+            break;
+        }
+        let anchor = anchored_at.max(created_at);
         for r in refs.split_whitespace().take(20) {
-            let resolved = crate::dashboard::data::memories::resolve_single_ref(
-                r,
-                index.as_ref(),
-                store.repo.as_deref(),
-                anchor,
-            );
-            match resolved.get("status").and_then(|s| s.as_str()) {
-                Some("broken") => facts.broken += 1,
-                Some("modified") => facts.modified += 1,
-                Some("valid") => facts.valid += 1,
-                Some("unverified") => facts.unverified += 1,
-                _ => {}
+            let resolved = ref_cache
+                .entry(r.to_string())
+                .or_insert_with(|| {
+                    db::resolve_ref_detail(index.as_ref(), store.repo.as_deref(), r, anchor)
+                })
+                .with_anchor(anchor);
+            match resolved.status {
+                db::RefStatus::Broken => facts.broken += 1,
+                db::RefStatus::Modified => facts.modified += 1,
+                db::RefStatus::Valid => facts.valid += 1,
+                db::RefStatus::Unverified => facts.unverified += 1,
             }
         }
     }
@@ -176,11 +166,10 @@ fn inspect_store(
 }
 
 fn open_store(store: &Store) -> Result<Connection, MemoryFailure> {
-    if store.global {
-        return db::open_global_memory_query().map_err(map_open_error);
+    match store.repo.as_ref() {
+        None => db::open_global_memory_query().map_err(map_open_error),
+        Some(repo) => db::open_memory_query(repo).map_err(map_open_error),
     }
-    let repo = store.repo.as_ref().ok_or(MemoryFailure::Unreadable)?;
-    db::open_memory_query(repo).map_err(map_open_error)
 }
 
 fn map_open_error(e: crate::error::EgError) -> MemoryFailure {
@@ -228,6 +217,7 @@ mod tests {
                 embedding: None,
                 supersedes: None,
                 touch: false,
+                expected_rev: None,
             },
             mtime + 10,
         )

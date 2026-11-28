@@ -3,9 +3,7 @@
 //! anti-reinvention candidate total. Split out of `render.rs` so the module
 //! stays inside the 500-line cap.
 
-use super::{
-    estimated_tokens_saved, format_number_with_commas, percentile, ToolAgg, PRICE_PER_TOKEN,
-};
+use super::{format_number_with_commas, percentile, ToolAgg, PRICE_PER_TOKEN};
 
 /// Shared KPI section for both summaries: overall latency percentiles,
 /// reliability, and the token-savings block. `errors_note` carries the global
@@ -73,11 +71,7 @@ fn savings_basis(aggs: &std::collections::BTreeMap<String, ToolAgg>) -> String {
     let mut add = |label: &str, tools: &[&str]| {
         let sum: usize = tools
             .iter()
-            .map(|tool| {
-                aggs.get(*tool).map_or(0, |agg| {
-                    estimated_tokens_saved(tool, agg.total_shown, agg.total_results, agg.ok_calls)
-                })
-            })
+            .map(|tool| aggs.get(*tool).map_or(0, |agg| agg.saved_tokens))
             .sum();
         if sum > 0 {
             parts.push(format!("{label} ~{}", format_number_with_commas(sum)));
@@ -104,8 +98,7 @@ pub(super) fn calculate_telemetry_totals(
     let mut reuse_hits = 0;
 
     for (tool, agg) in aggs {
-        saved_tokens +=
-            estimated_tokens_saved(tool, agg.total_shown, agg.total_results, agg.ok_calls);
+        saved_tokens += agg.saved_tokens;
         if tool == "reuse" {
             reuse_hits += agg.reuse_scan_results.max(agg.reuse_scan_shown);
         }

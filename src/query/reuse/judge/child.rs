@@ -2,19 +2,16 @@
 //! spawn with its deadline and process-group teardown, and the verdict
 //! parser. Pure process plumbing; no fs write primitives.
 
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use super::{Setup, VerdictDecision};
+use crate::memory::judge_proc;
 
 /// Judge latency guard: one cold Metal start plus a warm batch of pairs, the
 /// same deadline the coprocess applies per verdict.
 pub(super) const TIMEOUT: Duration = Duration::from_millis(20_000);
-const POLL: Duration = Duration::from_millis(10);
 const MAX_INPUT: usize = 256 * 1024;
 pub(super) const MAX_OUTPUT: usize = 256 * 1024;
 
@@ -39,7 +36,7 @@ pub(super) fn build_payload(setup: &Setup, pairs: &[(String, String)]) -> Option
 /// Spawn one child, feed the batch, and return its verdict lines in order.
 /// `None` means the whole batch failed (spawn, timeout, cap, or shape).
 pub(super) fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<String>> {
-    let mut command = Command::new(&setup.binary);
+    let mut command = judge_proc::base_command(&setup.binary, setup.home.as_deref());
     command
         .arg(setup.subcommand)
         .arg("--stdin")
@@ -48,66 +45,7 @@ pub(super) fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<Strin
     if let Some(recipe) = &setup.recipe {
         command.arg("--recipe").arg(recipe);
     }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .env_clear();
-    if let Some(home) = &setup.home {
-        command.env("HOME", home);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().ok()?;
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    let payload = payload.to_vec();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&payload);
-    });
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
-            _ => {
-                kill_group(&child);
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = writer.join();
-                return None;
-            }
-        }
-    }
-    // The judge may have exited after forking a helper that inherited stdout.
-    // Tear down the process group before draining so the read is bounded.
-    kill_group(&child);
-    let _ = writer.join();
-    let stdout = child.stdout.take()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut raw = String::new();
-        let result = stdout
-            .take((MAX_OUTPUT + 1) as u64)
-            .read_to_string(&mut raw)
-            .ok()
-            .map(|_| raw);
-        let _ = tx.send(result);
-    });
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let raw = match rx.recv_timeout(remaining.max(Duration::from_millis(1))) {
-        Ok(Some(raw)) => raw,
-        _ => return None,
-    };
-    if raw.len() > MAX_OUTPUT {
-        return None;
-    }
+    let raw = judge_proc::run_bounded(command, Some(payload), TIMEOUT, MAX_OUTPUT)?;
     let lines: Vec<String> = raw
         .lines()
         .map(str::trim)
@@ -117,21 +55,37 @@ pub(super) fn run_child_batch(setup: &Setup, payload: &[u8]) -> Option<Vec<Strin
     Some(lines)
 }
 
-#[cfg(unix)]
-pub(super) fn kill_group(child: &std::process::Child) {
-    let group = format!("-{}", child.id());
-    for signal in ["-TERM", "-KILL"] {
-        let _ = Command::new("kill")
-            .arg(signal)
-            .arg(&group)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::db::test_support::{remove_tree, temp_root, write_file};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    #[test]
+    fn child_stdout_over_16kib_does_not_deadlock() {
+        let root = temp_root("judge-child-16k");
+        let script = root.join("eg-judge");
+        // Drain stdin with POSIX sh builtins (works under env_clear()) and emit
+        // >32 KiB of NDJSON lines before exiting.
+        let body = b"#!/bin/sh\nwhile IFS= read -r _; do :; done\ni=0\nwhile [ $i -lt 700 ]; do\n  printf '{\"decision\":\"duplicate\",\"probability\":0.9,\"pad\":\"abcdefghijklmnopqrstuvwxyz0123456789\"}\\n'\n  i=$((i + 1))\ndone\n";
+        write_file(&script, body).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let setup = Setup {
+            binary: script,
+            model: PathBuf::from("model"),
+            subcommand: "similarity",
+            recipe: None,
+            home: std::env::var("HOME").ok(),
+        };
+        let lines = run_child_batch(&setup, b"{}\n").expect("must not deadlock on >16 KiB stdout");
+        assert_eq!(lines.len(), 700);
+        remove_tree(&root);
     }
 }
-
-#[cfg(not(unix))]
-pub(super) fn kill_group(_child: &std::process::Child) {}
 
 /// The verdict whitelist: `duplicate`/`distinct` plus a finite probability in
 /// [0, 1]. Anything else is a per-pair failure, never a panic.

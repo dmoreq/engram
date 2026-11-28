@@ -45,7 +45,7 @@ FTS5 tables, and one internal state table:
 - `tags`, `refs` — bounded token lists (16 items each) used by retrieval.
 - `content_hash` — FNV-1a 64 over kind, body, tags, refs, and scope, so an
   identical replay is idempotent instead of a new revision.
-- `superseded_by`, `superseded_at` — cross-key and same-key replacement chain.
+- `superseded_by`, `superseded_at` — cross-key and same-key replacement chain (`RETIRED_SENTINEL = -1` marks an explicitly soft-retired revision, recoverable via `eg mem restore` until GC retention expires).
 - `fts_version` — `0` when an older binary wrote the row, `2` when this binary
   indexed it in both FTS tables.
 - `memories_fts` — legacy `unicode61` FTS5 over the frozen ASCII tokenizer.

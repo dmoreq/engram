@@ -31,9 +31,11 @@ pub(super) fn memory_integrity(data: &AuditData) -> CheckResult {
 pub(super) fn ops_errors(data: &AuditData) -> CheckResult {
     let m = &data.window_metrics;
     let outage = m.entries >= 10 && m.successes == 0;
+    let high_mut_rejections =
+        m.mut_attempts >= 5 && (m.mut_rejections as f64 / m.mut_attempts as f64) > 0.10;
     let status = if m.ops_critical > 0 || outage {
         Status::Critical
-    } else if m.lock_errors > 3 {
+    } else if m.lock_errors > 3 || high_mut_rejections {
         Status::Warn
     } else {
         Status::Pass
@@ -50,8 +52,8 @@ pub(super) fn ops_errors(data: &AuditData) -> CheckResult {
             format!("{} calls, none succeeded", m.entries)
         } else {
             format!(
-                "{} calls exited 3/5/6/7; {} exited 4 (lock)",
-                m.ops_critical, m.lock_errors
+                "{} calls exited 3/5/6/7; {} exited 4 (lock); {} mem rejections (exit 2)",
+                m.ops_critical, m.lock_errors, m.mut_rejections
             )
         },
     )
@@ -145,7 +147,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
         let Some((warn, critical)) = budget(tool) else {
             continue;
         };
-        if agg.calls < 20 {
+        if agg.latencies_ms.len() < 20 {
             continue;
         }
         evaluated += 1;
@@ -154,7 +156,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
             .baseline_metrics
             .tools
             .get(tool)
-            .filter(|b| b.calls >= 20)
+            .filter(|b| b.latencies_ms.len() >= 20)
             .map(|b| b.p95())
             .filter(|b| *b > 0.0);
         let mut status = if p95 > critical {
@@ -215,7 +217,7 @@ pub(super) fn performance(data: &AuditData) -> CheckResult {
         .baseline_metrics
         .tools
         .get(&worst_tool)
-        .filter(|b| b.calls >= 20)
+        .filter(|b| b.latencies_ms.len() >= 20)
         .map(|b| BaselineView {
             value: b.p95(),
             ratio: if b.p95() > 0.0 {
@@ -235,7 +237,9 @@ pub(super) fn budget(tool: &str) -> Option<(f64, f64)> {
     match tool {
         "search" | "symbols" => Some((100.0, 300.0)),
         "mem_query" | "mem_get" => Some((50.0, 150.0)),
-        "mem_write" | "mem_touch" | "mem_delete" | "mem_gc" | "mem_import" => Some((100.0, 300.0)),
+        "mem_write" | "mem_touch" | "mem_delete" | "mem_retire" | "mem_restore" | "mem_gc"
+        | "mem_import" => Some((100.0, 300.0)),
+        "mem_triage" => Some((500.0, 1500.0)),
         "build" | "reuse" => Some((5000.0, 15000.0)),
         _ => None,
     }

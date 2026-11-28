@@ -69,6 +69,18 @@ impl CommandRequest {
                 reveal_paths,
                 fail_on,
             },
+            cmd @ crate::cli::Cmd::Mem { .. } => Self::from_cli_memory(cmd)?,
+            crate::cli::Cmd::Mcp { .. }
+            | crate::cli::Cmd::Dashboard { .. }
+            | crate::cli::Cmd::Monitor { .. } => {
+                unreachable!("standalone mode, handled before dispatch")
+            }
+            other => Self::from_cli_query(other)?,
+        })
+    }
+
+    fn from_cli_query(cmd: crate::cli::Cmd) -> Result<CommandRequest> {
+        Ok(match cmd {
             crate::cli::Cmd::Callers { name, limit, depth } => {
                 CommandRequest::Callers { name, limit, depth }
             }
@@ -128,12 +140,7 @@ impl CommandRequest {
             },
             crate::cli::Cmd::Search { terms, limit } => CommandRequest::Search { terms, limit },
             crate::cli::Cmd::Stats { path } => CommandRequest::Stats { path },
-            cmd @ crate::cli::Cmd::Mem { .. } => Self::from_cli_memory(cmd)?,
-            crate::cli::Cmd::Mcp { .. }
-            | crate::cli::Cmd::Dashboard { .. }
-            | crate::cli::Cmd::Monitor { .. } => {
-                unreachable!("standalone mode, handled before dispatch")
-            }
+            _ => unreachable!("from_cli_query called with a non-query command"),
         })
     }
 
@@ -160,6 +167,9 @@ impl CommandRequest {
             CommandRequest::MemQuery { .. } => "mem_query",
             CommandRequest::MemGet { .. } => "mem_get",
             CommandRequest::MemDelete { .. } => "mem_delete",
+            CommandRequest::MemRetire { .. } => "mem_retire",
+            CommandRequest::MemRestore { .. } => "mem_restore",
+            CommandRequest::MemTriage { .. } => "mem_triage",
             CommandRequest::MemGc { .. } => "mem_gc",
             CommandRequest::MemExport { .. } => "mem_export",
             CommandRequest::MemImport { .. } => "mem_import",
@@ -262,46 +272,18 @@ impl CommandRequest {
             CommandRequest::Stats { path } => {
                 vec![("path", path.clone().unwrap_or_default())]
             }
-            CommandRequest::MemWrite { .. } => mem_write_args(self),
-            CommandRequest::MemTouch { key, global } => {
-                vec![("key", key.clone()), ("global", global.to_string())]
-            }
-            CommandRequest::MemQuery { .. } => mem_query_args(self),
-            CommandRequest::MemGet { key, global } => {
-                vec![("key", key.clone()), ("global", global.to_string())]
-            }
-            CommandRequest::MemDelete { key, global } => {
-                vec![("key", key.clone()), ("global", global.to_string())]
-            }
-            CommandRequest::MemGc { global } => vec![("global", global.to_string())],
-            CommandRequest::MemReindex { global, embed } => {
-                vec![("global", global.to_string()), ("embed", embed.to_string())]
-            }
-            CommandRequest::MemExport {
-                format,
-                limit,
-                global,
-                since,
-                until,
-                scan,
-            } => vec![
-                ("format", format.clone().unwrap_or_default()),
-                ("limit", limit.map_or_else(String::new, |n| n.to_string())),
-                ("global", global.to_string()),
-                ("since", since.map_or_else(String::new, |n| n.to_string())),
-                ("until", until.map_or_else(String::new, |n| n.to_string())),
-                ("scan", scan.to_string()),
-            ],
-            CommandRequest::MemImport {
-                format,
-                force,
-                global,
-                ..
-            } => vec![
-                ("format", format.clone().unwrap_or_default()),
-                ("force", force.to_string()),
-                ("global", global.to_string()),
-            ],
+            CommandRequest::MemWrite { .. }
+            | CommandRequest::MemTouch { .. }
+            | CommandRequest::MemQuery { .. }
+            | CommandRequest::MemGet { .. }
+            | CommandRequest::MemDelete { .. }
+            | CommandRequest::MemRetire { .. }
+            | CommandRequest::MemRestore { .. }
+            | CommandRequest::MemTriage { .. }
+            | CommandRequest::MemGc { .. }
+            | CommandRequest::MemReindex { .. }
+            | CommandRequest::MemExport { .. }
+            | CommandRequest::MemImport { .. } => self.mem_journal_args(),
         }
     }
 }
